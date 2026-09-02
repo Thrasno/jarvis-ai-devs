@@ -6,6 +6,7 @@ import (
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/topickey"
 )
 
 // ErrSyncIDExists se devuelve cuando se intenta crear una memoria con un sync_id
@@ -84,6 +85,7 @@ func (s *memoryService) Create(ctx context.Context, mem *model.Memory) (*model.M
 }
 
 func (s *memoryService) createWithRepos(ctx context.Context, mem *model.Memory, memRepo repository.MemoryRepository, sessionRepo repository.SessionRepository, blockRepo repository.ProjectBlockRepository) (*model.Memory, error) {
+	mem.TopicKey = topickey.Normalize(mem.TopicKey)
 	if blockRepo != nil {
 		block, err := blockRepo.GetByProjectKey(ctx, mem.Project)
 		if err != nil && !errors.Is(err, repository.ErrNotFound) {

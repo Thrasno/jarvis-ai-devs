@@ -1664,9 +1664,9 @@ func TestMemSyncHandler_StillHandlesInFlightAndBackoff(t *testing.T) {
 
 func TestMemSearch_CallsSearch_ReturnsResults(t *testing.T) {
 	store := &mockStore{
-		searchFn: func(query, project, category string, limit int) ([]*models.Memory, error) {
+		searchFn: func(criteria models.MemorySearchCriteria) ([]*models.Memory, error) {
 			return []*models.Memory{
-				{ID: 1, Title: "Auth Design", Content: "jwt", Project: project},
+				{ID: 1, Title: "Auth Design", Content: "jwt", Project: criteria.Project},
 			}, nil
 		},
 	}
@@ -1706,7 +1706,7 @@ func TestMemSearch_DoesNotExposeLegacyImpactMetadata(t *testing.T) {
 	setLegacyImpactScoreIfPresent(t, legacyMemory, 9)
 
 	store := &mockStore{
-		searchFn: func(query, project, category string, limit int) ([]*models.Memory, error) {
+		searchFn: func(models.MemorySearchCriteria) ([]*models.Memory, error) {
 			return []*models.Memory{legacyMemory}, nil
 		},
 	}
@@ -1737,8 +1737,8 @@ func setLegacyImpactScoreIfPresent(t *testing.T, mem *models.Memory, score int64
 func TestMemSearch_DefaultLimit_Is10(t *testing.T) {
 	var gotLimit int
 	store := &mockStore{
-		searchFn: func(_, _, _ string, limit int) ([]*models.Memory, error) {
-			gotLimit = limit
+		searchFn: func(criteria models.MemorySearchCriteria) ([]*models.Memory, error) {
+			gotLimit = criteria.Limit
 			return nil, nil
 		},
 	}
@@ -1754,8 +1754,8 @@ func TestMemSearch_DefaultLimit_Is10(t *testing.T) {
 func TestMemSearch_ProjectFilter_PassedToStore(t *testing.T) {
 	var gotProject string
 	store := &mockStore{
-		searchFn: func(_, project, _ string, _ int) ([]*models.Memory, error) {
-			gotProject = project
+		searchFn: func(criteria models.MemorySearchCriteria) ([]*models.Memory, error) {
+			gotProject = criteria.Project
 			return nil, nil
 		},
 	}
@@ -1774,8 +1774,8 @@ func TestMemSearch_ProjectFilter_PassedToStore(t *testing.T) {
 func TestMemSearch_FiltersByCategory(t *testing.T) {
 	var gotCategory string
 	store := &mockStore{
-		searchFn: func(_, _, category string, _ int) ([]*models.Memory, error) {
-			gotCategory = category
+		searchFn: func(criteria models.MemorySearchCriteria) ([]*models.Memory, error) {
+			gotCategory = criteria.Category
 			return []*models.Memory{
 				{ID: 1, Title: "Arch Note", Content: "content", Project: "proj", Category: "architecture"},
 			}, nil
@@ -1799,7 +1799,7 @@ func TestMemSearch_FiltersByCategory(t *testing.T) {
 
 func TestMemSearch_NoResults_ReturnsNoResultsMessage(t *testing.T) {
 	store := &mockStore{
-		searchFn: func(_, _, _ string, _ int) ([]*models.Memory, error) {
+		searchFn: func(models.MemorySearchCriteria) ([]*models.Memory, error) {
 			return []*models.Memory{}, nil
 		},
 	}
@@ -1815,6 +1815,56 @@ func TestMemSearch_NoResults_ReturnsNoResultsMessage(t *testing.T) {
 	body := textContent(t, res)
 	if !strings.Contains(body, "No results found") {
 		t.Errorf("expected no-results message, got: %s", body)
+	}
+}
+
+func TestMemSearch_PassesStructuredCriteria(t *testing.T) {
+	var got models.MemorySearchCriteria
+	store := &mockStore{searchFn: func(criteria models.MemorySearchCriteria) ([]*models.Memory, error) {
+		got = criteria
+		return nil, nil
+	}}
+	session := connectTestServer(t, store)
+
+	res := callTool(t, session, "mem_search", map[string]any{
+		"topic_prefix": "  architecture/auth  ",
+		"project":      "proj",
+	})
+
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	if got.Query != "" || got.TopicPrefix == nil || *got.TopicPrefix != "architecture/auth" {
+		t.Fatalf("criteria = %#v, want trimmed topic prefix without query", got)
+	}
+}
+
+func TestMemSearch_ValidatesCriteria(t *testing.T) {
+	tests := []struct {
+		name string
+		args map[string]any
+	}{
+		{name: "missing all criteria", args: map[string]any{}},
+		{name: "blank query", args: map[string]any{"query": "  "}},
+		{name: "blank exact", args: map[string]any{"topic_key": "\t"}},
+		{name: "blank prefix", args: map[string]any{"topic_prefix": "\n"}},
+		{name: "exact and prefix", args: map[string]any{"topic_key": "a", "topic_prefix": "a"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			store := &mockStore{searchFn: func(models.MemorySearchCriteria) ([]*models.Memory, error) {
+				called = true
+				return nil, nil
+			}}
+			res := callTool(t, connectTestServer(t, store), "mem_search", tt.args)
+			if !res.IsError {
+				t.Fatalf("expected validation error, got %s", textContent(t, res))
+			}
+			if called {
+				t.Fatal("store.Search called for invalid criteria")
+			}
+		})
 	}
 }
 

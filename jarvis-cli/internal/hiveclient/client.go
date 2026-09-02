@@ -74,9 +74,27 @@ type Memory struct {
 type MemoryFilter struct {
 	Project        string
 	ID             int64
+	TopicKey       *string
+	TopicPrefix    *string
 	IncludeDeleted bool
 	DeletedOnly    bool
 	Limit          int
+}
+
+type SDDArtifact struct {
+	Artifact  string    `json:"artifact"`
+	Content   string    `json:"content"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type SDDPageRequest struct {
+	Limit  int
+	Cursor string
+}
+
+type SDDChangePage struct {
+	Changes    []string `json:"changes"`
+	NextCursor string   `json:"next_cursor,omitempty"`
 }
 
 type Health struct {
@@ -512,6 +530,12 @@ func (c *Client) Memories(ctx context.Context, filter MemoryFilter) ([]Memory, e
 	if filter.ID > 0 {
 		query.Set("id", strconv.FormatInt(filter.ID, 10))
 	}
+	if filter.TopicKey != nil {
+		query.Set("topic_key", *filter.TopicKey)
+	}
+	if filter.TopicPrefix != nil {
+		query.Set("topic_prefix", *filter.TopicPrefix)
+	}
 	if filter.IncludeDeleted {
 		query.Set("include_deleted", "true")
 	}
@@ -528,6 +552,33 @@ func (c *Client) Memories(ctx context.Context, filter MemoryFilter) ([]Memory, e
 		return nil, err
 	}
 	return body.Memories, nil
+}
+
+func (c *Client) FetchSDDArtifacts(ctx context.Context, project, change string) ([]SDDArtifact, error) {
+	query := url.Values{"project": {project}}
+	var body struct {
+		Artifacts []SDDArtifact `json:"artifacts"`
+	}
+	path := "/sdd/changes/" + url.PathEscape(change) + "/artifacts"
+	if err := c.get(ctx, path, query, &body, false); err != nil {
+		return nil, err
+	}
+	return body.Artifacts, nil
+}
+
+func (c *Client) ListSDDChanges(ctx context.Context, project string, request SDDPageRequest) (SDDChangePage, error) {
+	query := url.Values{"project": {project}}
+	if request.Limit > 0 {
+		query.Set("limit", strconv.Itoa(request.Limit))
+	}
+	if request.Cursor != "" {
+		query.Set("cursor", request.Cursor)
+	}
+	var page SDDChangePage
+	if err := c.get(ctx, "/sdd/changes", query, &page, false); err != nil {
+		return SDDChangePage{}, err
+	}
+	return page, nil
 }
 
 func (c *Client) MemoryByID(ctx context.Context, id int64) (Memory, error) {

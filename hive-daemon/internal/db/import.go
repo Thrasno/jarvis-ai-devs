@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/topickey"
 	"github.com/google/uuid"
 )
 
@@ -68,16 +69,17 @@ type ImportPrompt struct {
 }
 
 type ImportMemory struct {
-	SourceID        string
-	Project         string
-	TopicKey        *string
-	Category        string
-	Title           string
-	Content         string
-	SessionSourceID string
-	CreatedAt       string
-	UpdatedAt       string
-	ContentHash     string
+	SourceID          string
+	Project           string
+	TopicKey          *string
+	Category          string
+	Title             string
+	Content           string
+	SessionSourceID   string
+	CreatedAt         string
+	UpdatedAt         string
+	ContentHash       string
+	LegacyContentHash string
 }
 
 type ImportBatch struct {
@@ -230,9 +232,10 @@ VALUES (?, ?, ?, ?)`, syncID, prompt.Project, prompt.Content, defaultTime(prompt
 }
 
 func importMemory(ctx context.Context, tx *sql.Tx, run ImportRun, memory ImportMemory) (bool, bool, error) {
+	memory.TopicKey = topickey.Normalize(memory.TopicKey)
 	key := SourceAliasKey{SourceSystem: run.SourceSystem, SourceTable: "observations", SourceID: memory.SourceID, SourceProject: memory.Project}
 	if alias, found, err := findImportAlias(ctx, tx, key); err != nil || found {
-		return false, false, validateReusedImportAlias(alias, found, memory.ContentHash, err)
+		return false, false, validateReusedImportAlias(alias, found, memory.ContentHash, err, memory.LegacyContentHash)
 	}
 	ambiguous, err := ambiguousMemoryDuplicate(ctx, tx, memory)
 	if err != nil {
@@ -285,7 +288,7 @@ WHERE project = ? AND title = ? AND deleted_at IS NULL`, memory.Project, memory.
 	return count > 1, nil
 }
 
-func validateReusedImportAlias(alias ImportSourceAlias, found bool, contentHash string, err error) error {
+func validateReusedImportAlias(alias ImportSourceAlias, found bool, contentHash string, err error, compatibleHashes ...string) error {
 	if err != nil {
 		return err
 	}
@@ -293,6 +296,11 @@ func validateReusedImportAlias(alias ImportSourceAlias, found bool, contentHash 
 		return nil
 	}
 	if alias.ContentHash != "" && contentHash != "" && alias.ContentHash != contentHash {
+		for _, compatible := range compatibleHashes {
+			if compatible != "" && alias.ContentHash == compatible {
+				return nil
+			}
+		}
 		return fmt.Errorf("%w: %s/%s project %s", ErrImportAliasContentChanged, alias.SourceTable, alias.SourceID, alias.SourceProject)
 	}
 	return nil

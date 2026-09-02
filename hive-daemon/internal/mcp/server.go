@@ -25,7 +25,7 @@ type MemoryStore interface {
 	SaveMemoryWithManualSession(mem *models.Memory) (int64, error)
 	GetMemory(id int64) (*models.Memory, error)
 	ListMemories(project string, limit int) ([]*models.Memory, error)
-	Search(query, project, category string, limit int) ([]*models.Memory, error)
+	Search(criteria models.MemorySearchCriteria) ([]*models.Memory, error)
 
 	// Session lifecycle — added in Slice 2
 	CreateSession(id, project, directory, devID, client string) error
