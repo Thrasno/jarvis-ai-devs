@@ -50,8 +50,10 @@ type RunInput struct {
 
 // RunResult pairs the recovery point with the outcome it protects.
 type RunResult struct {
-	Backup lifecycle.BackupManifest
-	Report Report
+	Backup        lifecycle.BackupManifest
+	Report        Report
+	Verified      bool
+	AddedSkillIDs []string
 }
 
 // BackupTargets projects the plan's tracked-path list onto backup targets.
@@ -96,7 +98,17 @@ func Run(in RunInput) (RunResult, error) {
 		return RunResult{}, fmt.Errorf("measure %d tracked paths before replay: %w", len(in.Plan.Tracked), err)
 	}
 	if before.Matches(in.Plan.Tracked) {
-		return RunResult{Report: convergedWithoutApplying(in.Apply.Targets)}, nil
+		result := RunResult{Report: convergedWithoutApplying(in.Apply.Targets)}
+		if err := verifyApplied(before, in.Plan.Tracked, in.Apply.Targets); err != nil {
+			return result, err
+		}
+		result.Verified = true
+		added, err := in.Bookkeeping.record(false, result.Report.Converged())
+		if err != nil {
+			return result, err
+		}
+		result.AddedSkillIDs = added
+		return result, nil
 	}
 	manifest, err := in.Backup(BackupSourceOperation, BackupTargets(in.Plan))
 	if err != nil {
@@ -130,15 +142,19 @@ func Run(in RunInput) (RunResult, error) {
 	}
 	changed := Diff(before, after)
 	result.Report = attributeChanges(result.Report, in.Plan.Tracked, changed)
-	// Verification is not conditional on bookkeeping succeeding. A failed record
-	// says nothing about what landed on disk, and this run just wrote to it, so
-	// letting a busy manifest lock swallow the check would hide exactly the
-	// silent broken-output failure the check exists to catch. Both are reported.
-	var recorded error
-	if len(changed) > 0 {
-		recorded = in.Bookkeeping.record()
+	if err := verifyApplied(after, in.Plan.Tracked, in.Apply.Targets); err != nil {
+		return result, err
 	}
-	return result, errors.Join(recorded, verifyApplied(after, in.Plan.Tracked, in.Apply.Targets))
+	result.Verified = true
+	if !result.Report.Converged() {
+		return result, nil
+	}
+	added, err := in.Bookkeeping.record(len(changed) > 0, true)
+	if err != nil {
+		return result, err
+	}
+	result.AddedSkillIDs = added
+	return result, nil
 }
 
 // protectsEveryTarget checks that the plan and the applier describe the same

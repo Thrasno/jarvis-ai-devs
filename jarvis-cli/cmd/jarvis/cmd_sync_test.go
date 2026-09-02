@@ -211,6 +211,23 @@ func TestSyncReport_IsTheWholeObservabilityContract(t *testing.T) {
 	}
 }
 
+func TestSyncReport_PostVerificationPersistenceFailureReportsNoZohoAddition(t *testing.T) {
+	manifest := &state.State{SchemaVersion: 1, Persona: "neutral"}
+	result := sync.RunResult{
+		Verified: true,
+		Report:   sync.Report{Agents: []sync.AgentResult{{Agent: "opencode", Converged: true}}, Changed: []string{}},
+	}
+	out := renderSyncReport(manifest, result, "", errors.New("state.yaml is locked"))
+	for _, want := range []string{"verification: passed", "state persistence: failed: state.yaml is locked"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("report is missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "zoho skill added to desired state:") {
+		t.Fatalf("persistence failure must not report a successful Zoho addition:\n%s", out)
+	}
+}
+
 // TestSyncExit_IsNonZeroForApplyAndVerificationFailures locks the exit
 // contract. syncExit deliberately takes no cloud argument: an unusable cloud
 // portion is reported, never raised, so there is no shape here through which it
@@ -278,7 +295,7 @@ func TestReplayInput_ResolvesEveryDetectedAgentThroughTheSharedIdentifierRule(t 
 		t.Fatalf("create the Claude config dir: %v", err)
 	}
 
-	input, err := replayInput(home, &state.State{SchemaVersion: 1, Persona: "neutra", Skills: []string{"go-testing"}})
+	input, _, err := replayInput(home, &state.State{SchemaVersion: 1, Persona: "neutra", Skills: []string{"go-testing"}})
 	if err != nil {
 		t.Fatalf("replayInput: %v", err)
 	}
@@ -300,6 +317,36 @@ func TestReplayInput_ResolvesEveryDetectedAgentThroughTheSharedIdentifierRule(t 
 	// refuse it instead of replaying into nothing.
 	if found, ok := input.Resolve("no-such-agent"); ok {
 		t.Fatalf("Resolve(no-such-agent) = (%v, true), want a miss", found.Name())
+	}
+}
+
+func TestReplayInput_ExpandsACopiedZohoStateIntoPlanTracking(t *testing.T) {
+	home := t.TempDir()
+	manifest := &state.State{
+		SchemaVersion: 1,
+		Persona:       "neutra",
+		Skills:        []string{"zoho-deluge"},
+		InstalledAgents: []state.Agent{{
+			ID: "opencode", InstructionsPath: filepath.Join(home, ".config", "opencode", "AGENTS.md"), ConfigPath: "opencode.json",
+		}},
+	}
+	input, expansion, err := replayInput(home, manifest)
+	if err != nil {
+		t.Fatalf("replayInput: %v", err)
+	}
+	if input.State == manifest || len(expansion.CandidateIDs) == 0 || len(manifest.Skills) != 1 {
+		t.Fatalf("replay must use a copied expanded state without mutating durable input: input=%p manifest=%p candidates=%v skills=%v", input.State, manifest, expansion.CandidateIDs, manifest.Skills)
+	}
+	plan, err := sync.BuildPlan(sync.PlanInputFor(input))
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	trackedZoho := false
+	for _, tracked := range plan.Tracked {
+		trackedZoho = trackedZoho || strings.Contains(filepath.ToSlash(tracked.Path), "skills/zoho-analytics/SKILL.md")
+	}
+	if !trackedZoho {
+		t.Fatalf("expanded pack files are absent from Plan.Tracked: %+v", plan.Tracked)
 	}
 }
 

@@ -148,6 +148,40 @@ func TestRunSync_SecondRunOverAnAlreadyCurrentMachineConvergesWithoutApplying(t 
 	}
 }
 
+func TestRunSync_ConvergesAndPersistsALegacyZohoPackOnce(t *testing.T) {
+	home := newSyncFixtureHome(t)
+	seedReplayManifest(t, openCodeAgent(home))
+	manifest, err := state.Load()
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	manifest.Skills = []string{"zoho-deluge"}
+	if err := state.Save(manifest); err != nil {
+		t.Fatalf("save legacy manifest: %v", err)
+	}
+
+	var first error
+	out := captureStdout(t, func() { first = runSync() })
+	if first != nil {
+		t.Fatalf("legacy sync: %v\n%s", first, out)
+	}
+	for _, id := range []string{"zoho-analytics", "zoho-books", "zoho-creator", "zoho-crm", "zoho-people", "zoho-projects"} {
+		if !strings.Contains(out, "zoho skill added to desired state: "+id) {
+			t.Errorf("missing durable addition %q:\n%s", id, out)
+		}
+	}
+	loaded, err := state.Load()
+	if err != nil || len(loaded.Skills) != 7 {
+		t.Fatalf("persisted skills = %v, %v; want all V0 members", loaded.Skills, err)
+	}
+
+	var second error
+	out = captureStdout(t, func() { second = runSync() })
+	if second != nil || strings.Contains(out, "zoho skill added to desired state") {
+		t.Fatalf("second sync must be silent and idempotent: %v\n%s", second, out)
+	}
+}
+
 // A failure that reaches the report instead of an early return. The manifest
 // records an agent this machine does not have installed, which is what a
 // user-removed agent leaves behind: the plan still covers it, the backup still

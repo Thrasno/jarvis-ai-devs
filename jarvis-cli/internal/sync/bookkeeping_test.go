@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/lifecycle"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
@@ -43,6 +44,20 @@ func bookkeptRun(t *testing.T, home string, plan Plan, runner ComponentRunner, b
 		Backup:      lifecycle.NewBackupStore(home).CreateSnapshotOfTargets,
 		Bookkeeping: book,
 	})
+}
+
+func seedZohoManifest(t *testing.T, home string, skills ...string) string {
+	t.Helper()
+	path := seedManifest(t, home, "sha256:current")
+	manifest, err := state.Load()
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	manifest.Skills = append([]string(nil), skills...)
+	if err := state.Save(manifest); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+	return path
 }
 
 // Both halves of the rule, over the same machine, and the positive counterpart
@@ -190,7 +205,7 @@ func TestRun_DoesNotAdvanceManagedAssetDigestWhenClosingSnapshotFails(t *testing
 // built for — a second jarvis process holding the manifest — so letting a busy
 // lock swallow the post-apply check would hide the silent broken-output failure
 // that check exists to catch, in exactly the runs that mutated something.
-func TestRun_ReportsBothTheBookkeepingFailureAndTheVerificationVerdict(t *testing.T) {
+func TestRun_DoesNotPersistBeforeVerificationFails(t *testing.T) {
 	home := t.TempDir()
 	seedManifest(t, home, "sha256:previous")
 
@@ -206,18 +221,206 @@ func TestRun_ReportsBothTheBookkeepingFailureAndTheVerificationVerdict(t *testin
 	}}
 	busy := errors.New("state.yaml is locked by another jarvis process")
 
-	_, err := bookkeptRun(t, home, plan, runner, &Bookkeeping{
+	result, err := bookkeptRun(t, home, plan, runner, &Bookkeeping{
 		ManagedAssetDigest: "sha256:current",
 		Lock:               func(func() error) error { return busy },
 	})
 
-	if err == nil {
-		t.Fatal("a busy lock and an invalid output must both be reported")
+	if err == nil || errors.Is(err, busy) {
+		t.Fatalf("error = %v, want only the verification failure", err)
 	}
-	if !errors.Is(err, busy) {
-		t.Fatalf("error = %v, want it to carry the bookkeeping failure", err)
+	if result.Verified {
+		t.Fatal("verification failure must not be reported as verified")
 	}
 	if !strings.Contains(err.Error(), tracked) || !strings.Contains(err.Error(), "run `jarvis sync` to repair") {
-		t.Fatalf("error = %q, want it to also carry the verification verdict naming %s", err, tracked)
+		t.Fatalf("error = %q, want the verification verdict naming %s", err, tracked)
+	}
+}
+
+func TestRun_PersistsZohoExpansionAfterVerifiedNoOp(t *testing.T) {
+	home := t.TempDir()
+	seedManifest(t, home, "sha256:current")
+	manifest, err := state.Load()
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	manifest.Skills = []string{"go-testing", "zoho-deluge"}
+	if err := state.Save(manifest); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+
+	tracked := filepath.Join(home, ".claude", "CLAUDE.md")
+	const desired = "claude instructions\n"
+	if err := os.MkdirAll(filepath.Dir(tracked), 0o755); err != nil {
+		t.Fatalf("mkdir tracked parent: %v", err)
+	}
+	if err := os.WriteFile(tracked, []byte(desired), 0o644); err != nil {
+		t.Fatalf("write tracked file: %v", err)
+	}
+	pack := skills.NewZohoPack([]skills.Skill{{ID: "zoho-deluge"}, {ID: "zoho-books"}, {ID: "zoho-analytics"}})
+	backups := 0
+	locked := 0
+	result, err := Run(RunInput{
+		Plan:  Plan{Tracked: []TrackedPath{{Agent: "claude", Path: tracked, Mode: ManagedFileMode, Desired: digestOf([]byte(desired))}}},
+		Apply: ApplyInput{Runner: &recordingRunner{}, Targets: []AgentTarget{{ID: "claude"}}},
+		Backup: func(string, []lifecycle.BackupTarget) (lifecycle.BackupManifest, error) {
+			backups++
+			return lifecycle.BackupManifest{}, nil
+		},
+		Bookkeeping: &Bookkeeping{
+			ZohoExpansion: &ZohoExpansion{Pack: pack, CandidateIDs: []string{"zoho-analytics", "zoho-books"}},
+			Lock: func(critical func() error) error {
+				locked++
+				latest, err := state.Load()
+				if err != nil {
+					return err
+				}
+				latest.Skills = append(latest.Skills, "late-arrival")
+				if err := state.Save(latest); err != nil {
+					return err
+				}
+				return critical()
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !result.Verified || backups != 0 || locked != 1 {
+		t.Fatalf("verified=%t backups=%d locks=%d, want verified no-op without backup and one lock", result.Verified, backups, locked)
+	}
+	if want := []string{"zoho-analytics", "zoho-books"}; !reflect.DeepEqual(result.AddedSkillIDs, want) {
+		t.Fatalf("AddedSkillIDs = %v, want %v", result.AddedSkillIDs, want)
+	}
+	loaded, err := state.Load()
+	if err != nil {
+		t.Fatalf("load persisted manifest: %v", err)
+	}
+	if want := []string{"go-testing", "late-arrival", "zoho-analytics", "zoho-books", "zoho-deluge"}; !reflect.DeepEqual(loaded.Skills, want) {
+		t.Fatalf("skills = %v, want %v", loaded.Skills, want)
+	}
+}
+
+func TestBookkeeping_DoesNotResurrectAConcurrentlyDeselectedPack(t *testing.T) {
+	home := t.TempDir()
+	seedManifest(t, home, "sha256:current")
+	manifest, err := state.Load()
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	manifest.Skills = []string{"zoho-deluge"}
+	if err := state.Save(manifest); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+	pack := skills.NewZohoPack([]skills.Skill{{ID: "zoho-deluge"}, {ID: "zoho-books"}})
+	book := &Bookkeeping{ZohoExpansion: &ZohoExpansion{Pack: pack, CandidateIDs: []string{"zoho-books"}}}
+	book.Lock = func(critical func() error) error {
+		latest, err := state.Load()
+		if err != nil {
+			return err
+		}
+		latest.Skills = nil
+		if err := state.Save(latest); err != nil {
+			return err
+		}
+		return critical()
+	}
+	added, err := book.record(false, true)
+	if err != nil || len(added) != 0 {
+		t.Fatalf("record = %v, %v; want no resurrection", added, err)
+	}
+	loaded, err := state.Load()
+	if err != nil || len(loaded.Skills) != 0 {
+		t.Fatalf("skills after concurrent deselection = %v, %v", loaded.Skills, err)
+	}
+}
+
+func TestBookkeeping_RecomputesPackAdditionsAfterConcurrentPartialMembershipChange(t *testing.T) {
+	home := t.TempDir()
+	seedZohoManifest(t, home, "zoho-deluge", "zoho-books")
+
+	pack := skills.NewZohoPack([]skills.Skill{{ID: "zoho-deluge"}, {ID: "zoho-books"}, {ID: "zoho-analytics"}})
+	book := &Bookkeeping{ZohoExpansion: &ZohoExpansion{Pack: pack, CandidateIDs: []string{"zoho-analytics"}}}
+	book.Lock = func(critical func() error) error {
+		latest, err := state.Load()
+		if err != nil {
+			return err
+		}
+		latest.Skills = []string{"zoho-deluge"}
+		if err := state.Save(latest); err != nil {
+			return err
+		}
+		return critical()
+	}
+
+	added, err := book.record(false, true)
+	if err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if want := []string{"zoho-analytics", "zoho-books"}; !reflect.DeepEqual(added, want) {
+		t.Fatalf("AddedSkillIDs = %v, want fresh-state additions %v", added, want)
+	}
+	loaded, err := state.Load()
+	if err != nil {
+		t.Fatalf("load persisted manifest: %v", err)
+	}
+	if want := []string{"zoho-analytics", "zoho-books", "zoho-deluge"}; !reflect.DeepEqual(loaded.Skills, want) {
+		t.Fatalf("skills = %v, want complete current pack %v", loaded.Skills, want)
+	}
+}
+
+func TestRun_ReturnsNoAdditionsWhenPostVerificationLockFails(t *testing.T) {
+	home := t.TempDir()
+	seedZohoManifest(t, home, "zoho-deluge")
+
+	tracked := filepath.Join(home, ".claude", "CLAUDE.md")
+	const desired = "claude instructions\n"
+	if err := os.MkdirAll(filepath.Dir(tracked), 0o755); err != nil {
+		t.Fatalf("mkdir tracked parent: %v", err)
+	}
+	if err := os.WriteFile(tracked, []byte(desired), 0o644); err != nil {
+		t.Fatalf("write tracked file: %v", err)
+	}
+	busy := errors.New("state.yaml is locked")
+	pack := skills.NewZohoPack([]skills.Skill{{ID: "zoho-deluge"}, {ID: "zoho-books"}})
+	result, err := Run(RunInput{
+		Plan:  Plan{Tracked: []TrackedPath{{Agent: "claude", Path: tracked, Mode: ManagedFileMode, Desired: digestOf([]byte(desired))}}},
+		Apply: ApplyInput{Runner: &recordingRunner{}, Targets: []AgentTarget{{ID: "claude"}}},
+		Backup: func(string, []lifecycle.BackupTarget) (lifecycle.BackupManifest, error) {
+			return lifecycle.BackupManifest{}, nil
+		},
+		Bookkeeping: &Bookkeeping{
+			ZohoExpansion: &ZohoExpansion{Pack: pack, CandidateIDs: []string{"zoho-books"}},
+			Lock:          func(func() error) error { return busy },
+		},
+	})
+	if !errors.Is(err, busy) {
+		t.Fatalf("Run error = %v, want post-verification lock failure", err)
+	}
+	if !result.Verified || len(result.AddedSkillIDs) != 0 {
+		t.Fatalf("Verified=%t AddedSkillIDs=%v, want verified persistence failure without additions", result.Verified, result.AddedSkillIDs)
+	}
+}
+
+func TestBookkeeping_ReturnsNoAdditionsWhenSaveFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permissions do not reliably deny atomic writes on Windows")
+	}
+
+	home := t.TempDir()
+	statePath := seedZohoManifest(t, home, "zoho-deluge")
+	stateDir := filepath.Dir(statePath)
+	if err := os.Chmod(stateDir, 0o555); err != nil {
+		t.Fatalf("make state directory read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(stateDir, 0o755) })
+
+	pack := skills.NewZohoPack([]skills.Skill{{ID: "zoho-deluge"}, {ID: "zoho-books"}})
+	added, err := (&Bookkeeping{ZohoExpansion: &ZohoExpansion{Pack: pack, CandidateIDs: []string{"zoho-books"}}}).record(false, true)
+	if err == nil {
+		t.Fatal("record must return the state save failure")
+	}
+	if len(added) != 0 {
+		t.Fatalf("AddedSkillIDs = %v, want none after failed save", added)
 	}
 }

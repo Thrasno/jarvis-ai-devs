@@ -12,6 +12,7 @@ import (
 
 	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/lifecycle"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
@@ -81,6 +82,46 @@ func TestRun_ArchivesTrackedPathsAsTheyWereBeforeTheFirstMutation(t *testing.T) 
 	// The archive itself, not just the manifest, must hold the original bytes.
 	if err := store.ValidateSnapshot(result.Backup); err != nil {
 		t.Fatalf("archive does not match the pre-mutation checksums: %v", err)
+	}
+}
+
+func TestRun_PartialApplyDoesNotPersistZohoExpansion(t *testing.T) {
+	home := t.TempDir()
+	seedZohoManifest(t, home, "zoho-deluge")
+
+	tracked := filepath.Join(home, ".claude", "CLAUDE.md")
+	const desired = "claude instructions\n"
+	plan := Plan{Tracked: []TrackedPath{{Agent: "claude", Path: tracked, Mode: ManagedFileMode, Desired: digestOf([]byte(desired))}}}
+	runner := &desiredStateRunner{
+		recordingRunner: &recordingRunner{failAt: map[string]error{"claude/" + ComponentMCPs: errors.New("MCP write failed")}},
+		writes:          map[string][]plannedWrite{"claude": {{path: tracked, body: desired, mode: 0o644}}},
+	}
+	locked := 0
+	pack := skills.NewZohoPack([]skills.Skill{{ID: "zoho-deluge"}, {ID: "zoho-books"}})
+	result, err := Run(RunInput{
+		Plan:   plan,
+		Apply:  ApplyInput{Runner: runner, Targets: []AgentTarget{{ID: "claude"}}},
+		Backup: lifecycle.NewBackupStore(home).CreateSnapshotOfTargets,
+		Bookkeeping: &Bookkeeping{
+			ZohoExpansion: &ZohoExpansion{Pack: pack, CandidateIDs: []string{"zoho-books"}},
+			Lock: func(critical func() error) error {
+				locked++
+				return critical()
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("partial apply must fail final verification")
+	}
+	if result.Report.Converged() || result.Verified || locked != 0 || len(result.AddedSkillIDs) != 0 {
+		t.Fatalf("partial apply result = %+v, verified=%t locks=%d additions=%v; want unverified non-convergence without persistence", result.Report, result.Verified, locked, result.AddedSkillIDs)
+	}
+	loaded, err := state.Load()
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	if want := []string{"zoho-deluge"}; !reflect.DeepEqual(loaded.Skills, want) {
+		t.Fatalf("skills = %v, want pre-run state %v", loaded.Skills, want)
 	}
 }
 
