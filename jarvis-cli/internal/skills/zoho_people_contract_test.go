@@ -192,10 +192,23 @@ func TestZohoPeopleEmbeddedSkill_CatalogsContainEveryActiveOperation(t *testing.
 	}
 }
 
+func TestParsePeopleCatalogRows_NormalizesCRLFLineEndings(t *testing.T) {
+	content := "| Get Entries API | v3 | Attendance | GET | https://people.zoho.com/people/api/v3/attendance/entries | employee_id | ZohoPeople.attendance.READ | None documented | Plan-dependent | Read-only | https://www.zoho.com/people/api/attendance/get-entries.html | 2026-09-01 | verified |\r\n"
+
+	rows := parsePeopleCatalogRows(t, content)
+	if len(rows) != 1 {
+		t.Fatalf("parsePeopleCatalogRows() returned %d rows; want 1", len(rows))
+	}
+	if got := rows[0][12]; got != "verified" {
+		t.Fatalf("parsePeopleCatalogRows() evidence state = %q; want verified", got)
+	}
+}
+
 func parsePeopleCatalogRows(t *testing.T, content string) [][]string {
 	t.Helper()
 	var rows [][]string
 	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSuffix(line, "\r")
 		if !strings.HasPrefix(line, "| ") || strings.HasPrefix(line, "| Operation ") || strings.HasPrefix(line, "|---") {
 			continue
 		}
