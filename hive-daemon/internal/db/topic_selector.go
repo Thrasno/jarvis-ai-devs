@@ -34,11 +34,16 @@ const topicCandidateColumns = `
 
 // SQLite's one-argument trim only removes ASCII spaces. This character set
 // mirrors Go's strings.TrimSpace for historical rows written before normalization.
-const logicalTopicKeySQL = `trim(topic_key, ` +
-	`char(9) || char(10) || char(11) || char(12) || char(13) || char(32) || ` +
+const logicalWhitespaceSQL = `char(9) || char(10) || char(11) || char(12) || char(13) || char(32) || ` +
 	`char(133) || char(160) || char(5760) || char(8192) || char(8193) || char(8194) || ` +
 	`char(8195) || char(8196) || char(8197) || char(8198) || char(8199) || char(8200) || ` +
-	`char(8201) || char(8202) || char(8232) || char(8233) || char(8239) || char(8287) || char(12288))`
+	`char(8201) || char(8202) || char(8232) || char(8233) || char(8239) || char(8287) || char(12288)`
+
+const logicalTopicKeySQL = `trim(topic_key, ` + logicalWhitespaceSQL + `)`
+
+func logicalTrimSQL(column string) string {
+	return `trim(` + column + `, ` + logicalWhitespaceSQL + `)`
+}
 
 func withLogicalTopicTrim(query string) string {
 	return strings.ReplaceAll(query, "trim(topic_key)", logicalTopicKeySQL)
