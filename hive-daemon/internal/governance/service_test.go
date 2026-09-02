@@ -1550,6 +1550,53 @@ func TestMemoriesPassesThroughCategoriesAndOrderAsc(t *testing.T) {
 	require.Equal(t, "Newest decision", memories[1].Title)
 }
 
+func TestMemoriesPassesThroughTopicCriteria(t *testing.T) {
+	store := &topicFilterReadStore{}
+	svc := NewService(store)
+
+	for _, tt := range []struct {
+		name   string
+		filter MemoryFilter
+	}{
+		{name: "exact", filter: MemoryFilter{Project: " project ", TopicKey: stringPointer(" exact/topic ")}},
+		{name: "prefix", filter: MemoryFilter{Project: " project ", TopicPrefix: stringPointer(" prefix/topic ")}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := svc.Memories(context.Background(), tt.filter)
+			require.NoError(t, err)
+			require.Equal(t, "project", store.filter.Project)
+			require.Equal(t, tt.filter.TopicKey, store.filter.TopicKey)
+			require.Equal(t, tt.filter.TopicPrefix, store.filter.TopicPrefix)
+		})
+	}
+}
+
+type topicFilterReadStore struct {
+	filter db.GovernanceMemoryFilter
+}
+
+func (s *topicFilterReadStore) ListGovernanceProjects(context.Context) ([]db.GovernanceProject, error) {
+	return nil, nil
+}
+func (s *topicFilterReadStore) GetGovernanceProject(context.Context, string) (db.GovernanceProject, error) {
+	return db.GovernanceProject{}, nil
+}
+func (s *topicFilterReadStore) ListGovernanceMemories(_ context.Context, filter db.GovernanceMemoryFilter) ([]db.GovernanceMemory, error) {
+	s.filter = filter
+	return nil, nil
+}
+func (s *topicFilterReadStore) GetGovernanceMemoryByID(context.Context, int64) (db.GovernanceMemory, error) {
+	return db.GovernanceMemory{}, nil
+}
+func (s *topicFilterReadStore) ListGovernanceSyncHealth(context.Context) ([]db.SyncHealth, error) {
+	return nil, nil
+}
+func (s *topicFilterReadStore) ListHiveWarnings(db.HiveWarningFilter) ([]db.HiveWarning, error) {
+	return nil, nil
+}
+
+func stringPointer(value string) *string { return &value }
+
 // TestTimelineReturnsErrProjectNotFoundForUnknownProject verifies that
 // Timeline returns ErrProjectNotFound when the project doesn't exist.
 func TestTimelineReturnsErrProjectNotFoundForUnknownProject(t *testing.T) {
