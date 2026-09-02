@@ -1,6 +1,7 @@
 package db
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
@@ -67,7 +68,7 @@ func TestSearch_FindsByTitle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := d.Search("JWT", "proj", "", 10)
+	results, err := search(t, d, "JWT", "proj", "", 10)
 	if err != nil {
 		t.Fatalf("Search() failed: %v", err)
 	}
@@ -88,7 +89,7 @@ func TestSearch_FindsByContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := d.Search("SQLite", "proj", "", 10)
+	results, err := search(t, d, "SQLite", "proj", "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +109,7 @@ func TestSearch_SpecialCharactersNocrash(t *testing.T) {
 	specialQueries := []string{"@#user", "user@domain.com", "foo:bar", "hello*world"}
 	for _, q := range specialQueries {
 		t.Run(q, func(t *testing.T) {
-			_, err := d.Search(q, "proj", "", 10)
+			_, err := search(t, d, q, "proj", "", 10)
 			if err != nil {
 				t.Errorf("Search(%q) should not error, got: %v", q, err)
 			}
@@ -116,25 +117,128 @@ func TestSearch_SpecialCharactersNocrash(t *testing.T) {
 	}
 }
 
-func TestSearch_EmptyQuery_ReturnsAllForProject(t *testing.T) {
+func TestSearch_EmptyQuery_ReturnsValidationError(t *testing.T) {
 	d := openTestDB(t)
+	_, err := d.Search(models.MemorySearchCriteria{Project: "proj", Limit: 10})
+	if err == nil {
+		t.Fatal("Search without a criterion must fail")
+	}
+}
 
-	for i := 0; i < 3; i++ {
-		if _, err := saveTestMemory(t, d, newMemory("proj", "mem", "content")); err != nil {
-			t.Fatal(err)
+func TestSearch_StructuredTopicOnlyUsesLiteralSelectionAndReturnsRevisions(t *testing.T) {
+	d := openTestDB(t)
+	exact := "architecture/auth"
+	prefix := "release/%"
+
+	first := insertSearchMemory(t, d, "proj", exact, "opaque one", false)
+	second := insertSearchMemory(t, d, "proj", "  "+exact+"  ", "opaque two", false)
+	insertSearchMemory(t, d, "proj", exact+"z", "lookalike", false)
+	insertSearchMemory(t, d, "other", exact, "other project", false)
+	insertSearchMemory(t, d, "proj", exact+"/deleted", "deleted", true)
+	percentSelf := insertSearchMemory(t, d, "proj", prefix, "percent self", false)
+	percentChild := insertSearchMemory(t, d, "proj", prefix+"/notes", "percent child", false)
+	insertSearchMemory(t, d, "proj", "release/v1", "wildcard lookalike", false)
+	underscore := "team/_"
+	underscoreSelf := insertSearchMemory(t, d, "proj", underscore, "underscore self", false)
+	underscoreChild := insertSearchMemory(t, d, "proj", underscore+"/notes", "underscore child", false)
+	insertSearchMemory(t, d, "proj", "team/a", "underscore lookalike", false)
+
+	tests := []struct {
+		name string
+		key  *string
+		pre  *string
+		want []int64
+	}{
+		{name: "exact keeps ordinary revisions", key: &exact, want: []int64{second, first}},
+		{name: "literal percent prefix", pre: &prefix, want: []int64{percentChild, percentSelf}},
+		{name: "literal underscore prefix", pre: &underscore, want: []int64{underscoreChild, underscoreSelf}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := d.Search(models.MemorySearchCriteria{Project: "proj", TopicKey: tt.key, TopicPrefix: tt.pre, Limit: 20})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fmt.Sprint(memoryIDs(got)) != fmt.Sprint(tt.want) {
+				t.Fatalf("ids = %v, want %v", memoryIDs(got), tt.want)
+			}
+		})
+	}
+}
+
+func TestSearch_QueryAndTopicFilterBeforeRankingAndLimit(t *testing.T) {
+	tests := []struct {
+		name string
+		key  *string
+		pre  *string
+	}{
+		{name: "exact", key: stringPointer("target/exact")},
+		{name: "prefix", pre: stringPointer("target/prefix")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := openTestDB(t)
+			selectedTopic := "target/exact"
+			if tt.pre != nil {
+				selectedTopic = "target/prefix/child"
+			}
+			selected := insertSearchMemory(t, d, "proj", selectedTopic, "needle in content", false)
+			insertSearchMemory(t, d, "proj", "outside", "needle", false)
+
+			got, err := d.Search(models.MemorySearchCriteria{
+				Query: "needle", Project: "proj", TopicKey: tt.key, TopicPrefix: tt.pre, Limit: 1,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 1 || got[0].ID != selected {
+				t.Fatalf("ids = %v, want selected id %d", memoryIDs(got), selected)
+			}
+		})
+	}
+}
+
+func TestSearch_ValidatesStructuredCriteria(t *testing.T) {
+	d := openTestDB(t)
+	blank := "  "
+	exact := "a"
+	prefix := "b"
+	tests := []models.MemorySearchCriteria{
+		{Limit: 10},
+		{Query: "query", TopicKey: &blank, Limit: 10},
+		{Query: "query", TopicPrefix: &blank, Limit: 10},
+		{TopicKey: &exact, TopicPrefix: &prefix, Limit: 10},
+	}
+	for i, criteria := range tests {
+		if _, err := d.Search(criteria); err == nil {
+			t.Errorf("case %d: expected validation error", i)
 		}
 	}
-	if _, err := saveTestMemory(t, d, newMemory("other", "other mem", "content")); err != nil {
+}
+
+func search(t *testing.T, d *DB, query, project, category string, limit int) ([]*models.Memory, error) {
+	t.Helper()
+	return d.Search(models.MemorySearchCriteria{Query: query, Project: project, Category: category, Limit: limit})
+}
+
+func stringPointer(value string) *string { return &value }
+
+func memoryIDs(memories []*models.Memory) []int64 {
+	ids := make([]int64, 0, len(memories))
+	for _, memory := range memories {
+		ids = append(ids, memory.ID)
+	}
+	return ids
+}
+
+func insertSearchMemory(t *testing.T, d *DB, project, topic, content string, deleted bool) int64 {
+	t.Helper()
+	id := insertTopicMemory(t, d, project, topic, "2026-08-01 10:00:00", deleted)
+	_, err := d.sqlDB.Exec(`UPDATE memories SET title = 'opaque', content = ? WHERE id = ?`, content, id)
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	results, err := d.Search("", "proj", "", 10)
-	if err != nil {
-		t.Fatalf("Search('', 'proj') failed: %v", err)
-	}
-	if len(results) != 3 {
-		t.Errorf("empty query should return all for project, got %d results", len(results))
-	}
+	return id
 }
 
 func TestSearch_ExcludesSoftDeletedMemoriesFromDefaultReads(t *testing.T) {
@@ -162,12 +266,11 @@ func TestSearch_ExcludesSoftDeletedMemoriesFromDefaultReads(t *testing.T) {
 		category string
 	}{
 		{name: "fts term search", query: "searchable", category: "architecture"},
-		{name: "empty search lists active memories", query: "", category: "architecture"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			results, err := d.Search(tt.query, "proj", tt.category, 10)
+			results, err := search(t, d, tt.query, "proj", tt.category, 10)
 			if err != nil {
 				t.Fatalf("Search(%q, %q, %q) failed: %v", tt.query, "proj", tt.category, err)
 			}
@@ -202,7 +305,7 @@ func TestSearch_ProjectFilter_IsolatesResults(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := d.Search("auth", "foo", "", 10)
+	results, err := search(t, d, "auth", "foo", "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +327,7 @@ func TestSearch_NoProjectFilter_SearchesAll(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := d.Search("auth", "", "", 10)
+	results, err := search(t, d, "auth", "", "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +348,7 @@ func TestSearch_BM25_TitleRanksAboveContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := d.Search("SQLite", "proj", "", 10)
+	results, err := search(t, d, "SQLite", "proj", "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +369,7 @@ func TestSearch_RespectsLimit(t *testing.T) {
 		}
 	}
 
-	results, err := d.Search("auth", "proj", "", 3)
+	results, err := search(t, d, "auth", "proj", "", 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +396,7 @@ func TestSearch_CategoryFilter(t *testing.T) {
 	}
 
 	// Filter by "architecture" only
-	results, err := d.Search("auth", "proj", "architecture", 10)
+	results, err := search(t, d, "auth", "proj", "architecture", 10)
 	if err != nil {
 		t.Fatalf("Search with category filter failed: %v", err)
 	}
@@ -305,7 +408,7 @@ func TestSearch_CategoryFilter(t *testing.T) {
 	}
 
 	// Filter by "bugfix" only
-	results, err = d.Search("auth", "proj", "bugfix", 10)
+	results, err = search(t, d, "auth", "proj", "bugfix", 10)
 	if err != nil {
 		t.Fatalf("Search with category=bugfix failed: %v", err)
 	}
@@ -317,7 +420,7 @@ func TestSearch_CategoryFilter(t *testing.T) {
 	}
 
 	// No category filter — both returned
-	results, err = d.Search("auth", "proj", "", 10)
+	results, err = search(t, d, "auth", "proj", "", 10)
 	if err != nil {
 		t.Fatalf("Search without category filter failed: %v", err)
 	}

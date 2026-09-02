@@ -813,7 +813,7 @@ func TestMemorySoftDeleteNormalReadsHideTombstones(t *testing.T) {
 	require.Len(t, listed, 1)
 	assert.Equal(t, activeID, listed[0].ID)
 
-	searched, err := d.Search("auth", "soft-delete-normal", "", 10)
+	searched, err := d.Search(models.MemorySearchCriteria{Query: "auth", Project: "soft-delete-normal", Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, searched, 1)
 	assert.Equal(t, activeID, searched[0].ID)
