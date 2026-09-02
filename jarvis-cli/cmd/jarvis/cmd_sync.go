@@ -93,7 +93,7 @@ func runSync() error {
 		}
 		return err
 	}
-	input, err := replayInput(home, manifest)
+	input, expansion, err := replayInput(home, manifest)
 	if err != nil {
 		return err
 	}
@@ -108,9 +108,9 @@ func runSync() error {
 		Plan:        plan,
 		Apply:       sync.ApplyInput{Runner: sync.NewRunner(input), Targets: sync.TargetsFor(input)},
 		Backup:      lifecycle.NewBackupStore(home).CreateSnapshotOfTargets,
-		Bookkeeping: &sync.Bookkeeping{ManagedAssetDigest: sync.ManagedAssetDigest(plan)},
+		Bookkeeping: &sync.Bookkeeping{ManagedAssetDigest: sync.ManagedAssetDigest(plan), ZohoExpansion: expansion},
 	})
-	fmt.Print(renderSyncReport(manifest, result, cloud, runErr))
+	fmt.Print(renderSyncReport(input.State, result, cloud, runErr))
 	return syncExit(result.Report, runErr)
 }
 
@@ -134,26 +134,34 @@ func syncExit(report sync.Report, runErr error) error {
 // disagree and report drift forever. Nothing on this path reads or writes
 // config.yaml: the manifest carries every replay field, and config.Save's bridge
 // takes the fail-fast manifest lock and would deadlock sync against itself.
-func replayInput(home string, manifest *state.State) (sync.ReplayInput, error) {
+func replayInput(home string, manifest *state.State) (sync.ReplayInput, *sync.ZohoExpansion, error) {
 	skillsSubFS, err := fs.Sub(jarvis.SkillsFS, "embed/skills")
 	if err != nil {
-		return sync.ReplayInput{}, fmt.Errorf("open the embedded skill tree: %w", err)
+		return sync.ReplayInput{}, nil, fmt.Errorf("open the embedded skill tree: %w", err)
 	}
 	resolved, err := persona.ResolveProfile(jarvis.PersonaFS, manifest.Persona)
 	if err != nil {
-		return sync.ReplayInput{}, fmt.Errorf("resolve persona %q: %w", manifest.Persona, err)
+		return sync.ReplayInput{}, nil, fmt.Errorf("resolve persona %q: %w", manifest.Persona, err)
 	}
 	catalog, err := skills.ListSkills(jarvis.SkillsFS)
 	if err != nil {
-		return sync.ReplayInput{}, fmt.Errorf("list the embedded skill catalog: %w", err)
+		return sync.ReplayInput{}, nil, fmt.Errorf("list the embedded skill catalog: %w", err)
 	}
-	// The manifest is the authority: these IDs render the instruction file's
+	pack := skills.NewZohoPack(catalog)
+	expanded, candidates, eligible := pack.Expand(manifest.Skills)
+	copy := *manifest
+	copy.Skills = expanded
+	var expansion *sync.ZohoExpansion
+	if eligible && len(candidates) > 0 {
+		expansion = &sync.ZohoExpansion{Pack: pack, CandidateIDs: candidates}
+	}
+	// The copied state is the authority for one replay: these IDs render the
 	// Skills section and drive the planner's digests and the installer's writes.
-	recorded := make(map[string]bool, len(manifest.Skills))
-	for _, id := range manifest.Skills {
+	recorded := make(map[string]bool, len(copy.Skills))
+	for _, id := range copy.Skills {
 		recorded[id] = true
 	}
-	skillInfos := make([]config.SkillInfo, 0, len(manifest.Skills))
+	skillInfos := make([]config.SkillInfo, 0, len(copy.Skills))
 	for _, entry := range catalog {
 		if recorded[entry.ID] {
 			skillInfos = append(skillInfos, config.SkillInfo{Name: entry.Name, Description: entry.Description, Trigger: entry.Trigger})
@@ -165,7 +173,7 @@ func replayInput(home string, manifest *state.State) (sync.ReplayInput, error) {
 	}
 	return sync.ReplayInput{
 		Root:      home,
-		State:     manifest,
+		State:     &copy,
 		Templates: jarvis.TemplatesFS,
 		SkillsFS:  skillsSubFS,
 		HooksFS:   jarvis.HooksFS,
@@ -182,7 +190,7 @@ func replayInput(home string, manifest *state.State) (sync.ReplayInput, error) {
 			NewExecutor:    func() agentapply.MCPExecutor { return agent.NewProductionExecutor() },
 			HiveDaemonPath: agent.HiveDaemonBinaryPath,
 		},
-	}, nil
+	}, expansion, nil
 }
 
 // normalizeAgentID is the one spelling rule this command applies to an agent
@@ -266,10 +274,16 @@ func renderSyncReport(manifest *state.State, result sync.RunResult, cloud string
 			fmt.Fprintf(&out, "    components completed: %s\n", completed)
 		}
 	}
-	if runErr != nil {
-		fmt.Fprintf(&out, "verification: failed: %v\n", runErr)
-	} else {
+	if result.Verified || runErr == nil {
 		fmt.Fprintln(&out, "verification: passed")
+		if result.Verified && runErr != nil {
+			fmt.Fprintf(&out, "state persistence: failed: %v\n", runErr)
+		}
+	} else if runErr != nil {
+		fmt.Fprintf(&out, "verification: failed: %v\n", runErr)
+	}
+	for _, id := range result.AddedSkillIDs {
+		fmt.Fprintf(&out, "zoho skill added to desired state: %s\n", id)
 	}
 	if runErr == nil && result.Report.Converged() && len(result.Report.Changed) == 0 {
 		fmt.Fprintln(&out, "this machine is already current; nothing was changed.")

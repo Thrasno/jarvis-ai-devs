@@ -121,3 +121,42 @@ None from Tasks 1–2 design. The prior 400-line stop was resolved by the mainta
 - `cd jarvis-cli && go test ./...` passed once after GREEN.
 - Correction source delta from the received candidate: 9 additions + 8 deletions = 17 lines; this concise progress merge is within the 80-line correction budget.
 - No task checkbox changed: this is a bounded remediation of already-completed PR 1 work; PR 2 and parent lifecycle rows remain deferred unchanged.
+
+## PR 2 — Sync Expansion, Verified Persistence, and Reporting
+
+- Native status consumed: `applyState: ready`, `nextRecommended: apply`, hybrid store, and the dedicated PR 2 worktree was the allowed repo-local edit root.
+- The maintainer authorized a PR 2 **overall** exception of at most 450 additions+deletions solely to reconcile Tasks and Apply Progress; this continuation changes no production or test code.
+- Completed and checked all implementation-owned Tasks 3–4 and the PR 2 focused/full-suite verification row. The parent-owned delivery/review row remains unchanged and unchecked.
+
+### TDD Cycle Evidence
+
+| Cycle | Preserved implementation evidence |
+| --- | --- |
+| RED | `cd jarvis-cli && go test ./internal/sync ./cmd/jarvis` failed before `RunResult.Verified`, `RunResult.AddedSkillIDs`, `ZohoExpansion`, and post-verification recording existed. |
+| GREEN | Copied-state expansion, verified persistence, and durable reporting made the focused command pass. |
+| TRIANGULATE | Verified no-op persistence, fresh locked re-read, concurrent anchor removal, plan tracking, and legacy two-run idempotency coverage passed. |
+| REFACTOR | Changed-Go-file `gofmt -l` produced no output; `git diff --check` and the full suite passed. |
+
+Documentation reconciliation added no RED/GREEN cycle and did not modify Go code; it preserves the prior strict-TDD evidence.
+
+### PR 2 verification and scope
+
+- `gofmt -l` on the six changed Go files: PASS (no output); `git diff --check HEAD`: PASS.
+- `cd jarvis-cli && go test ./internal/sync ./cmd/jarvis`: PASS.
+- `cd jarvis-cli && go test ./...`: PASS.
+- Changed source/test paths: `cmd/jarvis/cmd_sync.go`, `cmd/jarvis/cmd_sync_test.go`, `cmd/jarvis/cmd_sync_e2e_test.go`, `internal/sync/backup.go`, `internal/sync/bookkeeping.go`, and `internal/sync/bookkeeping_test.go`.
+- The maintainer handoff recorded a 372-line PR 2 implementation measurement. The live pre-artifact source/test `git diff HEAD --numstat` is 286 additions + 43 deletions = 329; the historical 329+43 arithmetic label is retained only as handoff context.
+- Remaining unchecked row: `- [ ] After apply evidence is available, start or reuse bounded review and confirm the selected slice matches its task boundary, review budget handling, strict-TDD evidence, and issue #547 exclusion. <!-- sdd-owner: parent -->`
+- Deferred lifecycle action: parent-owned delivery/review only. Issue #547 remains out of scope.
+
+### PR 2 independent-validation correction
+
+- Native status: `applyState: ready`, `nextRecommended: apply`; `actionContext.mode: repo-local` permitted this worktree only. Parent-owned attempt token was not acquired or settled here.
+- Corrected invariant: inside the existing lock and after fresh anchor revalidation, `Bookkeeping.record` derives the complete current pack from fresh `latest.Skills` and returns only lexicographically ordered IDs newly made durable by that successful save.
+- RED: focused sync test failed with stale additions `[zoho-analytics]`, missing the concurrently removed `zoho-books`; focused failure-boundary tests were added first.
+- GREEN: fresh-state diff now drives both persistence and `AddedSkillIDs`; lock/save failures return no additions; partial application never reaches persistence.
+- TRIANGULATE: concurrent deselection, verified no-op, idempotent second-run, and command two-run coverage passed.
+- REFACTOR: factored shared isolated Zoho-manifest setup; Go files formatted with no unrelated edits.
+- Verification: `go test ./internal/sync ./cmd/jarvis` PASS; `go test ./...` PASS once; `git diff --check` PASS.
+- Files changed by this correction: `internal/sync/bookkeeping.go`, `bookkeeping_test.go`, `backup_test.go`, `cmd/jarvis/cmd_sync_test.go`, and this progress artifact. Tasks remain unchanged because every implementation-owned row was already checked.
+- Budget: correction-only net delta from the 380-line pre-correction candidate is **155 additions+deletions**; final candidate is **480 additions + 55 deletions = 535**, within the 170-line correction cap and 550-line ceiling.

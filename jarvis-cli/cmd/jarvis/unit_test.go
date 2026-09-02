@@ -22,23 +22,47 @@ func captureStdout(t *testing.T, fn func()) string {
 	if err != nil {
 		t.Fatalf("os.Pipe: %v", err)
 	}
-	os.Stdout = w
+	defer func() {
+		os.Stdout = orig
+		_ = w.Close()
+		_ = r.Close()
+	}()
 
+	var buf bytes.Buffer
+	copyDone := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(&buf, r)
+		copyDone <- err
+	}()
+
+	os.Stdout = w
 	fn()
+	os.Stdout = orig
 
 	if err := w.Close(); err != nil {
 		t.Fatalf("close writer pipe: %v", err)
 	}
-	os.Stdout = orig
-
-	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, r); err != nil {
+	if err := <-copyDone; err != nil {
 		t.Fatalf("copy pipe: %v", err)
 	}
 	if err := r.Close(); err != nil {
 		t.Fatalf("close reader pipe: %v", err)
 	}
 	return buf.String()
+}
+
+func TestCaptureStdout_CapturesLargeOutput(t *testing.T) {
+	want := strings.Repeat("x", 1<<20)
+
+	got := captureStdout(t, func() {
+		if _, err := io.WriteString(os.Stdout, want); err != nil {
+			t.Errorf("write stdout: %v", err)
+		}
+	})
+
+	if got != want {
+		t.Fatalf("captured output differs: got %d bytes, want %d", len(got), len(want))
+	}
 }
 
 // writeCfg writes a minimal config.yaml under home/.jarvis/.
