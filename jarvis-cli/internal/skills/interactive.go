@@ -11,8 +11,6 @@ package skills
 // Membership is decided by skill ID only. A skill's frontmatter scope never
 // takes part: sdd-spec declares scope: optional and is still auto-installed.
 var interactiveSkillIDs = map[string]bool{
-	"zoho-deluge":          true,
-	"zoho-crm":             true,
 	"phpunit-testing":      true,
 	"laravel-architecture": true,
 	"go-testing":           true,
@@ -21,5 +19,5 @@ var interactiveSkillIDs = map[string]bool{
 // IsInteractive reports whether the skill with this ID is only installed after
 // an explicit human selection.
 func IsInteractive(id string) bool {
-	return interactiveSkillIDs[id]
+	return isZohoSkillID(id) || interactiveSkillIDs[id]
 }

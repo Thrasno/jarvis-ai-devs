@@ -351,13 +351,8 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		return fmt.Errorf("agents sub-FS: %w", err)
 	}
 
-	// Build the list of selected skill IDs.
-	var selectedIDs []string
-	for _, s := range skillList {
-		if selected[s.ID] || s.IsCore {
-			selectedIDs = append(selectedIDs, s.ID)
-		}
-	}
+	// Build the concrete desired-state skill IDs once for installation and persistence.
+	selectedIDs := selectedSkillIDs(skillList, wizardSelectedSkills(manifest), selected)
 
 	// Build SkillInfo list for template rendering.
 	var skillInfos []config.SkillInfo
@@ -431,27 +426,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	cfg.Install.Mode = string(config.ConfigStatusReconfigure)
 	cfg.Install.Completed = true
 
-	selectedSet := make(map[string]bool)
-	for _, id := range wizardSelectedSkills(manifest) {
-		selectedSet[id] = true
-	}
-	for _, s := range skillList {
-		if s.IsCore {
-			selectedSet[s.ID] = true
-			continue
-		}
-		if selected[s.ID] {
-			selectedSet[s.ID] = true
-		} else {
-			delete(selectedSet, s.ID)
-		}
-	}
-	var selectedIDsForConfig []string
-	for id, on := range selectedSet {
-		if on {
-			selectedIDsForConfig = append(selectedIDsForConfig, id)
-		}
-	}
+	selectedIDsForConfig := selectedIDs
 	cfg.Version = "1.0.0"
 
 	// ~/.jarvis/state.yaml owns the replay fields the wizard just decided, so
