@@ -62,6 +62,8 @@ type GovernanceMemory struct {
 type GovernanceMemoryFilter struct {
 	Project        string
 	ID             int64
+	TopicKey       *string
+	TopicPrefix    *string
 	IncludeDeleted bool
 	DeletedOnly    bool
 	Limit          int
@@ -178,6 +180,28 @@ func (d *DB) ListGovernanceMemories(ctx context.Context, filter GovernanceMemory
 	if project == "" {
 		return nil, ErrGovernanceProjectRequired
 	}
+	var topicSelection *sqliteTopicSelection
+	if filter.TopicKey != nil || filter.TopicPrefix != nil {
+		if filter.TopicKey != nil && filter.TopicPrefix != nil {
+			return nil, ErrTopicSelectorExclusive
+		}
+		if filter.TopicKey != nil && strings.TrimSpace(*filter.TopicKey) == "" ||
+			filter.TopicPrefix != nil && strings.TrimSpace(*filter.TopicPrefix) == "" {
+			return nil, ErrTopicSelectorBlank
+		}
+		selector := TopicSelector{}
+		if filter.TopicKey != nil {
+			selector.TopicKey = *filter.TopicKey
+		}
+		if filter.TopicPrefix != nil {
+			selector.TopicPrefix = *filter.TopicPrefix
+		}
+		selection, err := newSQLiteTopicSelection(selector)
+		if err != nil {
+			return nil, err
+		}
+		topicSelection = &selection
+	}
 	blocked, err := d.isCanonicalProjectBlocked(ctx, project)
 	if err != nil {
 		return nil, err
@@ -202,6 +226,11 @@ WHERE project = ?`
 	if filter.ID > 0 {
 		q += ` AND id = ?`
 		args = append(args, filter.ID)
+	}
+	if topicSelection != nil {
+		predicate, predicateArgs := topicSelection.literalPredicate()
+		q += ` AND ` + predicate
+		args = append(args, predicateArgs...)
 	}
 	if filter.DeletedOnly {
 		q += ` AND deleted_at IS NOT NULL`

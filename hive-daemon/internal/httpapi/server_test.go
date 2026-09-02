@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1015,6 +1016,84 @@ func TestGovernanceMemoriesLimitContract(t *testing.T) {
 		})
 	}
 }
+
+func TestGovernanceMemoriesNormalizesStructuredTopicFilters(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		path       string
+		wantKey    *string
+		wantPrefix *string
+	}{
+		{name: "omitted", path: "/governance/memories?project=alpha"},
+		{name: "exact", path: "/governance/memories?project=alpha&topic_key=%E2%80%83sdd%2Fspec%E2%80%83", wantKey: httpStringPointer("sdd/spec")},
+		{name: "prefix", path: "/governance/memories?project=alpha&topic_prefix=%09sdd%2F", wantPrefix: httpStringPointer("sdd/")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := &stubGovernanceTimeline{}
+			srv := httpapi.NewServerWithGovernance("127.0.0.1:0", &mockPromptStore{}, stub)
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, tt.path, nil))
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+			}
+			if !reflect.DeepEqual(stub.memoryFilter.TopicKey, tt.wantKey) || !reflect.DeepEqual(stub.memoryFilter.TopicPrefix, tt.wantPrefix) {
+				t.Fatalf("topic filter = key:%v prefix:%v, want key:%v prefix:%v", stub.memoryFilter.TopicKey, stub.memoryFilter.TopicPrefix, tt.wantKey, tt.wantPrefix)
+			}
+		})
+	}
+}
+
+func TestGovernanceMemoriesRejectsInvalidStructuredTopicFilters(t *testing.T) {
+	for _, path := range []string{
+		"/governance/memories?project=alpha&topic_key=+",
+		"/governance/memories?project=alpha&topic_prefix=%E2%80%83",
+		"/governance/memories?project=alpha&topic_key=a&topic_key=b",
+		"/governance/memories?project=alpha&topic_prefix=a&topic_prefix=b",
+		"/governance/memories?project=alpha&topic_key=a&topic_prefix=b",
+	} {
+		t.Run(path, func(t *testing.T) {
+			srv := httpapi.NewServerWithGovernance("127.0.0.1:0", &mockPromptStore{}, &stubGovernanceTimeline{})
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestGovernanceMemoriesHTTPTopicPrefixIsLiteral(t *testing.T) {
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.EnsureManualSaveSession("alpha"); err != nil {
+		t.Fatalf("EnsureManualSaveSession: %v", err)
+	}
+	for _, topic := range []string{"release/%", "release/%/notes", "release/v1"} {
+		if _, err := store.SaveMemory(&models.Memory{Project: "alpha", TopicKey: &topic, Title: topic, Content: "content", SessionID: "manual-save-alpha"}); err != nil {
+			t.Fatalf("SaveMemory(%q): %v", topic, err)
+		}
+	}
+	srv := httpapi.NewServerWithGovernance("127.0.0.1:0", store, governance.NewService(store))
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/governance/memories?project=alpha&topic_prefix=release%2F%25", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var response struct {
+		Memories []governance.Memory `json:"memories"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Memories) != 2 {
+		t.Fatalf("memories = %+v, want literal prefix self and descendant", response.Memories)
+	}
+}
+
+func httpStringPointer(value string) *string { return &value }
 
 func TestGovernanceBackupHTTPContracts(t *testing.T) {
 	tempDir := t.TempDir()
@@ -2954,8 +3033,9 @@ func TestHandleGovernanceMemories_RegressionDescOrder(t *testing.T) {
 // stubGovernanceTimeline is a minimal GovernanceService that only implements
 // Timeline. All other methods panic (unused in these tests).
 type stubGovernanceTimeline struct {
-	memories []governance.Memory
-	err      error
+	memories     []governance.Memory
+	err          error
+	memoryFilter governance.MemoryFilter
 }
 
 func (s *stubGovernanceTimeline) Projects(context.Context) ([]governance.Project, error) {
@@ -2964,8 +3044,9 @@ func (s *stubGovernanceTimeline) Projects(context.Context) ([]governance.Project
 func (s *stubGovernanceTimeline) Project(context.Context, string) (governance.Project, error) {
 	panic("not implemented")
 }
-func (s *stubGovernanceTimeline) Memories(context.Context, governance.MemoryFilter) ([]governance.Memory, error) {
-	panic("not implemented")
+func (s *stubGovernanceTimeline) Memories(_ context.Context, filter governance.MemoryFilter) ([]governance.Memory, error) {
+	s.memoryFilter = filter
+	return s.memories, s.err
 }
 func (s *stubGovernanceTimeline) MemoryByID(context.Context, int64) (governance.Memory, error) {
 	panic("not implemented")

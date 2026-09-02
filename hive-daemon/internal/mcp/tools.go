@@ -96,14 +96,15 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_search",
-		Description: "Search memories using full-text search with BM25 ranking",
+		Description: "Search memories using BM25 full-text search and/or literal topic criteria",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
-			"required": ["query"],
 			"properties": {
-				"query":   {"type": "string", "description": "Search terms"},
+				"query":   {"type": "string", "description": "Optional search terms; required when no topic criterion is supplied"},
 				"project": {"type": "string", "description": "Filter by project (omit for all projects)"},
 				"type":    {"type": "string", "description": "Filter by category (architecture, decision, bugfix, pattern, discovery, config, preference, session_summary)"},
+				"topic_key": {"type": "string", "description": "Exact literal topic key; mutually exclusive with topic_prefix"},
+				"topic_prefix": {"type": "string", "description": "Literal topic subtree prefix including self and slash-delimited descendants; mutually exclusive with topic_key"},
 				"limit":   {"type": "integer", "description": "Max results (default 10, max 50)"}
 			}
 		}`),
@@ -430,10 +431,12 @@ func memSuggestTopicKeyHandler() sdkmcp.ToolHandler {
 func memSearchHandler(store MemoryStore, activity *ActivityTracker) sdkmcp.ToolHandler {
 	return func(_ context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
 		var p struct {
-			Query    string `json:"query"`
-			Project  string `json:"project"`
-			Category string `json:"type"` // JSON "type" maps to Category to avoid Go reserved word
-			Limit    int    `json:"limit"`
+			Query       string  `json:"query"`
+			Project     string  `json:"project"`
+			Category    string  `json:"type"` // JSON "type" maps to Category to avoid Go reserved word
+			TopicKey    *string `json:"topic_key"`
+			TopicPrefix *string `json:"topic_prefix"`
+			Limit       int     `json:"limit"`
 		}
 		if err := json.Unmarshal(req.Params.Arguments, &p); err != nil {
 			return toolError(fmt.Errorf("invalid params: %w", err)), nil
@@ -444,10 +447,31 @@ func memSearchHandler(store MemoryStore, activity *ActivityTracker) sdkmcp.ToolH
 		if p.Limit > 50 {
 			p.Limit = 50
 		}
+		if p.TopicKey != nil && p.TopicPrefix != nil {
+			return toolError(fmt.Errorf("topic_key and topic_prefix are mutually exclusive")), nil
+		}
+		if p.TopicKey != nil {
+			*p.TopicKey = strings.TrimSpace(*p.TopicKey)
+			if *p.TopicKey == "" {
+				return toolError(fmt.Errorf("topic_key must not be blank")), nil
+			}
+		}
+		if p.TopicPrefix != nil {
+			*p.TopicPrefix = strings.TrimSpace(*p.TopicPrefix)
+			if *p.TopicPrefix == "" {
+				return toolError(fmt.Errorf("topic_prefix must not be blank")), nil
+			}
+		}
+		if strings.TrimSpace(p.Query) == "" && p.TopicKey == nil && p.TopicPrefix == nil {
+			return toolError(fmt.Errorf("at least one nonblank criterion among query, topic_key, or topic_prefix is required")), nil
+		}
 
 		activity.RecordToolCall(p.Project)
 
-		results, err := store.Search(p.Query, p.Project, p.Category, p.Limit)
+		results, err := store.Search(models.MemorySearchCriteria{
+			Query: p.Query, Project: p.Project, Category: p.Category,
+			TopicKey: p.TopicKey, TopicPrefix: p.TopicPrefix, Limit: p.Limit,
+		})
 		if err != nil {
 			return toolError(fmt.Errorf("search failed: %w", err)), nil
 		}
