@@ -74,6 +74,11 @@ type GovernanceService interface {
 	EngramImportJob(context.Context, string) (governance.EngramImportJob, error)
 }
 
+type SDDService interface {
+	FetchSDDArtifacts(context.Context, string, string) ([]governance.SDDArtifact, error)
+	ListSDDChanges(context.Context, governance.SDDChangePageRequest) (governance.SDDChangePage, error)
+}
+
 // Server handles HTTP requests for the Hive prompt-capture endpoint.
 type Server struct {
 	addr       string
@@ -82,6 +87,7 @@ type Server struct {
 	sessions   SessionStore
 	projects   project.Store
 	governance GovernanceService
+	sdd        SDDService
 	config     ConfigService
 	health     HealthService
 	gate       *project.MigrationGate
@@ -160,6 +166,9 @@ func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, 
 		sess = sessions[0]
 	}
 	s := &Server{addr: addr, prompts: prompts, sessions: sess, projects: projects, governance: governance, config: config, health: health}
+	if service, ok := governance.(SDDService); ok {
+		s.sdd = service
+	}
 	// The real daemon passes the same *db.DB for prompts and memories; wire the
 	// memory store structurally so no constructor signature changes. nil-safe.
 	if ms, ok := prompts.(MemoryStore); ok {
@@ -186,6 +195,8 @@ func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, 
 	s.mux.HandleFunc("POST /sessions/{id}/end", s.handleSessionsEnd)
 	s.mux.HandleFunc("POST /observations/passive", s.handleObservationsPassive)
 	if governance != nil {
+		s.mux.HandleFunc("GET /sdd/changes", s.handleSDDChanges)
+		s.mux.HandleFunc("GET /sdd/changes/{change}/artifacts", s.handleSDDArtifacts)
 		s.mux.HandleFunc("/governance/capabilities", s.handleGovernanceCapabilities)
 		s.mux.HandleFunc("/governance/projects", s.handleGovernanceProjects)
 		s.mux.HandleFunc("/governance/projects/merge", s.handleGovernanceProjectMergeBatch)
@@ -211,6 +222,70 @@ func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, 
 		s.mux.HandleFunc("GET /governance/health/summary", s.handleHealthSummary)
 	}
 	return s
+}
+
+func (s *Server) handleSDDArtifacts(w http.ResponseWriter, r *http.Request) {
+	if s.sdd == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "SDD retrieval is not configured"})
+		return
+	}
+	artifacts, err := s.sdd.FetchSDDArtifacts(r.Context(), r.URL.Query().Get("project"), r.PathValue("change"))
+	if err != nil {
+		writeSDDError(w, "fetch SDD artifacts", err)
+		return
+	}
+	if artifacts == nil {
+		artifacts = []governance.SDDArtifact{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"artifacts": artifacts})
+}
+
+func (s *Server) handleSDDChanges(w http.ResponseWriter, r *http.Request) {
+	if s.sdd == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "SDD retrieval is not configured"})
+		return
+	}
+	query := r.URL.Query()
+	limit := 100
+	if values, present := query["limit"]; present {
+		if len(values) != 1 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": governance.ErrSDDLimitInvalid.Error()})
+			return
+		}
+		parsed, err := strconv.Atoi(strings.TrimSpace(values[0]))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": governance.ErrSDDLimitInvalid.Error()})
+			return
+		}
+		limit = parsed
+	}
+	page, err := s.sdd.ListSDDChanges(r.Context(), governance.SDDChangePageRequest{
+		Project: query.Get("project"),
+		Limit:   limit,
+		Cursor:  query.Get("cursor"),
+	})
+	if err != nil {
+		writeSDDError(w, "list SDD changes", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+func writeSDDError(w http.ResponseWriter, source string, err error) {
+	status := http.StatusInternalServerError
+	switch {
+	case errors.Is(err, governance.ErrProjectRequired),
+		errors.Is(err, governance.ErrSDDChangeRequired),
+		errors.Is(err, governance.ErrSDDChangeInvalid),
+		errors.Is(err, governance.ErrSDDLimitInvalid),
+		errors.Is(err, governance.ErrSDDCursorInvalid):
+		status = http.StatusBadRequest
+	case errors.Is(err, governance.ErrProjectNotFound):
+		status = http.StatusNotFound
+	default:
+		logger.Log.Printf("%s: %v", source, err)
+	}
+	writeJSON(w, status, map[string]string{"error": err.Error()})
 }
 
 // ServeHTTP implements http.Handler — allows use with httptest.NewRecorder.

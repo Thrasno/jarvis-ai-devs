@@ -6,8 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
-	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 )
@@ -33,77 +31,39 @@ func NewHiveSource(client *hiveclient.Client, project string) *HiveSource {
 }
 
 func (h *HiveSource) FetchArtifacts(ctx context.Context, changeName string) (map[string]ArtifactState, map[string]string, error) {
-	memories, err := h.client.Memories(ctx, hiveclient.MemoryFilter{Project: h.project})
+	rows, err := h.client.FetchSDDArtifacts(ctx, h.project, changeName)
 	if err != nil {
 		return nil, nil, err
 	}
-
-	prefix := "sdd/" + changeName + "/"
-	// Collect the most recent memory for each artifact topic.
-	type entry struct {
-		content   string
-		createdAt time.Time
-	}
-	latest := make(map[string]entry)
-	for _, m := range memories {
-		if m.Deleted {
-			continue
-		}
-		path := memoryArtifactPath(m)
-		if !strings.HasPrefix(path, prefix) {
-			continue
-		}
-		artifact := strings.TrimPrefix(path, prefix)
-		if e, ok := latest[artifact]; !ok || m.CreatedAt.After(e.createdAt) {
-			latest[artifact] = entry{content: m.Content, createdAt: m.CreatedAt}
-		}
-	}
-
-	artifacts := make(map[string]ArtifactState, len(latest))
-	contents := make(map[string]string, len(latest))
-	for artifact, e := range latest {
-		artifacts[artifact] = ArtifactDone
-		if e.content != "" {
-			contents[artifact] = e.content
+	artifacts := make(map[string]ArtifactState, len(rows))
+	contents := make(map[string]string, len(rows))
+	for _, row := range rows {
+		artifacts[row.Artifact] = ArtifactDone
+		if row.Content != "" {
+			contents[row.Artifact] = row.Content
 		}
 	}
 	return artifacts, contents, nil
 }
 
 func (h *HiveSource) ListChanges(ctx context.Context) ([]string, error) {
-	memories, err := h.client.Memories(ctx, hiveclient.MemoryFilter{Project: h.project})
-	if err != nil {
-		return nil, err
-	}
-
-	seen := map[string]struct{}{}
-	for _, m := range memories {
-		if m.Deleted {
-			continue
+	const pageSize = 100
+	var changes []string
+	cursor := ""
+	for {
+		page, err := h.client.ListSDDChanges(ctx, h.project, hiveclient.SDDPageRequest{Limit: pageSize, Cursor: cursor})
+		if err != nil {
+			return nil, err
 		}
-		path := memoryArtifactPath(m)
-		if !strings.HasPrefix(path, "sdd/") {
-			continue
+		changes = append(changes, page.Changes...)
+		if page.NextCursor == "" {
+			return changes, nil
 		}
-		parts := strings.SplitN(strings.TrimPrefix(path, "sdd/"), "/", 2)
-		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
-			seen[parts[0]] = struct{}{}
+		if page.NextCursor == cursor {
+			return nil, fmt.Errorf("hive-daemon returned a repeated SDD change cursor")
 		}
+		cursor = page.NextCursor
 	}
-
-	changes := make([]string, 0, len(seen))
-	for name := range seen {
-		changes = append(changes, name)
-	}
-	sort.Strings(changes)
-	return changes, nil
-}
-
-func memoryArtifactPath(m hiveclient.Memory) string {
-	if m.TopicKey != nil && strings.TrimSpace(*m.TopicKey) != "" {
-		return strings.TrimSpace(*m.TopicKey)
-	}
-	return m.Title
 }
 
 // OpenSpecSource reads SDD artifacts from an openspec directory layout:
