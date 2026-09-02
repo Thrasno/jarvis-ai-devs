@@ -738,9 +738,25 @@ func (s *Server) handleGovernanceMemories(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "include_deleted and deleted_only cannot be combined"})
 		return
 	}
+	topicKey, err := parseGovernanceTopicParameter(r.URL.Query(), "topic_key")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	topicPrefix, err := parseGovernanceTopicParameter(r.URL.Query(), "topic_prefix")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if topicKey != nil && topicPrefix != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "topic_key and topic_prefix cannot be combined"})
+		return
+	}
 	memories, err := s.governance.Memories(r.Context(), governance.MemoryFilter{
 		Project:        r.URL.Query().Get("project"),
 		ID:             id,
+		TopicKey:       topicKey,
+		TopicPrefix:    topicPrefix,
 		IncludeDeleted: includeDeleted,
 		DeletedOnly:    deletedOnly,
 		Limit:          limit,
@@ -750,6 +766,21 @@ func (s *Server) handleGovernanceMemories(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"memories": memories})
+}
+
+func parseGovernanceTopicParameter(query url.Values, name string) (*string, error) {
+	values, present := query[name]
+	if !present {
+		return nil, nil
+	}
+	if len(values) != 1 {
+		return nil, fmt.Errorf("%s must be specified at most once", name)
+	}
+	value := strings.TrimSpace(values[0])
+	if value == "" {
+		return nil, fmt.Errorf("%s must not be blank", name)
+	}
+	return &value, nil
 }
 
 func (s *Server) handleGovernanceMemory(w http.ResponseWriter, r *http.Request) {

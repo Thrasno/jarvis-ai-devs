@@ -61,6 +61,8 @@ func Capabilities() CapabilitySet {
 type MemoryFilter struct {
 	Project        string
 	ID             int64
+	TopicKey       *string
+	TopicPrefix    *string
 	IncludeDeleted bool
 	DeletedOnly    bool
 	Limit          int
@@ -260,6 +262,8 @@ func (s *Service) Memories(ctx context.Context, filter MemoryFilter) ([]Memory, 
 	return s.store.ListGovernanceMemories(ctx, db.GovernanceMemoryFilter{
 		Project:        project,
 		ID:             filter.ID,
+		TopicKey:       filter.TopicKey,
+		TopicPrefix:    filter.TopicPrefix,
 		IncludeDeleted: filter.IncludeDeleted,
 		DeletedOnly:    filter.DeletedOnly,
 		Limit:          filter.Limit,

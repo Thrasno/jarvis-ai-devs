@@ -133,6 +133,14 @@ func (s sqliteTopicSelection) queryAndArgs(project string) (string, []any) {
 	return buildTopicCandidateQuery(s.exact, false), args
 }
 
+func (s sqliteTopicSelection) literalPredicate() (string, []any) {
+	if s.exact {
+		return logicalTopicKeySQL + ` = ?`, []any{s.values[0]}
+	}
+	return `(` + logicalTopicKeySQL + ` = ? OR (` + logicalTopicKeySQL + ` >= ? AND ` + logicalTopicKeySQL + ` < ?))`,
+		[]any{s.values[0], s.values[1], s.values[2]}
+}
+
 // SelectLatestTopicMemories returns one latest active revision per selected
 // logical topic. Ranking happens before limit so revision-heavy topics cannot
 // starve other topics from the response.

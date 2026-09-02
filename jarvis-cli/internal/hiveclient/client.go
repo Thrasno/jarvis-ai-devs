@@ -74,6 +74,8 @@ type Memory struct {
 type MemoryFilter struct {
 	Project        string
 	ID             int64
+	TopicKey       *string
+	TopicPrefix    *string
 	IncludeDeleted bool
 	DeletedOnly    bool
 	Limit          int
@@ -511,6 +513,12 @@ func (c *Client) Memories(ctx context.Context, filter MemoryFilter) ([]Memory, e
 	query := url.Values{"project": {filter.Project}}
 	if filter.ID > 0 {
 		query.Set("id", strconv.FormatInt(filter.ID, 10))
+	}
+	if filter.TopicKey != nil {
+		query.Set("topic_key", *filter.TopicKey)
+	}
+	if filter.TopicPrefix != nil {
+		query.Set("topic_prefix", *filter.TopicPrefix)
 	}
 	if filter.IncludeDeleted {
 		query.Set("include_deleted", "true")
