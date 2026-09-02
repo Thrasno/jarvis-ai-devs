@@ -406,9 +406,21 @@ func TestZohoProjectsEmbeddedSkill_ClassifiesLifecycleOperationsSemantically(t *
 
 func TestZohoProjectsEmbeddedSkill_PinsCurrentRESTOperationCatalogSnapshot(t *testing.T) {
 	const wantSHA256 = "c45ab12b7ba30bd8c063ea9d700f85f57505275fda5e50b6ed08f9750dabd8b1"
-	content := readZohoProjectsAsset(t, "references/current-rest-operations.csv")
-	if got := fmt.Sprintf("%x", sha256.Sum256([]byte(content))); got != wantSHA256 {
-		t.Fatalf("Projects operation catalog SHA-256 = %s; want %s", got, wantSHA256)
+	lfContent := strings.ReplaceAll(readZohoProjectsAsset(t, "references/current-rest-operations.csv"), "\r\n", "\n")
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{name: "LF checkout", content: lfContent},
+		{name: "CRLF checkout", content: strings.ReplaceAll(lfContent, "\n", "\r\n")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logicalContent := strings.ReplaceAll(tt.content, "\r\n", "\n")
+			if got := fmt.Sprintf("%x", sha256.Sum256([]byte(logicalContent))); got != wantSHA256 {
+				t.Fatalf("Projects operation catalog SHA-256 = %s; want %s", got, wantSHA256)
+			}
+		})
 	}
 }
 
