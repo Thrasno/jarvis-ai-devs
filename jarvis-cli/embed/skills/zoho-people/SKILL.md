@@ -38,6 +38,8 @@ State the selected surface, API family, operation, placement, language, identifi
 
 - [Routing](references/routing.md)
 - [Deluge tasks](references/deluge-tasks.md)
+- [REST v1/v2 catalog](references/rest-v1-v2-catalog.md)
+- [REST v3 catalog](references/rest-v3-catalog.md)
 - [Entities and identifiers](references/entity-identifiers.md)
 - [Authentication, limits, and plans](references/authentication-limits-and-plans.md)
 - [Lifecycle operations and webhooks](references/lifecycle-and-webhooks.md)
