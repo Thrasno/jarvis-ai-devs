@@ -17,6 +17,8 @@ var zohoCreatorAssetNames = []string{
 	"references/routing.md",
 	"references/native-deluge.md",
 	"references/integration-tasks-v2.md",
+	"references/rest-api.md",
+	"references/workflows-and-subforms.md",
 	"references/identity-auth-and-environments.md",
 	"references/uncertainty-and-errors.md",
 	"references/sources.md",
@@ -168,6 +170,137 @@ func TestZohoCreatorEmbeddedSkill_CatalogsExactIntegrationTasks(t *testing.T) {
 	)
 }
 
+func TestZohoCreatorEmbeddedSkill_CatalogsRESTV2DataOperations(t *testing.T) {
+	const asset = "references/rest-api.md"
+	content := readZohoCreatorAsset(t, asset)
+	assertZohoCreatorContains(t, asset, content,
+		"Replace `{version}` with `v2` or `v2.1`",
+		"## Data — 7 operations",
+		"POST /creator/{version}/data/{owner}/{app}/form/{form}",
+		"GET /creator/{version}/data/{owner}/{app}/report/{report}/{record_ID}",
+		"GET /creator/{version}/data/{owner}/{app}/report/{report}",
+		"PATCH /creator/{version}/data/{owner}/{app}/report/{report}/{record_ID}",
+		"PATCH /creator/{version}/data/{owner}/{app}/report/{report}",
+		"DELETE /creator/{version}/data/{owner}/{app}/report/{report}/{record_ID}",
+		"DELETE /creator/{version}/data/{owner}/{app}/report/{report}",
+		"Do not apply these controls to v2 pages or v2-backed integration tasks",
+	)
+}
+
+func TestZohoCreatorEmbeddedSkill_CatalogsRESTV21DataOperations(t *testing.T) {
+	const asset = "references/rest-api.md"
+	content := readZohoCreatorAsset(t, asset)
+	assertZohoCreatorContains(t, asset, content,
+		"Replace `{version}` with `v2` or `v2.1`",
+		"## Data — 7 operations",
+		"POST /creator/{version}/data/{owner}/{app}/form/{form}",
+		"GET /creator/{version}/data/{owner}/{app}/report/{report}/{record_ID}",
+		"GET /creator/{version}/data/{owner}/{app}/report/{report}",
+		"PATCH /creator/{version}/data/{owner}/{app}/report/{report}/{record_ID}",
+		"PATCH /creator/{version}/data/{owner}/{app}/report/{report}",
+		"DELETE /creator/{version}/data/{owner}/{app}/report/{report}/{record_ID}",
+		"DELETE /creator/{version}/data/{owner}/{app}/report/{report}",
+		"v2.1 record reads add `record_cursor`",
+		"field-selection controls",
+		"JSON/CSV output",
+	)
+}
+
+func TestZohoCreatorEmbeddedSkill_CatalogsPublishOperations(t *testing.T) {
+	const asset = "references/rest-api.md"
+	content := readZohoCreatorAsset(t, asset)
+	assertZohoCreatorContains(t, asset, content,
+		"## Publish — 3 operations",
+		"POST /creator/{version}/publish/{owner}/{app}/form/{form}",
+		"GET /creator/{version}/publish/{owner}/{app}/report/{report}/{record_ID}",
+		"GET /creator/{version}/publish/{owner}/{app}/report/{report}",
+		"Publish APIs are production-only",
+		"mandatory private link",
+	)
+}
+
+func TestZohoCreatorEmbeddedSkill_CatalogsFileOperationsAndBlocksContradictorySubformDownload(t *testing.T) {
+	const asset = "references/rest-api.md"
+	content := readZohoCreatorAsset(t, asset)
+	assertZohoCreatorContains(t, asset, content,
+		"## File — 3 operations",
+		"POST /creator/{version}/data/{owner}/{app}/report/{report}/{record_ID}/{field_link_name}/upload",
+		"GET /creator/{version}/data/{owner}/{app}/report/{report}/{record_ID}/{field_link_name}/download",
+		"GET /creator/{version}/data/{owner}/{app}/report/{report}/{subform_link_name}.{field_link_name}/{subform_record_ID}/download",
+		"GET /creator/{version}/data/{owner}/{app}/report/{report}/{subform_link_name}/{field_link_name}/{subform_record_ID}/download",
+		"operation page",
+		"OpenAPI",
+		"must fail closed",
+		"Do not select either documented shape",
+	)
+	if strings.Contains(content, "{subform-and-field}") {
+		t.Fatal("REST file contract must not invent a combined {subform-and-field} segment")
+	}
+}
+
+func TestZohoCreatorEmbeddedSkill_CatalogsMetadataOperations(t *testing.T) {
+	const asset = "references/rest-api.md"
+	content := readZohoCreatorAsset(t, asset)
+	assertZohoCreatorContains(t, asset, content,
+		"## Metadata — 7 operations",
+		"GET /creator/{version}/meta/{owner}/{app}/form/{form}/fields",
+		"GET /creator/{version}/meta/{owner}/{app}/forms",
+		"GET /creator/{version}/meta/{owner}/{app}/reports",
+		"GET /creator/{version}/meta/{owner}/{app}/pages",
+		"GET /creator/{version}/meta/{owner}/{app}/sections",
+		"GET /creator/{version}/meta/applications",
+		"GET /creator/{version}/meta/{account_owner_name}/applications",
+	)
+}
+
+func TestZohoCreatorEmbeddedSkill_CatalogsBulkReadAndBlocksBulkInsert(t *testing.T) {
+	const asset = "references/rest-api.md"
+	content := readZohoCreatorAsset(t, asset)
+	assertZohoCreatorContains(t, asset, content,
+		"## Bulk read — 3 operations",
+		"POST /creator/{version}/bulk/{owner}/{app}/report/{report}/read",
+		"GET /creator/{version}/bulk/{owner}/{app}/report/{report}/read/{job_ID}",
+		"GET /creator/{version}/bulk/{owner}/{app}/report/{report}/read/{job_ID}/result",
+		"Bulk insert is blocked",
+		"expose only these three bulk-read operations",
+	)
+}
+
+func TestZohoCreatorEmbeddedSkill_RESTManifestKeepsExactOperationCount(t *testing.T) {
+	content := readZohoCreatorAsset(t, "references/rest-api.md")
+	if got := countZohoCreatorRows(content, "| `"); got != 23 {
+		t.Fatalf("REST operation manifest has %d rows; want exactly 23", got)
+	}
+}
+
+func TestZohoCreatorEmbeddedSkill_PreservesWorkflowEffects(t *testing.T) {
+	const asset = "references/workflows-and-subforms.md"
+	content := readZohoCreatorAsset(t, asset)
+	assertZohoCreatorContains(t, asset, content,
+		"On Validate and On Success scripts do not execute",
+		"v2.1 add, update, delete, and upload execute associated workflows by default",
+		"add and upload retain blueprints and approvals",
+		"update and delete retain blueprints",
+	)
+}
+
+func TestZohoCreatorEmbeddedSkill_PreservesSubformBehavior(t *testing.T) {
+	const asset = "references/workflows-and-subforms.md"
+	content := readZohoCreatorAsset(t, asset)
+	assertZohoCreatorContains(t, asset, content,
+		"main form's subform constructor",
+		"input.<subform>.insert(...)",
+		"only in supported workflow contexts",
+		"custom-sorted subforms",
+		"input.<subform_link_name>.clear()",
+		"removes every row, not selected rows",
+		"delinks existing-form child records",
+		"does not delete those child records unless they are explicitly deleted",
+		"record IDs and subform record IDs distinct",
+		"contradictory subform file-download path blocked",
+	)
+}
+
 func TestZohoCreatorEmbeddedSkill_PreservesIdentityAuthenticationAndEnvironmentSemantics(t *testing.T) {
 	const asset = "references/identity-auth-and-environments.md"
 	content := readZohoCreatorAsset(t, asset)
@@ -207,7 +340,8 @@ func TestZohoCreatorEmbeddedSkill_BoundsUncertaintyAndCapabilities(t *testing.T)
 		"Unknown plan gates, quotas, and costs",
 		"warning and runtime validation",
 		"Custom API generation remains unavailable",
-		"Unavailable surfaces fail closed",
+		"Bulk insert remains excluded",
+		"subform file-download route remains blocked",
 		"Do not invent",
 		"only missing facts that change routing or prevent safe generation",
 	} {

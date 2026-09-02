@@ -33,6 +33,8 @@ State the selected surface, host and placement, application/form/report identiti
 - [Routing and Creator-to-Analytics](references/routing.md)
 - [Native Creator Deluge](references/native-deluge.md)
 - [Creator integration tasks v2](references/integration-tasks-v2.md)
+- [REST API v2 and v2.1](references/rest-api.md)
+- [Workflows and subforms](references/workflows-and-subforms.md)
 - [Identity, authentication, and environments](references/identity-auth-and-environments.md)
 - [Uncertainty and safe exclusions](references/uncertainty-and-errors.md)
 - [Official sources](references/sources.md)
