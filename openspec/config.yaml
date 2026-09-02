@@ -1,0 +1,78 @@
+schema: spec-driven
+
+project: jarvis-dev
+artifact_store: hybrid
+strict_tdd: true
+
+context: |
+  Go 1.26.2 monorepo with independent modules: jarvis-cli, hive-daemon, hive-api, and hivederive.
+  hive-dashboard is a TypeScript/Vite/Vitest frontend embedded and served by hive-api.
+  Preserve boundaries among SDD prompt injection, local Hive memory, Hive API, synchronization, and CLI management.
+  Prefer explicit, cohesive Go code; use gofmt; avoid unnecessary dependencies and broad abstractions.
+  Never edit generated user-machine agent configuration; change templates and source-of-truth renderers instead.
+  Root AGENTS.md and CLAUDE.md are parity-managed operational instructions.
+
+testing:
+  strict_tdd: true
+  framework: Go testing package
+  scope_note: Run Go commands from each module because the repository has no root go.mod or go.work.
+  unit: true
+  integration: true
+  e2e: false
+  module_test_commands:
+    - cd hivederive && go test ./...
+    - cd jarvis-cli && go test ./...
+    - cd hive-daemon && go test ./...
+    - cd hive-api && go test ./...
+  ci_go_test_commands:
+    - cd jarvis-cli && go test ./...
+    - cd hive-daemon && go test ./...
+    - cd hive-api && go test ./...
+  coverage_commands:
+    - cd hivederive && go test -cover ./...
+    - cd jarvis-cli && go test -cover ./...
+    - cd hive-daemon && go test -cover ./...
+    - cd hive-api && go test -cover ./...
+  static_check_commands:
+    - cd hivederive && go vet ./...
+    - cd jarvis-cli && go vet ./...
+    - cd hive-daemon && go vet ./...
+    - cd hive-api && go vet ./...
+  formatter: gofmt
+  formatter_check: gofmt -l .
+  module_linter: cd hive-daemon && golangci-lint run ./...
+  frontend:
+    test_command: cd hive-dashboard && npm test
+    lint_command: cd hive-dashboard && npm run lint
+    build_command: cd hive-dashboard && npm run build
+
+rules:
+  proposal:
+    - Define ecosystem impact, affected component boundaries, success criteria, non-goals, and rollback.
+    - Name concrete affected paths when repository evidence supports them.
+  specs:
+    - Use RFC 2119 requirement keywords and Given/When/Then scenarios.
+    - Preserve existing capability names and delta-spec safety rules.
+  design:
+    - Follow existing component boundaries and document decisions with rationale and tradeoffs.
+    - Address generated-artifact source-of-truth and deep-merge behavior when relevant.
+  tasks:
+    - Use hierarchical, session-sized tasks and include a review workload forecast against 400 changed lines.
+    - Encode implementation work as RED, GREEN, and REFACTOR steps where behavior changes.
+  apply:
+    tdd: true
+    test_command: >-
+      for module in hivederive jarvis-cli hive-daemon hive-api; do (cd "$module" && go test ./...) || exit 1; done
+    instructions:
+      - Do not implement outside approved tasks or edit generated user-machine files.
+      - Run the narrow module/package test first, then the relevant broader module suite.
+  verify:
+    test_command: >-
+      for module in hivederive jarvis-cli hive-daemon hive-api; do (cd "$module" && go test ./...) || exit 1; done
+    static_check_command: >-
+      for module in hivederive jarvis-cli hive-daemon hive-api; do (cd "$module" && go vet ./...) || exit 1; done
+    coverage_threshold: 0
+    instructions:
+      - Verify every acceptance criterion against tests and runtime evidence without inventing E2E coverage.
+  archive:
+    - Preserve the archive as an audit trail and warn before destructive specification merges.
