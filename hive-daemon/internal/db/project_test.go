@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -241,6 +242,99 @@ func TestGovernanceMemoryDeletedOnlyFilterExcludesActiveRows(t *testing.T) {
 	_, err = d.ListGovernanceMemories(context.Background(), hivedb.GovernanceMemoryFilter{Project: "deleted-only", IncludeDeleted: true, DeletedOnly: true, Limit: 10})
 	if err == nil {
 		t.Fatal("combined include_deleted and deleted_only must be rejected")
+	}
+}
+
+func TestGovernanceMemoryTopicExactReturnsAllMatchingRevisions(t *testing.T) {
+	d := openGovernanceTestDB(t)
+	exact := "sdd/proposal"
+	firstID := saveGovernanceTestMemoryWithTopic(t, d, "alpha", "First revision", exact)
+	secondID := saveGovernanceTestMemoryWithTopic(t, d, "alpha", "Second revision", exact)
+	saveGovernanceTestMemoryWithTopic(t, d, "alpha", "Descendant", exact+"/detail")
+	saveGovernanceTestMemoryWithTopic(t, d, "beta", "Other project", exact)
+	deletedID := saveGovernanceTestMemoryWithTopic(t, d, "alpha", "Deleted revision", exact)
+	if err := d.DeleteMemory(deletedID, "tester", "obsolete"); err != nil {
+		t.Fatalf("DeleteMemory: %v", err)
+	}
+
+	memories, err := d.ListGovernanceMemories(context.Background(), hivedb.GovernanceMemoryFilter{
+		Project:  "alpha",
+		TopicKey: &exact,
+		Limit:    10,
+	})
+	if err != nil {
+		t.Fatalf("ListGovernanceMemories: %v", err)
+	}
+	if len(memories) != 2 || memories[0].ID != secondID || memories[1].ID != firstID {
+		t.Fatalf("exact memories = %+v, want both ordinary active revisions %d and %d", memories, secondID, firstID)
+	}
+
+	memories, err = d.ListGovernanceMemories(context.Background(), hivedb.GovernanceMemoryFilter{
+		Project:        "alpha",
+		TopicKey:       &exact,
+		IncludeDeleted: true,
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatalf("ListGovernanceMemories including deleted: %v", err)
+	}
+	if len(memories) != 3 {
+		t.Fatalf("exact memories including deleted len = %d, want 3; values=%+v", len(memories), memories)
+	}
+}
+
+func TestGovernanceMemoryTopicPrefixIsLiteralAndReadsHistoricalPadding(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix string
+		topics []string
+		want   []string
+	}{
+		{name: "self and descendants", prefix: "architecture/auth", topics: []string{"architecture/auth", "architecture/auth/jwt", "architecture/authz"}, want: []string{"architecture/auth", "architecture/auth/jwt"}},
+		{name: "percent is literal", prefix: "release/%", topics: []string{"release/%", "release/%/notes", "release/v1"}, want: []string{"release/%", "release/%/notes"}},
+		{name: "underscore is literal", prefix: "team/_", topics: []string{"team/_", "team/_/notes", "team/a"}, want: []string{"team/_", "team/_/notes"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := openGovernanceTestDB(t)
+			for _, topic := range tt.topics {
+				saveGovernanceTestMemoryWithTopic(t, d, "alpha", topic, topic)
+			}
+			paddedID := saveGovernanceTestMemoryWithTopic(t, d, "alpha", "padded", tt.prefix+"/padded")
+			if _, err := d.RawDB().Exec(`UPDATE memories SET topic_key = ? WHERE id = ?`, "\u2003"+tt.prefix+"/padded\u2003", paddedID); err != nil {
+				t.Fatalf("pad historical topic key: %v", err)
+			}
+
+			memories, err := d.ListGovernanceMemories(context.Background(), hivedb.GovernanceMemoryFilter{Project: "alpha", TopicPrefix: &tt.prefix, OrderAsc: true, Limit: 10})
+			if err != nil {
+				t.Fatalf("ListGovernanceMemories: %v", err)
+			}
+			got := make([]string, 0, len(memories))
+			for _, memory := range memories {
+				got = append(got, strings.TrimSpace(*memory.TopicKey))
+			}
+			want := append(append([]string{}, tt.want...), tt.prefix+"/padded")
+			if fmt.Sprint(got) != fmt.Sprint(want) {
+				t.Fatalf("prefix topics = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestGovernanceMemoryTopicFilterRejectsBlankAndMutuallyExclusiveCriteria(t *testing.T) {
+	d := openGovernanceTestDB(t)
+	blank := "\u2003\t"
+	exact := "topic"
+	prefix := "area"
+	for _, filter := range []hivedb.GovernanceMemoryFilter{
+		{Project: "alpha", TopicKey: &blank},
+		{Project: "alpha", TopicPrefix: &blank},
+		{Project: "alpha", TopicKey: &exact, TopicPrefix: &prefix},
+	} {
+		if _, err := d.ListGovernanceMemories(context.Background(), filter); err == nil {
+			t.Fatalf("ListGovernanceMemories(%+v) error = nil, want validation error", filter)
+		}
 	}
 }
 
@@ -584,6 +678,18 @@ func saveGovernanceTestMemory(t *testing.T, d *hivedb.DB, projectName, title str
 		t.Fatalf("EnsureManualSaveSession: %v", err)
 	}
 	id, err := d.SaveMemory(&models.Memory{Project: projectName, Title: title, Content: "content", SessionID: "manual-save-" + projectName})
+	if err != nil {
+		t.Fatalf("SaveMemory: %v", err)
+	}
+	return id
+}
+
+func saveGovernanceTestMemoryWithTopic(t *testing.T, d *hivedb.DB, projectName, title, topic string) int64 {
+	t.Helper()
+	if _, err := d.EnsureManualSaveSession(projectName); err != nil {
+		t.Fatalf("EnsureManualSaveSession: %v", err)
+	}
+	id, err := d.SaveMemory(&models.Memory{Project: projectName, TopicKey: &topic, Title: title, Content: "content", SessionID: "manual-save-" + projectName})
 	if err != nil {
 		t.Fatalf("SaveMemory: %v", err)
 	}

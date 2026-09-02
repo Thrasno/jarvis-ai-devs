@@ -119,6 +119,34 @@ func TestSync_Push_NewMemory(t *testing.T) {
 	mockRepo.AssertExpectations(t)
 }
 
+func TestSyncPushNormalizesTopicKeysBeforeRepositoryIngress(t *testing.T) {
+	t.Run("legacy row", func(t *testing.T) {
+		svc, repo, _ := newTestSyncService(t)
+		payload := makePayload("client-sync-topic-normalization", time.Now())
+		dirty := "  sdd/change/spec  "
+		payload.TopicKey = &dirty
+		repo.On("Upsert", mock.Anything, mock.MatchedBy(func(mem *model.Memory) bool {
+			return mem.TopicKey != nil && *mem.TopicKey == "sdd/change/spec"
+		})).Return(&model.Memory{}, true, nil)
+
+		_, err := svc.Push(context.Background(), model.SyncRequest{Project: "jarvis-dev", Memories: []model.SyncMemoryPayload{payload}}, "user-1")
+		require.NoError(t, err)
+	})
+
+	t.Run("mutation replay", func(t *testing.T) {
+		svc, repo, _ := newTestSyncService(t)
+		dirty := " \t\n "
+		mutation := model.MutationEnvelope{EventID: "event-topic-normalization", EntityType: model.MutationEntityMemory, EntitySyncID: "memory-topic-normalization", Project: "jarvis-dev", Op: model.MutationOpCreate, Memory: &model.MemoryPayload{Project: "jarvis-dev", TopicKey: &dirty}}
+		repo.On("ApplyMemoryMutation", mock.Anything, mock.MatchedBy(func(got model.MutationEnvelope) bool {
+			return got.Memory != nil && got.Memory.TopicKey == nil
+		})).Return(&model.MutationApplyResult{EventID: mutation.EventID, Applied: true}, nil)
+		repo.On("ListMemoryMutations", mock.Anything, "jarvis-dev", model.MutationCursor{}, mock.Anything).Return(nil, nil)
+
+		_, err := svc.Push(context.Background(), model.SyncRequest{Project: "jarvis-dev", ProtocolVersion: model.MutationProtocolVersion, Mutations: []model.MutationEnvelope{mutation}}, "user-1")
+		require.NoError(t, err)
+	})
+}
+
 func TestSyncService_SyncPreservesMutationResultsAfterPull(t *testing.T) {
 	ctx := context.Background()
 	mem := &repository.MockMemoryRepository{}
@@ -349,8 +377,9 @@ func TestSync_PullAll_FirstSync(t *testing.T) {
 	svc, mockRepo, _, mockSessionRepo := newTestSyncServiceWithSession(t)
 	ctx := context.Background()
 
+	dirtyTopicKey := "  pulled/topic  "
 	serverMems := []*model.Memory{
-		{ID: "srv-1", SyncID: "sync-a"},
+		{ID: "srv-1", SyncID: "sync-a", TopicKey: &dirtyTopicKey},
 		{ID: "srv-2", SyncID: "sync-b"},
 	}
 
@@ -363,6 +392,8 @@ func TestSync_PullAll_FirstSync(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Len(t, res.Memories, 2)
+	require.Equal(t, "pulled/topic", *res.Memories[0].TopicKey)
+	require.Equal(t, "  pulled/topic  ", *serverMems[0].TopicKey)
 	mockRepo.AssertExpectations(t)
 	mockSessionRepo.AssertExpectations(t)
 }
@@ -1057,10 +1088,12 @@ func TestSyncService_Push_MutationProtocolV2AppliesBatchAndPreservesLegacyCounts
 		OccurredAt:   now,
 		Tombstone:    &model.TombstonePayload{DeletedAt: now, DeletedBy: "daemon-user", Reason: "obsolete"},
 	}
+	dirtyRemoteTopicKey := "  remote/topic  "
+	remoteMutation := model.MutationEnvelope{EventID: "remote-event", Op: model.MutationOpUpdate, Sequence: 42, Memory: &model.MemoryPayload{TopicKey: &dirtyRemoteTopicKey}}
 	mockRepo.On("ApplyMemoryMutation", ctx, mutation).
 		Return(&model.MutationApplyResult{EventID: mutation.EventID, Op: model.MutationOpDelete, Applied: true}, nil)
 	mockRepo.On("ListMemoryMutations", ctx, "jarvis-dev", model.MutationCursor{Sequence: 41, EventID: "previous"}, 100).
-		Return(&model.MutationBatch{Events: []model.MutationEnvelope{{EventID: "remote-event", Op: model.MutationOpUpdate, Sequence: 42}}, Next: model.MutationCursor{Sequence: 42, EventID: "remote-event"}}, nil)
+		Return(&model.MutationBatch{Events: []model.MutationEnvelope{remoteMutation}, Next: model.MutationCursor{Sequence: 42, EventID: "remote-event"}}, nil)
 
 	req := model.SyncRequest{
 		Project:         "jarvis-dev",
@@ -1080,6 +1113,8 @@ func TestSyncService_Push_MutationProtocolV2AppliesBatchAndPreservesLegacyCounts
 	assert.Equal(t, int64(42), resp.NextMutationCursor.Sequence)
 	require.Len(t, resp.PulledMutations, 1)
 	assert.Equal(t, "remote-event", resp.PulledMutations[0].EventID)
+	require.Equal(t, "remote/topic", *resp.PulledMutations[0].Memory.TopicKey)
+	require.Equal(t, "  remote/topic  ", *remoteMutation.Memory.TopicKey)
 	mockRepo.AssertNotCalled(t, "Upsert", mock.Anything, mock.Anything)
 	mockRepo.AssertExpectations(t)
 	mockPromptRepo.AssertExpectations(t)

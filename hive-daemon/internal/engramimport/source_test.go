@@ -357,6 +357,25 @@ INSERT INTO observations (id, project, title, content, type, topic_key, session_
 	}
 }
 
+func TestAnalyzeSourceNormalizesTopicKeyBeforeContentHash(t *testing.T) {
+	seed := func(topicKey string) func(*sql.DB) {
+		return func(sqlDB *sql.DB) {
+			_, err := sqlDB.Exec(`
+INSERT INTO sessions (id, project, directory, dev_id, client, started_at) VALUES
+  ('ses-1', 'proj-a', 'C:/src/a', 'dev-a', 'opencode', '2026-06-11 10:00:00');
+INSERT INTO user_prompts (id, project, content, created_at) VALUES
+  (11, 'proj-a', 'prompt content', '2026-06-11 10:01:00');
+INSERT INTO observations (id, project, title, content, type, topic_key, session_id, created_at) VALUES
+  (21, 'proj-a', 'Decision', 'Content', 'decision', ?, 'ses-1', '2026-06-11 10:02:00');`, topicKey)
+			require.NoError(t, err)
+		}
+	}
+
+	_, _, canonicalHash := analyzeSingleContentHashes(t, seed("topic-a"))
+	_, _, paddedHash := analyzeSingleContentHashes(t, seed("  topic-a  "))
+	require.Equal(t, canonicalHash, paddedHash)
+}
+
 func TestImportSourceRejectsAliasReuseWhenMeaningfulSourceContentChanges(t *testing.T) {
 	tests := []struct {
 		name          string

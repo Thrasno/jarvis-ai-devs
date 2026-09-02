@@ -13,6 +13,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/topickey"
 )
 
 const maxSyncLastErrorRunes = 500
@@ -170,7 +171,7 @@ func memoryPayloadFromModel(mem *models.Memory, syncID, createdBy string, occurr
 	return &MutationMemoryPayload{
 		SyncID:        syncID,
 		Project:       mem.Project,
-		TopicKey:      mem.TopicKey,
+		TopicKey:      topickey.Normalize(mem.TopicKey),
 		Category:      mem.Category,
 		Title:         mem.Title,
 		Content:       mem.Content,
@@ -184,6 +185,11 @@ func memoryPayloadFromModel(mem *models.Memory, syncID, createdBy string, occurr
 }
 
 func insertMemoryMutation(tx *sql.Tx, record memoryMutationRecord) error {
+	if record.Payload.Memory != nil {
+		memory := *record.Payload.Memory
+		memory.TopicKey = topickey.Normalize(memory.TopicKey)
+		record.Payload.Memory = &memory
+	}
 	payload, err := json.Marshal(record.Payload)
 	if err != nil {
 		return fmt.Errorf("marshal mutation payload: %w", err)
@@ -715,6 +721,11 @@ func reprojectInstructionError(event MutationEnvelope) string {
 }
 
 func (d *DB) ApplyRemoteMutation(event MutationEnvelope) (bool, error) {
+	if event.Memory != nil {
+		memory := *event.Memory
+		memory.TopicKey = topickey.Normalize(memory.TopicKey)
+		event.Memory = &memory
+	}
 	if event.EventID == "" {
 		return false, fmt.Errorf("event_id is required")
 	}
@@ -1019,7 +1030,7 @@ INSERT OR IGNORE INTO memories
 	(sync_id, project, topic_key, category, title, content, tags, files_affected,
 	 created_by, created_at, updated_at, synced_at, session_id)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		mem.SyncID, project, mem.TopicKey, mem.Category,
+		mem.SyncID, project, topickey.Normalize(mem.TopicKey), mem.Category,
 		mem.Title, mem.Content, string(tagsJSON), string(filesJSON),
 		mem.CreatedBy, createdAt, updatedAt, now, sessionID,
 	)

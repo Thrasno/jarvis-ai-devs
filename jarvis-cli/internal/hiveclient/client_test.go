@@ -423,6 +423,44 @@ func TestClientListsDeletedOnlyMemories(t *testing.T) {
 	}
 }
 
+func TestClientSerializesStructuredTopicFilters(t *testing.T) {
+	tests := []struct {
+		name       string
+		filter     MemoryFilter
+		wantKey    string
+		wantPrefix string
+	}{
+		{name: "omitted", filter: MemoryFilter{Project: "alpha"}},
+		{name: "exact", filter: MemoryFilter{Project: "alpha", TopicKey: clientStringPointer("sdd/spec %_")}, wantKey: "sdd/spec %_"},
+		{name: "prefix", filter: MemoryFilter{Project: "alpha", TopicPrefix: clientStringPointer("設計/認証 %_")}, wantPrefix: "設計/認証 %_"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				query := r.URL.Query()
+				if query.Get("topic_key") != tt.wantKey || query.Get("topic_prefix") != tt.wantPrefix {
+					t.Fatalf("decoded query = %q, want topic_key=%q topic_prefix=%q", r.URL.RawQuery, tt.wantKey, tt.wantPrefix)
+				}
+				if tt.wantKey == "" && tt.wantPrefix == "" && (query.Has("topic_key") || query.Has("topic_prefix")) {
+					t.Fatalf("omitted topic filters serialized in %q", r.URL.RawQuery)
+				}
+				_, _ = w.Write([]byte(`{"memories":[]}`))
+			}))
+			defer server.Close()
+			client, err := New(server.URL)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if _, err := client.Memories(context.Background(), tt.filter); err != nil {
+				t.Fatalf("Memories: %v", err)
+			}
+		})
+	}
+}
+
+func clientStringPointer(value string) *string { return &value }
+
 func TestClientWarningsReturnsDaemonErrorOnMissingEndpoint(t *testing.T) {
 	server := httptest.NewServer(http.NotFoundHandler())
 	defer server.Close()

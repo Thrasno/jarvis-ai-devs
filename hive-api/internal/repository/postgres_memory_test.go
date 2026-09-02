@@ -124,6 +124,56 @@ func TestPostgresMemoryRepository_Create(t *testing.T) {
 	}
 }
 
+func TestPostgresMemoryRepositoryNormalizesTopicKeyAtPersistenceBoundary(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+
+	for i, tt := range []struct {
+		name  string
+		input string
+		want  *string
+	}{
+		{name: "trims surrounding whitespace", input: "  api/topic  ", want: stringPtr("api/topic")},
+		{name: "maps blank to null", input: " \t\n "},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			project := fmt.Sprintf("topic-normalization-%d", i)
+			mem := &model.Memory{SyncID: fmt.Sprintf("550e8400-e29b-41d4-a716-44665544010%d", i), Project: project, TopicKey: &tt.input, Category: model.CatDecision, Title: "Title", Content: "Content", CreatedBy: "tester", CreatedAt: time.Now(), UpdatedAt: time.Now(), SessionID: ensureManualSavePtr(t, pool, project)}
+			created, err := repo.Create(ctx, mem)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, created.TopicKey)
+		})
+	}
+}
+
+func TestPostgresMemoryRepositoryNormalizesMutationTopicKeyBeforePersistenceAndJournal(t *testing.T) {
+	pool, cleanup := startPostgresWithSessions(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewPostgresMemoryRepository(pool)
+	project := "mutation-topic-normalization"
+	sessionID := ensureManualSavePtr(t, pool, project)
+	dirty := "  mutation/topic  "
+	mutation := model.MutationEnvelope{
+		EventID: "550e8400-e29b-41d4-a716-446655440120", EntityType: model.MutationEntityMemory,
+		EntitySyncID: "550e8400-e29b-41d4-a716-446655440121", Project: project, Op: model.MutationOpCreate, OccurredAt: time.Now(),
+		Memory: &model.MemoryPayload{Project: project, TopicKey: &dirty, Category: model.CatDecision, Title: "Title", Content: "Content", CreatedBy: "tester", SessionID: *sessionID},
+	}
+
+	result, err := repo.ApplyMemoryMutation(ctx, mutation)
+	require.NoError(t, err)
+	require.True(t, result.Applied)
+
+	var storedTopic string
+	require.NoError(t, pool.QueryRow(ctx, `SELECT topic_key FROM memories WHERE sync_id = $1`, mutation.EntitySyncID).Scan(&storedTopic))
+	require.Equal(t, "mutation/topic", storedTopic)
+	var journal []byte
+	require.NoError(t, pool.QueryRow(ctx, `SELECT memory FROM memory_mutations WHERE event_id = $1`, mutation.EventID).Scan(&journal))
+	require.Contains(t, string(journal), `"topic_key": "mutation/topic"`)
+}
+
 // TestPostgresMemoryRepository_GetByID verifica que podemos recuperar memorias por ID.
 // Casos a probar:
 // - ID existente → memoria encontrada
@@ -610,7 +660,7 @@ func TestPostgresMemoryRepository_Upsert(t *testing.T) {
 			incoming: &model.Memory{
 				SyncID:    "550e8400-e29b-41d4-a716-446655440043",
 				Project:   "upsert-test",
-				TopicKey:  stringPtr("test/client-wins"),
+				TopicKey:  stringPtr("  test/client-wins  "),
 				Category:  model.CatPattern,
 				Title:     "Updated Pattern",
 				Content:   "New content from client",
@@ -655,6 +705,7 @@ func TestPostgresMemoryRepository_Upsert(t *testing.T) {
 				require.NotNil(t, result, "Expected result for update")
 				assert.Equal(t, tt.checkContent, result.Content)
 				assert.Equal(t, tt.incoming.Title, result.Title)
+				require.Equal(t, "test/client-wins", *result.TopicKey)
 				// Verificar que el ID no cambió (es update, no insert)
 				if existing != nil {
 					assert.Equal(t, existing.ID, result.ID)

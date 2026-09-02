@@ -11,6 +11,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/model"
 	"github.com/Thrasno/jarvis-ai-devs/hive-api/internal/repository"
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/topickey"
 )
 
 // Sentinel errors surfaced by Push for handler-level 4xx classification (R2-CRIT-6).
@@ -245,7 +246,7 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 		mem := &model.Memory{
 			SyncID:        payload.SyncID,
 			Project:       payload.Project,
-			TopicKey:      payload.TopicKey,
+			TopicKey:      topickey.Normalize(payload.TopicKey),
 			Category:      payload.Category,
 			Title:         payload.Title,
 			Content:       payload.Content,
@@ -323,6 +324,11 @@ func (s *syncService) pushWithRepos(ctx context.Context, req model.SyncRequest, 
 	if mutationProtocolAuthoritative {
 		compatibilityMode = model.CompatibilityModeMutationV2
 		for _, mutation := range req.Mutations {
+			if mutation.Memory != nil {
+				memory := *mutation.Memory
+				memory.TopicKey = topickey.Normalize(memory.TopicKey)
+				mutation.Memory = &memory
+			}
 			if mutationProjectMismatch(mutation, req.Project) {
 				conflicts++
 				mutationResults = append(mutationResults, rejectedMutation(mutation, req.Project,
@@ -434,6 +440,11 @@ func deliverableMutations(events []model.MutationEnvelope, project string, capab
 	deliverable := make([]model.MutationEnvelope, 0, len(events))
 	for _, event := range events {
 		if model.ClientUnderstandsMutationOp(event.Op, capabilities) {
+			if event.Memory != nil {
+				memory := *event.Memory
+				memory.TopicKey = topickey.Normalize(memory.TopicKey)
+				event.Memory = &memory
+			}
 			deliverable = append(deliverable, event)
 			continue
 		}
@@ -613,6 +624,16 @@ func (s *syncService) pullAllWithRepos(ctx context.Context, repos syncPullRepos,
 	if memories == nil {
 		memories = []*model.Memory{}
 	}
+	normalizedMemories := make([]*model.Memory, len(memories))
+	for i, memory := range memories {
+		if memory == nil {
+			continue
+		}
+		normalized := *memory
+		normalized.TopicKey = topickey.Normalize(normalized.TopicKey)
+		normalizedMemories[i] = &normalized
+	}
+	memories = normalizedMemories
 
 	result := &model.PullResult{
 		Sessions:        sessions,

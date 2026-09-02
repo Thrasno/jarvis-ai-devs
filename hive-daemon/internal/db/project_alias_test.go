@@ -254,7 +254,7 @@ func TestAliasReadPathContract(t *testing.T) {
 	}
 
 	t.Run("search by target returns the memory", func(t *testing.T) {
-		results, err := d.Search("", target, "", 10)
+		results, err := d.Search(models.MemorySearchCriteria{Query: "target", Project: target, Limit: 10})
 		if err != nil {
 			t.Fatalf("Search by target: %v", err)
 		}
@@ -264,7 +264,7 @@ func TestAliasReadPathContract(t *testing.T) {
 	})
 
 	t.Run("search by source returns nothing", func(t *testing.T) {
-		results, err := d.Search("", source, "", 10)
+		results, err := d.Search(models.MemorySearchCriteria{Query: "target", Project: source, Limit: 10})
 		if err != nil {
 			t.Fatalf("Search by source: %v", err)
 		}
