@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Respaldo manual previo al despliegue y restauración local de contingencia</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172033;
+      --muted: #5d687b;
+      --paper: #ffffff;
+      --canvas: #eef3f8;
+      --line: #d8e0ea;
+      --brand: #174c77;
+      --brand-soft: #e8f2fb;
+      --safe: #176b4d;
+      --safe-soft: #e8f6ef;
+      --warn: #8a5a00;
+      --warn-soft: #fff4d6;
+      --danger: #a52828;
+      --danger-soft: #fff0f0;
+      --code: #101827;
+      --code-ink: #eaf1fa;
+      --shadow: 0 18px 50px rgba(30, 53, 78, 0.10);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--canvas);
+      font: 16px/1.65 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(1040px, calc(100% - 32px));
+      margin: 32px auto 64px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    header {
+      padding: clamp(32px, 7vw, 72px);
+      color: #fff;
+      background: linear-gradient(135deg, #123552 0%, #174c77 58%, #2876a8 100%);
+    }
+    header p { max-width: 760px; margin: 12px 0 0; color: #e6f2fb; font-size: 1.08rem; }
+    h1 { max-width: 850px; margin: 0; font-size: clamp(2rem, 5vw, 3.35rem); line-height: 1.08; letter-spacing: -0.035em; }
+    h2 { margin: 0 0 18px; color: var(--brand); font-size: 1.65rem; line-height: 1.25; }
+    h3 { margin: 30px 0 10px; font-size: 1.15rem; line-height: 1.35; }
+    p, ul, ol { margin-top: 0; }
+    a { color: var(--brand); }
+    code { font: 0.92em/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
+    p code, li code, td code { padding: 0.12em 0.35em; border-radius: 5px; background: #edf2f7; }
+
+    .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+    .tag { padding: 5px 10px; border: 1px solid rgba(255,255,255,.3); border-radius: 999px; font-size: .82rem; font-weight: 700; }
+    .content { padding: clamp(24px, 6vw, 64px); }
+    section { padding: 34px 0; border-bottom: 1px solid var(--line); }
+    section:last-child { border-bottom: 0; }
+    .lead { font-size: 1.08rem; }
+    .toc { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; padding: 0; list-style: none; }
+    .toc a { display: block; height: 100%; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; text-decoration: none; font-weight: 650; }
+    .toc a:hover { background: var(--brand-soft); border-color: #a9c8df; }
+
+    .callout { margin: 20px 0; padding: 18px 20px; border-left: 5px solid var(--brand); border-radius: 8px; background: var(--brand-soft); }
+    .callout strong:first-child { display: block; margin-bottom: 5px; }
+    .callout.danger { border-color: var(--danger); background: var(--danger-soft); }
+    .callout.warning { border-color: var(--warn); background: var(--warn-soft); }
+    .callout.safe { border-color: var(--safe); background: var(--safe-soft); }
+    .location { display: inline-block; margin: 12px 0 8px; padding: 5px 10px; border-radius: 6px; color: #fff; background: var(--brand); font-size: .78rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+    .location.local { background: var(--safe); }
+    pre { margin: 0 0 18px; padding: 18px; overflow-x: auto; border-radius: 10px; color: var(--code-ink); background: var(--code); font: 0.88rem/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; tab-size: 2; }
+    pre code { font: inherit; }
+    .evidence { margin: 12px 0 26px; padding: 14px 16px; border: 1px solid #b9dfca; border-radius: 8px; background: var(--safe-soft); }
+    .evidence strong { color: var(--safe); }
+    table { width: 100%; border-collapse: collapse; margin: 18px 0; font-size: .95rem; }
+    th, td { padding: 12px 14px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: #f2f6fa; }
+    .checklist { padding-left: 0; list-style: none; }
+    .checklist li { position: relative; margin: 9px 0; padding-left: 30px; }
+    .checklist li::before { position: absolute; left: 0; content: "□"; color: var(--brand); font-size: 1.3rem; line-height: 1.25; }
+    .scope-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+    .scope-card { padding: 18px; border: 1px solid var(--line); border-radius: 10px; }
+    .scope-card h3 { margin-top: 0; }
+    footer { padding: 24px clamp(24px, 6vw, 64px); color: var(--muted); background: #f5f8fb; font-size: .9rem; }
+    @media (max-width: 620px) {
+      main { width: 100%; margin: 0; border: 0; border-radius: 0; }
+      header, .content { padding-left: 20px; padding-right: 20px; }
+      table { display: block; overflow-x: auto; }
+    }
+    @media print {
+      body { background: #fff; }
+      main { width: 100%; margin: 0; border: 0; box-shadow: none; }
+      header { color: #000; background: #fff; padding-bottom: 24px; }
+      header p { color: #333; }
+      .tag { border-color: #777; }
+      section { break-inside: avoid; }
+      pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="meta">
+        <span class="tag">Procedimiento manual</span>
+        <span class="tag">PostgreSQL 15</span>
+        <span class="tag">Issue #632</span>
+      </div>
+      <h1>Respaldo previo al despliegue y restauración local de contingencia</h1>
+      <p>Guía operativa para crear, comprobar y copiar un respaldo de PostgreSQL antes de un despliegue de Hive API que pueda ejecutar migraciones. También conserva el procedimiento de restauración en un contenedor local desechable, que solo se utiliza manualmente si se necesita recuperar datos.</p>
+    </header>
+
+    <div class="content">
+      <section id="regla-principal">
+        <h2>Regla principal</h2>
+        <div class="callout danger">
+          <strong>PROHIBIDO RESTAURAR SOBRE PRODUCCIÓN</strong>
+          Esta guía solo crea un respaldo en producción. La restauración se realiza exclusivamente en un contenedor local, nuevo y desechable. Ningún comando de este documento reemplaza, vacía ni recrea la base de datos de producción.
+        </div>
+        <p class="lead"><strong>No iniciar el despliegue</strong> hasta que el respaldo haya superado las cuatro comprobaciones inmediatas en el VPS, se haya copiado al equipo local y su SHA-256 local coincida. La restauración local no es un requisito previo: es una contingencia manual para una necesidad real de recuperación.</p>
+        <ul class="toc" aria-label="Índice del procedimiento">
+          <li><a href="#alcance">1. Alcance y límites</a></li>
+          <li><a href="#requisitos">2. Requisitos previos</a></li>
+          <li><a href="#respaldo">3. Crear y comprobar el respaldo</a></li>
+          <li><a href="#copia">4. Copiar al equipo local</a></li>
+          <li><a href="#restauracion">5. Contingencia: restaurar y revisar</a></li>
+          <li><a href="#decision">6. Decisión y recuperación</a></li>
+          <li><a href="#problemas">7. Resolución de problemas</a></li>
+          <li><a href="#lista-final">8. Listas finales</a></li>
+        </ul>
+      </section>
+
+      <section id="alcance">
+        <h2>1. Alcance y límites</h2>
+        <div class="scope-grid">
+          <div class="scope-card">
+            <h3>Este procedimiento sí cubre</h3>
+            <ul>
+              <li>Un respaldo manual inmediatamente antes del despliegue.</li>
+              <li>Comprobación de salida, tamaño, SHA-256 y catálogo del archivo.</li>
+              <li>Copia manual del VPS al equipo del mantenedor.</li>
+              <li>Procedimiento de contingencia para restaurar y revisar el respaldo en PostgreSQL 15 local desechable, solo si se necesita recuperar datos.</li>
+            </ul>
+          </div>
+          <div class="scope-card">
+            <h3>Este procedimiento no cubre</h3>
+            <ul>
+              <li>Programación, cron, retención, alertas o monitorización.</li>
+              <li>RPO, RTO, SLA, S3, otro VPS o servicios de respaldo.</li>
+              <li>Restauración automática o restauración en producción.</li>
+              <li>Salud, acceso, inicio de sesión o sincronización de Hive API.</li>
+            </ul>
+          </div>
+        </div>
+        <p>Las comprobaciones de aplicación se ejecutan directamente en producción o dentro del alcance de la issue #631. Los fragmentos históricos de <code>docs/INFRASTRUCTURE.md</code> no son el procedimiento autoritativo para esta operación; esta guía es el procedimiento específico y acotado de la issue #632.</p>
+      </section>
+
+      <section id="requisitos">
+        <h2>2. Requisitos previos</h2>
+        <ul class="checklist">
+          <li>Acceso SSH al VPS con permiso para ejecutar Docker Compose.</li>
+          <li>Despliegue presente normalmente en <code>/opt/hive-api/hive-api/deploy</code>.</li>
+          <li>Servicio Compose <code>postgres</code> en ejecución.</li>
+          <li>Espacio libre suficiente en el VPS y en el equipo local.</li>
+          <li><code>scp</code> disponible en el equipo local para completar el respaldo previo al despliegue.</li>
+          <li>Docker disponible en el equipo local únicamente si se necesita ejecutar la contingencia de restauración.</li>
+          <li>Ningún despliegue ni migración en curso mientras se crea el respaldo.</li>
+        </ul>
+        <div class="callout warning">
+          <strong>No mostrar secretos.</strong>
+          No ejecute <code>cat .env</code>, no copie su contenido y no introduzca credenciales reales en esta guía. Los comandos del VPS usan <code>POSTGRES_USER</code> y <code>POSTGRES_DB</code> ya disponibles dentro del contenedor <code>postgres</code>.
+        </div>
+      </section>
+
+      <section id="respaldo">
+        <h2>3. Crear y comprobar el respaldo en el VPS</h2>
+        <p>Abra una sesión SSH dedicada. Todos los comandos de esta sección se ejecutan en el VPS. Si cualquier comprobación falla, la sesión termina con error para impedir que se continúe por accidente.</p>
+
+        <h3>3.1 Confirmar ubicación y estado de PostgreSQL</h3>
+        <span class="location">Ejecutar en el VPS</span>
+        <pre><code>cd /opt/hive-api/hive-api/deploy
+COMPOSE_FILE="docker-compose.prod.yml"
+
+test -f "$COMPOSE_FILE" || { printf 'ERROR: no se encuentra %s\n' "$COMPOSE_FILE"; return 1 2&gt;/dev/null || exit 1; }
+docker compose -f "$COMPOSE_FILE" ps postgres
+docker compose -f "$COMPOSE_FILE" exec -T postgres sh -c \
+  'exec pg_isready --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"' \
+  || { printf 'ERROR: PostgreSQL no está disponible. NO DESPLEGAR.\n' &gt;&amp;2; return 1 2&gt;/dev/null || exit 1; }</code></pre>
+        <div class="evidence"><strong>Resultado esperado:</strong> el servicio <code>postgres</code> aparece en ejecución y <code>pg_isready</code> informa que acepta conexiones. Si la ruta real difiere, cambie primero al directorio que contiene <code>docker-compose.prod.yml</code>; no cambie el nombre del servicio.</div>
+
+        <h3>3.2 Crear un volcado en formato personalizado</h3>
+        <span class="location">Ejecutar en el VPS</span>
+        <pre><code>umask 077
+BACKUP_DIR="$HOME/hive-api-backups"
+BACKUP_NAME="hive-api-predeploy-$(date -u +%Y%m%dT%H%M%SZ).dump"
+BACKUP_FILE="$BACKUP_DIR/$BACKUP_NAME"
+mkdir -p -- "$BACKUP_DIR"
+
+docker compose -f "$COMPOSE_FILE" exec -T postgres sh -c \
+  'exec pg_dump --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --format=custom --no-owner --no-privileges' \
+  &gt; "$BACKUP_FILE"
+DUMP_STATUS=$?
+
+if [ "$DUMP_STATUS" -ne 0 ]; then
+  printf 'ERROR: pg_dump terminó con código %s. NO DESPLEGAR. Archivo incompleto: %s\n' "$DUMP_STATUS" "$BACKUP_FILE" &gt;&amp;2
+  return "$DUMP_STATUS" 2&gt;/dev/null || exit "$DUMP_STATUS"
+fi
+printf 'OK: pg_dump terminó con código 0.\n'</code></pre>
+        <div class="evidence"><strong>Evidencia 1:</strong> aparece <code>OK: pg_dump terminó con código 0.</code> El archivo se crea en el sistema de archivos del VPS mediante redirección en el host, no dentro del contenedor.</div>
+
+        <h3>3.3 Comprobar tamaño, SHA-256 y catálogo</h3>
+        <span class="location">Ejecutar en el VPS, en la misma sesión</span>
+        <pre><code>if ! test -s "$BACKUP_FILE"; then
+  printf 'ERROR: el respaldo está vacío. NO DESPLEGAR: %s\n' "$BACKUP_FILE" &gt;&amp;2
+  return 1 2&gt;/dev/null || exit 1
+fi
+printf 'OK: respaldo no vacío: '
+du -h "$BACKUP_FILE"
+
+if ! (
+  cd "$BACKUP_DIR"
+  sha256sum "$BACKUP_NAME" &gt; "$BACKUP_NAME.sha256"
+  cat "$BACKUP_NAME.sha256"
+  sha256sum --check "$BACKUP_NAME.sha256"
+); then
+  printf 'ERROR: no se pudo crear o verificar SHA-256. NO DESPLEGAR.\n' &gt;&amp;2
+  return 1 2&gt;/dev/null || exit 1
+fi
+
+docker compose -f "$COMPOSE_FILE" exec -T postgres \
+  pg_restore --list &lt; "$BACKUP_FILE" &gt; "$BACKUP_FILE.list"
+LIST_STATUS=$?
+if [ "$LIST_STATUS" -ne 0 ] || ! test -s "$BACKUP_FILE.list"; then
+  printf 'ERROR: pg_restore --list no pudo leer el respaldo. NO DESPLEGAR.\n' &gt;&amp;2
+  return 1 2&gt;/dev/null || exit 1
+fi
+
+chmod 600 "$BACKUP_FILE" "$BACKUP_FILE.sha256" "$BACKUP_FILE.list"
+printf 'OK: catálogo legible; entradas: '
+wc -l &lt; "$BACKUP_FILE.list"
+printf 'RUTA_DUMP=%s\nRUTA_SHA256=%s\n' "$BACKUP_FILE" "$BACKUP_FILE.sha256"</code></pre>
+        <div class="evidence">
+          <strong>Evidencias 2–4:</strong>
+          <ul>
+            <li><code>du</code> muestra un tamaño mayor que cero.</li>
+            <li><code>sha256sum --check</code> muestra el nombre del archivo seguido de <code>OK</code>.</li>
+            <li><code>pg_restore --list</code> termina con código 0 y genera un catálogo con entradas.</li>
+          </ul>
+          Conserve las rutas impresas: se usarán desde el equipo local.
+        </div>
+      </section>
+
+      <section id="copia">
+        <h2>4. Copiar el respaldo al equipo local</h2>
+        <p>Sustituya los marcadores entre <code>&lt;...&gt;</code>. Use exactamente la ruta absoluta mostrada como <code>RUTA_DUMP</code> en el VPS.</p>
+        <span class="location local">Ejecutar en el equipo local</span>
+        <pre><code>umask 077
+LOCAL_DIR="$HOME/hive-api-backups"
+REMOTE_DUMP="/home/&lt;VPS_USER&gt;/hive-api-backups/&lt;NOMBRE_EXACTO&gt;.dump"
+mkdir -p -- "$LOCAL_DIR"
+chmod 700 "$LOCAL_DIR"
+
+scp "&lt;VPS_USER&gt;@&lt;VPS_HOST&gt;:${REMOTE_DUMP}" "$LOCAL_DIR/" \
+  || { printf 'ERROR: no se pudo copiar el respaldo.\n' &gt;&amp;2; return 1 2&gt;/dev/null || exit 1; }
+scp "&lt;VPS_USER&gt;@&lt;VPS_HOST&gt;:${REMOTE_DUMP}.sha256" "$LOCAL_DIR/" \
+  || { printf 'ERROR: no se pudo copiar la suma SHA-256.\n' &gt;&amp;2; return 1 2&gt;/dev/null || exit 1; }
+
+LOCAL_BACKUP_FILE="$LOCAL_DIR/$(basename "$REMOTE_DUMP")"
+if ! (
+  cd "$LOCAL_DIR"
+  sha256sum --check "$(basename "$REMOTE_DUMP").sha256"
+); then
+  printf 'ERROR: la suma SHA-256 local no coincide. NO RESTAURAR NI DESPLEGAR.\n' &gt;&amp;2
+  return 1 2&gt;/dev/null || exit 1
+fi</code></pre>
+        <div class="evidence"><strong>Resultado esperado:</strong> ambas copias terminan correctamente y la comprobación local muestra <code>OK</code>. Un hash distinto significa que la copia local no está validada: elimine únicamente la copia local defectuosa y repita <code>scp</code>.</div>
+        <div class="callout safe">
+          <strong>Fin de la ruta obligatoria antes del despliegue.</strong>
+          Si <code>pg_dump</code> terminó correctamente, el archivo no está vacío, su SHA-256 y su catálogo son válidos, la copia local existe y el SHA-256 local coincide, puede continuar con el despliegue supervisado. No ejecute la restauración siguiente como ensayo previo.
+        </div>
+      </section>
+
+      <section id="restauracion">
+        <h2>5. Contingencia: restaurar en PostgreSQL local desechable</h2>
+        <div class="callout warning">
+          <strong>Ejecutar solo si se necesita recuperar datos.</strong>
+          Esta sección no forma parte de la preparación ni de la autorización del despliegue. Es un procedimiento manual de contingencia para inspeccionar el respaldo recuperado en un PostgreSQL 15 local y aislado.
+        </div>
+        <div class="callout danger">
+          <strong>LÍMITE DESTRUCTIVO</strong>
+          Los siguientes comandos crean y posteriormente eliminan un contenedor local cuyo nombre empieza por <code>hive-api-restore-</code>. No use nombres de contenedores existentes. No publique puertos y no apunte ninguna orden a un servidor remoto.
+        </div>
+
+        <h3>5.1 Crear una base de datos local vacía</h3>
+        <span class="location local">Ejecutar en el equipo local, en la misma sesión</span>
+        <pre><code>RESTORE_CONTAINER="hive-api-restore-$(date -u +%Y%m%dT%H%M%SZ)"
+RESTORE_USER="hive_restore"
+RESTORE_DB="hive_restore"
+RESTORE_PASSWORD="disposable-local-only"
+
+docker run --detach \
+  --name "$RESTORE_CONTAINER" \
+  --env POSTGRES_USER="$RESTORE_USER" \
+  --env POSTGRES_PASSWORD="$RESTORE_PASSWORD" \
+  --env POSTGRES_DB="$RESTORE_DB" \
+  postgres:15-alpine
+
+for ATTEMPT in $(seq 1 30); do
+  if docker exec "$RESTORE_CONTAINER" pg_isready --username="$RESTORE_USER" --dbname="$RESTORE_DB"; then
+    break
+  fi
+  if [ "$ATTEMPT" -eq 30 ]; then
+    printf 'ERROR: PostgreSQL local no estuvo disponible a tiempo.\n' &gt;&amp;2
+    return 1 2&gt;/dev/null || exit 1
+  fi
+  sleep 1
+done</code></pre>
+        <div class="evidence"><strong>Resultado esperado:</strong> <code>pg_isready</code> informa que la base acepta conexiones. La contraseña es exclusivamente local y temporal; no es una credencial de infraestructura.</div>
+
+        <h3>5.2 Restaurar el archivo con detención ante el primer error</h3>
+        <span class="location local">Ejecutar en el equipo local</span>
+        <pre><code>test -s "$LOCAL_BACKUP_FILE" || { printf 'ERROR: no existe un respaldo local válido.\n' &gt;&amp;2; return 1 2&gt;/dev/null || exit 1; }
+
+docker exec -i "$RESTORE_CONTAINER" sh -c \
+  'exec pg_restore --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --no-owner --no-privileges --exit-on-error' \
+  &lt; "$LOCAL_BACKUP_FILE"
+RESTORE_STATUS=$?
+
+if [ "$RESTORE_STATUS" -ne 0 ]; then
+  printf 'ERROR: la restauración terminó con código %s. RECUPERACIÓN LOCAL NO VALIDADA.\n' "$RESTORE_STATUS" &gt;&amp;2
+  return "$RESTORE_STATUS" 2&gt;/dev/null || exit "$RESTORE_STATUS"
+fi
+printf 'OK: restauración local terminada con código 0.\n'</code></pre>
+        <div class="evidence"><strong>Resultado esperado:</strong> <code>pg_restore</code> termina con código 0. La opción <code>--exit-on-error</code> evita aceptar una restauración parcial como prueba válida.</div>
+
+        <h3>5.3 Inspeccionar el esquema y recuentos representativos</h3>
+        <p>Los nombres <code>users</code>, <code>memories</code>, <code>sessions</code> y <code>user_prompts</code> corresponden a tablas vigentes verificadas en las migraciones actuales de Hive API.</p>
+        <span class="location local">Ejecutar en el equipo local</span>
+        <pre><code>docker exec "$RESTORE_CONTAINER" sh -c \
+  'exec psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --set=ON_ERROR_STOP=1 --command="\dt public.*"'
+
+docker exec "$RESTORE_CONTAINER" sh -c \
+  'exec psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --set=ON_ERROR_STOP=1 --command="
+    SELECT '\''users'\'' AS tabla, count(*) AS filas FROM users
+    UNION ALL SELECT '\''memories'\'', count(*) FROM memories
+    UNION ALL SELECT '\''sessions'\'', count(*) FROM sessions
+    UNION ALL SELECT '\''user_prompts'\'', count(*) FROM user_prompts
+    ORDER BY tabla;
+  "'</code></pre>
+        <div class="evidence"><strong>Resultado esperado:</strong> <code>\dt public.*</code> muestra las tablas restauradas y la segunda consulta devuelve cuatro filas con recuentos numéricos. Los recuentos pueden ser cero; lo importante es que las tablas existen y las consultas terminan sin errores. No consulte columnas con datos privados.</div>
+
+        <h3>5.4 Eliminar el contenedor local desechable</h3>
+        <span class="location local">Ejecutar en el equipo local</span>
+        <pre><code>case "$RESTORE_CONTAINER" in
+  hive-api-restore-*) docker rm --force "$RESTORE_CONTAINER" ;;
+  *) printf 'ERROR: nombre inesperado; no se elimina ningún contenedor: %s\n' "$RESTORE_CONTAINER" &gt;&amp;2; return 1 2&gt;/dev/null || exit 1 ;;
+esac</code></pre>
+        <div class="evidence"><strong>Resultado esperado:</strong> Docker imprime el nombre del contenedor eliminado. El archivo local y su suma SHA-256 se conservan.</div>
+      </section>
+
+      <section id="decision">
+        <h2>6. Decisión compacta de recuperación</h2>
+        <table>
+          <thead><tr><th>Situación</th><th>Decisión inmediata</th></tr></thead>
+          <tbody>
+            <tr><td>Falla <code>pg_dump</code>, el archivo está vacío o <code>pg_restore --list</code> falla.</td><td><strong>No desplegar.</strong> Conservar el mensaje de error, corregir la causa y crear un respaldo nuevo.</td></tr>
+            <tr><td>El SHA-256 local no coincide.</td><td><strong>No restaurar ni desplegar.</strong> Repetir la copia desde el VPS y volver a comprobarla.</td></tr>
+            <tr><td>Las comprobaciones del VPS, la copia local y el SHA-256 local terminan correctamente.</td><td>Registrar las evidencias y proceder con el despliegue supervisado. <strong>No ejecutar la restauración local como requisito previo.</strong></td></tr>
+            <tr><td>Una migración posterior falla en producción o surge una necesidad real de recuperación.</td><td>Detener el despliegue o la operación afectada y seguir el plan de recuperación aprobado. Si se requiere inspeccionar el respaldo, ejecutar manualmente la contingencia local de la sección 5. <strong>Esta guía no autoriza una restauración en producción.</strong></td></tr>
+            <tr><td>La restauración local de contingencia o una consulta de esquema falla.</td><td>No considerar válido ese intento de recuperación. Conservar temporalmente el contenedor para diagnóstico; después eliminarlo de forma explícita. Las comprobaciones de Hive API pertenecen a producción o a la issue #631.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="problemas">
+        <h2>7. Resolución de problemas</h2>
+        <table>
+          <thead><tr><th>Síntoma</th><th>Comprobación segura</th></tr></thead>
+          <tbody>
+            <tr><td>Compose no encuentra el archivo o el servicio.</td><td>Confirme <code>pwd</code>, <code>test -f docker-compose.prod.yml</code> y <code>docker compose -f docker-compose.prod.yml ps postgres</code>. No abra ni muestre <code>.env</code>.</td></tr>
+            <tr><td><code>pg_dump</code> informa un error de conexión.</td><td>Compruebe que <code>postgres</code> esté saludable. Los nombres de usuario y base se toman del entorno interno del contenedor.</td></tr>
+            <tr><td><code>No space left on device</code>.</td><td>No despliegue. Libere espacio mediante el procedimiento operativo habitual sin borrar respaldos no revisados y vuelva a crear el archivo desde cero.</td></tr>
+            <tr><td><code>scp</code> informa ruta inexistente.</td><td>Copie literalmente la ruta <code>RUTA_DUMP</code> impresa en el VPS. Compruebe el usuario remoto y no use comodines.</td></tr>
+            <tr><td>Ya existe el contenedor local.</td><td>No reutilice ni elimine un contenedor desconocido. Genere otro nombre con una marca temporal nueva.</td></tr>
+            <tr><td><code>pg_restore</code> termina con error.</td><td>Revise su salida y <code>docker logs "$RESTORE_CONTAINER"</code>. No añada opciones para ignorar errores y no convierta una restauración parcial en evidencia válida.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="lista-final">
+        <h2>8. Listas finales</h2>
+        <h3>Antes del despliegue</h3>
+        <ul class="checklist">
+          <li><code>pg_dump</code> terminó con código 0 en el VPS.</li>
+          <li>El archivo del VPS existe, no está vacío y tiene permisos restrictivos.</li>
+          <li>La suma SHA-256 fue creada y verificada en el VPS.</li>
+          <li><code>pg_restore --list</code> leyó el archivo y produjo un catálogo no vacío.</li>
+          <li>El archivo y su suma se copiaron manualmente al equipo local.</li>
+          <li>La suma SHA-256 local coincide.</li>
+          <li>No se ejecutó ninguna restauración como ensayo o requisito previo al despliegue.</li>
+        </ul>
+        <h3>Solo si se necesita recuperar datos</h3>
+        <ul class="checklist">
+          <li>La restauración en <code>postgres:15-alpine</code> terminó con código 0.</li>
+          <li>El esquema y los recuentos representativos se consultaron sin errores.</li>
+          <li>El contenedor local desechable fue eliminado.</li>
+          <li>No se ejecutó ni se preparó ninguna restauración sobre producción.</li>
+        </ul>
+        <div class="callout safe">
+          <strong>Fin del procedimiento de la issue #632.</strong>
+          Este documento no instala automatización, no programa futuros respaldos y no valida el comportamiento de Hive API. Antes del despliegue exige únicamente un respaldo manual legible, verificado y copiado. La restauración local se reserva para una contingencia de recuperación.
+        </div>
+      </section>
+    </div>
+
+    <footer>
+      Procedimiento enfocado para el mantenedor de Hive API durante el despliegue interno inicial. Documento estático, autocontenido y sin dependencias de red.
+    </footer>
+  </main>
+</body>
+</html>
