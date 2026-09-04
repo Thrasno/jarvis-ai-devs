@@ -6,23 +6,26 @@
   <title>Respaldo manual previo al despliegue y restauración local de contingencia</title>
   <style>
     :root {
-      color-scheme: light;
-      --ink: #172033;
-      --muted: #5d687b;
-      --paper: #ffffff;
-      --canvas: #eef3f8;
-      --line: #d8e0ea;
-      --brand: #174c77;
-      --brand-soft: #e8f2fb;
-      --safe: #176b4d;
-      --safe-soft: #e8f6ef;
-      --warn: #8a5a00;
-      --warn-soft: #fff4d6;
-      --danger: #a52828;
-      --danger-soft: #fff0f0;
-      --code: #101827;
-      --code-ink: #eaf1fa;
-      --shadow: 0 18px 50px rgba(30, 53, 78, 0.10);
+      color-scheme: dark;
+      --ink: #e6edf3;
+      --muted: #8b97a8;
+      --paper: #0e1320;
+      --canvas: #080a10;
+      --line: #1b2333;
+      --brand: #3b82e8;
+      --brand-soft: #101d35;
+      --safe: #22b85c;
+      --safe-soft: #0c2418;
+      --warn: #e0a22e;
+      --warn-soft: #2a210d;
+      --danger: #ef4444;
+      --danger-soft: #2a1118;
+      --code: #07090e;
+      --code-ink: #d7e7f5;
+      --violet: #8b5cf0;
+      --magenta: #e0246f;
+      --cyan: #22d3ee;
+      --shadow: 0 22px 70px rgba(0, 0, 0, 0.55), 0 0 42px rgba(59, 130, 232, 0.08);
     }
 
     * { box-sizing: border-box; }
@@ -30,7 +33,10 @@
     body {
       margin: 0;
       color: var(--ink);
-      background: var(--canvas);
+      background:
+        radial-gradient(circle at 15% 0%, rgba(59, 130, 232, 0.13), transparent 30rem),
+        radial-gradient(circle at 90% 12%, rgba(224, 36, 111, 0.08), transparent 26rem),
+        var(--canvas);
       font: 16px/1.65 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     main {
@@ -45,58 +51,88 @@
     header {
       padding: clamp(32px, 7vw, 72px);
       color: #fff;
-      background: linear-gradient(135deg, #123552 0%, #174c77 58%, #2876a8 100%);
+      background:
+        radial-gradient(circle at 78% 18%, rgba(34, 211, 238, 0.12), transparent 18rem),
+        linear-gradient(135deg, #080a10 0%, #0e1320 48%, #121a2b 100%);
     }
-    header p { max-width: 760px; margin: 12px 0 0; color: #e6f2fb; font-size: 1.08rem; }
-    h1 { max-width: 850px; margin: 0; font-size: clamp(2rem, 5vw, 3.35rem); line-height: 1.08; letter-spacing: -0.035em; }
+    header p { max-width: 760px; margin: 12px 0 0; color: var(--muted); font-size: 1.08rem; }
+    h1 {
+      max-width: 850px;
+      margin: 0;
+      color: transparent;
+      background: linear-gradient(90deg, var(--magenta) 0%, var(--violet) 46%, var(--cyan) 100%);
+      background-clip: text;
+      -webkit-background-clip: text;
+      font-size: clamp(2rem, 5vw, 3.35rem);
+      line-height: 1.08;
+      letter-spacing: -0.035em;
+    }
     h2 { margin: 0 0 18px; color: var(--brand); font-size: 1.65rem; line-height: 1.25; }
     h3 { margin: 30px 0 10px; font-size: 1.15rem; line-height: 1.35; }
     p, ul, ol { margin-top: 0; }
     a { color: var(--brand); }
     code { font: 0.92em/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
-    p code, li code, td code { padding: 0.12em 0.35em; border-radius: 5px; background: #edf2f7; }
+    p code, li code, td code { padding: 0.12em 0.35em; border: 1px solid #202b3d; border-radius: 5px; background: #121a2b; }
 
     .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
-    .tag { padding: 5px 10px; border: 1px solid rgba(255,255,255,.3); border-radius: 999px; font-size: .82rem; font-weight: 700; }
+    .tag { padding: 5px 10px; border: 1px solid rgba(34, 211, 238, .35); border-radius: 999px; color: #bcebf4; background: rgba(34, 211, 238, .05); font-size: .82rem; font-weight: 700; }
     .content { padding: clamp(24px, 6vw, 64px); }
     section { padding: 34px 0; border-bottom: 1px solid var(--line); }
     section:last-child { border-bottom: 0; }
     .lead { font-size: 1.08rem; }
     .toc { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; padding: 0; list-style: none; }
-    .toc a { display: block; height: 100%; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; text-decoration: none; font-weight: 650; }
-    .toc a:hover { background: var(--brand-soft); border-color: #a9c8df; }
+    .toc a { display: block; height: 100%; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: #0b101a; text-decoration: none; font-weight: 650; }
+    .toc a:hover { border-color: var(--cyan); background: var(--brand-soft); box-shadow: 0 0 20px rgba(34, 211, 238, .08); }
 
     .callout { margin: 20px 0; padding: 18px 20px; border-left: 5px solid var(--brand); border-radius: 8px; background: var(--brand-soft); }
     .callout strong:first-child { display: block; margin-bottom: 5px; }
     .callout.danger { border-color: var(--danger); background: var(--danger-soft); }
     .callout.warning { border-color: var(--warn); background: var(--warn-soft); }
     .callout.safe { border-color: var(--safe); background: var(--safe-soft); }
-    .location { display: inline-block; margin: 12px 0 8px; padding: 5px 10px; border-radius: 6px; color: #fff; background: var(--brand); font-size: .78rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+    .location { display: inline-block; margin: 12px 0 8px; padding: 5px 10px; border-radius: 6px; color: #f7fbff; background: linear-gradient(90deg, #2563b8, var(--brand)); font-size: .78rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
     .location.local { background: var(--safe); }
-    pre { margin: 0 0 18px; padding: 18px; overflow-x: auto; border-radius: 10px; color: var(--code-ink); background: var(--code); font: 0.88rem/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; tab-size: 2; }
+    pre { margin: 0 0 18px; padding: 18px; overflow-x: auto; border: 1px solid #1e3150; border-radius: 10px; color: var(--code-ink); background: var(--code); box-shadow: inset 3px 0 0 var(--brand); font: 0.88rem/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; tab-size: 2; }
     pre code { font: inherit; }
-    .evidence { margin: 12px 0 26px; padding: 14px 16px; border: 1px solid #b9dfca; border-radius: 8px; background: var(--safe-soft); }
+    .evidence { margin: 12px 0 26px; padding: 14px 16px; border: 1px solid #185f37; border-radius: 8px; background: var(--safe-soft); }
     .evidence strong { color: var(--safe); }
     table { width: 100%; border-collapse: collapse; margin: 18px 0; font-size: .95rem; }
     th, td { padding: 12px 14px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
-    th { background: #f2f6fa; }
+    th { background: #121a2b; }
     .checklist { padding-left: 0; list-style: none; }
     .checklist li { position: relative; margin: 9px 0; padding-left: 30px; }
     .checklist li::before { position: absolute; left: 0; content: "□"; color: var(--brand); font-size: 1.3rem; line-height: 1.25; }
     .scope-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
-    .scope-card { padding: 18px; border: 1px solid var(--line); border-radius: 10px; }
+    .scope-card { padding: 18px; border: 1px solid var(--line); border-radius: 10px; background: #0b101a; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .03); }
     .scope-card h3 { margin-top: 0; }
-    footer { padding: 24px clamp(24px, 6vw, 64px); color: var(--muted); background: #f5f8fb; font-size: .9rem; }
+    footer { padding: 24px clamp(24px, 6vw, 64px); color: var(--muted); background: #080a10; font-size: .9rem; }
     @media (max-width: 620px) {
       main { width: 100%; margin: 0; border: 0; border-radius: 0; }
       header, .content { padding-left: 20px; padding-right: 20px; }
       table { display: block; overflow-x: auto; }
     }
     @media print {
+      :root {
+        --ink: #172033;
+        --muted: #5d687b;
+        --paper: #ffffff;
+        --canvas: #ffffff;
+        --line: #d8e0ea;
+        --brand: #174c77;
+        --brand-soft: #e8f2fb;
+        --safe: #176b4d;
+        --safe-soft: #e8f6ef;
+        --warn: #8a5a00;
+        --warn-soft: #fff4d6;
+        --danger: #a52828;
+        --danger-soft: #fff0f0;
+        --code: #f2f2f2;
+        --code-ink: #111111;
+      }
       body { background: #fff; }
       main { width: 100%; margin: 0; border: 0; box-shadow: none; }
       header { color: #000; background: #fff; padding-bottom: 24px; }
       header p { color: #333; }
+      h1 { color: #000; background: none; -webkit-text-fill-color: #000; }
       .tag { border-color: #777; }
       section { break-inside: avoid; }
       pre { white-space: pre-wrap; overflow-wrap: anywhere; }
