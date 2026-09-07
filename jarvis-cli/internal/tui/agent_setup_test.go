@@ -12,17 +12,20 @@ import (
 	"testing"
 	"testing/fstest"
 
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/projectregistry"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
+	syncplan "github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sync"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 type setupAgentStub struct {
 	name                    string
+	configDir               string
 	mergeErrAt              int
 	installSkillsErr        error
 	installOrchErr          error
@@ -248,15 +251,23 @@ func TestMCPReplacementAcknowledgementIsExactAndOnlyRequiredForManagedAgents(t *
 	}
 }
 
-func (a *setupAgentStub) Name() string                  { return a.name }
-func (a *setupAgentStub) IsInstalled() bool             { return true }
-func (a *setupAgentStub) ConfigDir() string             { return "/tmp/" + a.name }
+func (a *setupAgentStub) Name() string      { return a.name }
+func (a *setupAgentStub) IsInstalled() bool { return true }
+func (a *setupAgentStub) ConfigDir() string {
+	if a.configDir != "" {
+		return a.configDir
+	}
+	return "/tmp/" + a.name
+}
 func (a *setupAgentStub) InstructionsPath() string      { return filepath.Join(a.ConfigDir(), "AGENTS.md") }
 func (a *setupAgentStub) SupportsOutputStyles() bool    { return true }
 func (a *setupAgentStub) ClearOutputStyle(string) error { return nil }
 func (a *setupAgentStub) RuntimePlan() (sddruntime.RuntimePlan, error) {
 	if a.runtimePlanErr != nil {
 		return sddruntime.RuntimePlan{}, a.runtimePlanErr
+	}
+	if a.runtimePlan.Paths.Settings == "" {
+		return sddruntime.Build(a.name)
 	}
 	return a.runtimePlan, nil
 }
@@ -762,6 +773,72 @@ func TestConfigureWizardAgents_AggregatesResults(t *testing.T) {
 			if got := last.Err.Error(); !strings.Contains(got, tt.wantErrSubstr) {
 				t.Fatalf("last error = %q, want contains %q", got, tt.wantErrSubstr)
 			}
+		})
+	}
+}
+
+func TestConfigureWizardAgents_RecordsCanonicalSettingsPaths(t *testing.T) {
+	tests := []struct {
+		name     string
+		platform sddruntime.Platform
+	}{
+		{name: "claude", platform: sddruntime.PlatformClaude},
+		{name: "opencode", platform: sddruntime.PlatformOpenCode},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			runtimePlan, err := sddruntime.Build(tt.name)
+			if err != nil {
+				t.Fatalf("build runtime plan: %v", err)
+			}
+			assignments, err := sddruntime.DefaultAssignmentsForPlatform(tt.platform)
+			if err != nil {
+				t.Fatalf("resolve default assignments: %v", err)
+			}
+			a := &setupAgentStub{
+				name:           tt.name,
+				configDir:      filepath.Join(root, filepath.FromSlash(filepath.Dir(runtimePlan.Paths.Settings))),
+				runtimePlan:    runtimePlan,
+				observeRuntime: passingRuntimeObservation(t, tt.name, assignments, nil),
+			}
+
+			results := configureWizardAgents([]agent.Agent{a}, state.PhaseModels{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
+			if len(results) != 1 || results[0].Err != nil {
+				t.Fatalf("configure wizard agent result = %+v", results)
+			}
+			want := filepath.Join(root, filepath.FromSlash(runtimePlan.Paths.Settings))
+			if got := results[0].State.ConfigPath; got != want {
+				t.Fatalf("config path = %q, want canonical settings file %q", got, want)
+			}
+
+			if tt.name != "claude" {
+				return
+			}
+			manifest := &state.State{InstalledAgents: []state.Agent{{
+				ID:               tt.name,
+				InstructionsPath: results[0].State.InstructionsPath,
+				ConfigPath:       results[0].State.ConfigPath,
+			}}}
+			plan, err := syncplan.BuildPlan(syncplan.PlanInput{
+				Root:      root,
+				State:     manifest,
+				Templates: jarvis.TemplatesFS,
+				Profile:   &persona.Profile{Name: "fixture"},
+			})
+			if err != nil {
+				t.Fatalf("build replay plan from wizard record: %v", err)
+			}
+			for _, tracked := range plan.Tracked {
+				if tracked.Semantic != nil {
+					if tracked.Path != want {
+						t.Fatalf("replay plan tracks Claude settings at %q, want %q", tracked.Path, want)
+					}
+					return
+				}
+			}
+			t.Fatalf("replay plan does not track canonical settings file %q: %+v", want, plan.Tracked)
 		})
 	}
 }

@@ -51,6 +51,50 @@ func TestBuildPlanTracksClaudeOutputStyleAndSettingsButSkipsUnsupportedAgents(t 
 	}
 }
 
+func TestBuildPlan_NormalizesOnlyLegacyCanonicalClaudeConfigDirectory(t *testing.T) {
+	root := t.TempDir()
+	canonicalDir := filepath.Join(root, ".claude")
+	canonicalSettings := filepath.Join(canonicalDir, "settings.json")
+	tests := []struct {
+		name       string
+		configPath string
+		wantPath   string
+	}{
+		{name: "legacy canonical directory", configPath: canonicalDir, wantPath: canonicalSettings},
+		{name: "canonical settings file", configPath: canonicalSettings, wantPath: canonicalSettings},
+		{name: "arbitrary directory-like path", configPath: filepath.Join(root, "custom-claude-config"), wantPath: filepath.Join(root, "custom-claude-config")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := replayableState(state.Agent{
+				ID:               "claude",
+				InstructionsPath: filepath.Join(canonicalDir, "CLAUDE.md"),
+				ConfigPath:       tt.configPath,
+			})
+			plan, err := BuildPlan(PlanInput{
+				Root:      root,
+				State:     st,
+				Templates: jarvis.TemplatesFS,
+				Profile:   &persona.Profile{Name: "fixture"},
+			})
+			if err != nil {
+				t.Fatalf("BuildPlan: %v", err)
+			}
+
+			for _, tracked := range plan.Tracked {
+				if tracked.Semantic != nil {
+					if tracked.Path != tt.wantPath {
+						t.Fatalf("tracked Claude settings path = %q, want %q", tracked.Path, tt.wantPath)
+					}
+					return
+				}
+			}
+			t.Fatal("replay plan did not track Claude settings")
+		})
+	}
+}
+
 func seedFile(t *testing.T, path string, mode os.FileMode) {
 	t.Helper()
 	writeFile(t, path, "#!/bin/sh\necho jarvis\n")

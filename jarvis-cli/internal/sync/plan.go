@@ -141,7 +141,11 @@ func trackedPaths(in PlanInput, artifacts []PlannedArtifact, ownerByLocation map
 		if configured.ID == "claude" {
 			settingsPath := filepath.Join(dir, "settings.json")
 			if configured.ConfigPath != "" {
-				configLocation, configErr := managedLocation(in.Root, configured.ConfigPath)
+				configPath, normalizeErr := normalizeClaudeConfigPath(in.Root, configured.ConfigPath)
+				if normalizeErr != nil {
+					return nil, fmt.Errorf("agent %q config_path %q: %w", configured.ID, configured.ConfigPath, normalizeErr)
+				}
+				configLocation, configErr := managedLocation(in.Root, configPath)
 				if configErr != nil {
 					return nil, fmt.Errorf("agent %q config_path %q: %w", configured.ID, configured.ConfigPath, configErr)
 				}
@@ -190,6 +194,25 @@ func trackedPaths(in PlanInput, artifacts []PlannedArtifact, ownerByLocation map
 		})
 	}
 	return tracked, nil
+}
+
+func normalizeClaudeConfigPath(root, configPath string) (string, error) {
+	plan, err := sddruntime.Build("claude")
+	if err != nil {
+		return "", err
+	}
+	canonicalSettings := filepath.FromSlash(plan.Paths.Settings)
+	canonicalDir := filepath.Dir(canonicalSettings)
+	if filepath.IsAbs(configPath) {
+		if filepath.Clean(configPath) == filepath.Clean(filepath.Join(root, canonicalDir)) {
+			return filepath.Join(root, canonicalSettings), nil
+		}
+		return configPath, nil
+	}
+	if filepath.Clean(configPath) == filepath.Clean(canonicalDir) {
+		return canonicalSettings, nil
+	}
+	return configPath, nil
 }
 
 // renderSkills reuses the installer's walk and model-section rendering, so the
