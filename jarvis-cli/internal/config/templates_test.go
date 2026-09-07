@@ -1,9 +1,12 @@
 package config
 
 import (
+	"io/fs"
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 )
 
 // TestRenderCLAUDEMd_SkillsSectionRendered verifies that the Skills section
@@ -258,5 +261,77 @@ func TestProjectInstruction_SeparatesLayer1AndLayer2(t *testing.T) {
 	}
 	if projection.Layer2 != "presentation" {
 		t.Fatalf("Layer2 = %q, want presentation", projection.Layer2)
+	}
+}
+
+// TestLayer1Content_IncludesCodeCommentPolicy verifies that the Layer1 template
+// carries the approved code-comment policy, so every generated runtime receives
+// it as behavior policy.
+func TestLayer1Content_IncludesCodeCommentPolicy(t *testing.T) {
+	layer1 := Layer1Content()
+
+	for _, phrase := range []string{
+		"## Code Comment Policy",
+		"Keep comments to the minimum necessary.",
+		"NEVER write a comment that explains WHAT the code does",
+		"Comment and document IMPORTANT DECISIONS only.",
+		"Public API documentation is exempt.",
+		"`TODO` and `FIXME` MUST name a concrete action",
+		"Commented-out code MUST be deleted, never left in place.",
+		"NEVER include memory observation IDs",
+		"A project with a clearly established comment convention keeps it",
+		"Comment language and persona non-leakage are owned elsewhere",
+	} {
+		if !strings.Contains(layer1, phrase) {
+			t.Fatalf("layer1.md missing code-comment-policy phrase %q", phrase)
+		}
+	}
+}
+
+// TestLayer1Content_LayerBoundaryRuleStaysFinalSection verifies that the layer
+// boundary rule remains the closing statement of the Layer1 template.
+func TestLayer1Content_LayerBoundaryRuleStaysFinalSection(t *testing.T) {
+	layer1 := Layer1Content()
+
+	const boundaryHeading = "## Layer Boundary Rule (MVP)"
+	index := strings.Index(layer1, boundaryHeading)
+	if index == -1 {
+		t.Fatalf("layer1.md missing %q", boundaryHeading)
+	}
+	if after := layer1[index+len(boundaryHeading):]; strings.Contains(after, "\n## ") {
+		t.Fatalf("%q must be the final top-level section; found a later section in:\n%s", boundaryHeading, after)
+	}
+}
+
+// TestRenderedInstructions_CodeCommentPolicyLivesInLayer1ForBothAgents verifies
+// that one policy text reaches the JARVIS:LAYER1 region of both rendered
+// instruction files and never reaches the Layer2 presentation region.
+func TestRenderedInstructions_CodeCommentPolicyLivesInLayer1ForBothAgents(t *testing.T) {
+	const policyHeading = "## Code Comment Policy"
+
+	for _, tc := range []struct {
+		name   string
+		render func(fs.FS, string, string, string, []SkillInfo) (string, error)
+	}{
+		{name: "claude", render: RenderCLAUDEMd},
+		{name: "opencode", render: RenderAGENTSMd},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rendered, err := tc.render(jarvis.TemplatesFS, Layer1Content(), "### Presentation\n\n- Register: friendly-professional", "", nil)
+			if err != nil {
+				t.Fatalf("render instructions: %v", err)
+			}
+
+			projection, err := ProjectInstruction(rendered)
+			if err != nil {
+				t.Fatalf("ProjectInstruction: %v", err)
+			}
+			if !strings.Contains(projection.Layer1, policyHeading) {
+				t.Fatalf("Layer1 region missing %q:\n%s", policyHeading, projection.Layer1)
+			}
+			if strings.Contains(projection.Layer2, policyHeading) {
+				t.Fatalf("Layer2 region must not contain %q:\n%s", policyHeading, projection.Layer2)
+			}
+		})
 	}
 }
