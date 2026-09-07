@@ -56,7 +56,8 @@ const (
 type Agent struct {
 	ID               string `yaml:"id"`
 	InstructionsPath string `yaml:"instructions_path,omitempty"`
-	ConfigPath       string `yaml:"config_path,omitempty"`
+	// ConfigPath is the canonical agent settings file, not its containing directory.
+	ConfigPath string `yaml:"config_path,omitempty"`
 }
 
 // StatuslineState records statusline consent as a tri-state built from two

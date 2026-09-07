@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"path/filepath"
 	"strings"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
@@ -112,6 +113,7 @@ func configureWizardAgents(
 ) []AgentApplyResult {
 	results := make([]AgentApplyResult, 0, len(agents))
 	for _, a := range agents {
+		configPath, err := wizardAgentConfigPath(a)
 		res := AgentApplyResult{
 			AgentName: a.Name(),
 			State: state.AgentRecord{
@@ -121,8 +123,13 @@ func configureWizardAgents(
 				// and what instruction ownership is keyed by. A machine that never
 				// migrated has no other source for it.
 				InstructionsPath: a.InstructionsPath(),
-				ConfigPath:       a.ConfigDir(),
+				ConfigPath:       configPath,
 			},
+		}
+		if err != nil {
+			res.Err = fmt.Errorf("resolve canonical config path: %w", err)
+			results = append(results, res)
+			return results
 		}
 		warnings, err := configureWizardAgent(a, phaseModels, hiveEntry, context7Entry, skillsSubFS, selectedIDs, agentsSubFS, statuslineConfirm)
 		res.Warnings = append(res.Warnings, warnings...)
@@ -159,6 +166,17 @@ func configureWizardAgents(
 	}
 
 	return results
+}
+
+func wizardAgentConfigPath(a agent.Agent) (string, error) {
+	plan, err := a.RuntimePlan()
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(plan.Paths.Settings) == "" {
+		return "", fmt.Errorf("agent %q runtime plan has no settings path", a.Name())
+	}
+	return filepath.Join(a.ConfigDir(), filepath.Base(filepath.FromSlash(plan.Paths.Settings))), nil
 }
 
 // applyWizardProfile applies an already resolved schema-v2 profile through the
