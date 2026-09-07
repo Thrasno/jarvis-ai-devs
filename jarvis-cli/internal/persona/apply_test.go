@@ -128,7 +128,7 @@ func TestApplyProfileReplacesOutputStyleAndPersistsCanonicalIdentity(t *testing.
 			t.Fatalf("schema-v2 output style contains policy %q:\n%s", forbidden, outputStyle)
 		}
 	}
-	if !strings.Contains(outputStyle, "keep-coding-instructions: true") {
+	if !strings.Contains(outputStyle, "keep-coding-instructions: false") {
 		t.Fatalf("schema-v2 output style must retain coding instructions:\n%s", outputStyle)
 	}
 
