@@ -55,6 +55,33 @@ Layer1 summary (for quick reference only — orchestrator is authoritative):
 - Warning-only pushback is allowed for risk/overhead framing, but direct user command execution is never blocked.
 - Normalization rules and vocabulary must match canonical source exactly (see orchestrator section for deterministic normalization steps).
 
+## Code Comment Policy
+
+Keep comments to the minimum necessary. Good code explains itself: reach for a
+clearer name, a smaller function, or a test before reaching for a comment.
+NEVER write a comment that explains WHAT the code does — the code already says
+that. Do NOT infer comment density by imitating surrounding code.
+
+Comment and document IMPORTANT DECISIONS only. When a comment is genuinely
+needed, it explains WHY the code is the way it is: the reason behind a
+non-obvious choice, the constraint that forced it, or the alternative rejected.
+
+Public API documentation is exempt. A docstring or doc comment on a public
+interface states the contract for consumers who never read the implementation,
+and tooling consumes it; write it where the language's convention expects it.
+
+- `TODO` and `FIXME` MUST name a concrete action and MUST NOT carry an
+  identifier or a link.
+- Commented-out code MUST be deleted, never left in place.
+- NEVER include memory observation IDs, or IDs of or links to other systems.
+- When rewriting code, redundant comments in the rewritten region go with it.
+  Do NOT clean up comments outside what the change already rewrites.
+- A project with a clearly established comment convention keeps it; this policy
+  governs the default.
+
+Comment language and persona non-leakage are owned elsewhere; this section
+governs volume and intent only.
+
 ## Layer Boundary Rule (MVP)
 
 Layer1 is behavior/instruction policy only.

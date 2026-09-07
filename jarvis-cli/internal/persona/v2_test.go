@@ -462,6 +462,7 @@ func TestSargentoPresentationRendersAuthoredVoice(t *testing.T) {
 func TestPresentationValuesResolveNonEmptyWithRawIDFallback(t *testing.T) {
 	proseTables := []map[string]string{
 		vocabularyProse, humorProse, phrasePackProse, addressPackProse, antiCaricatureProse,
+		cadenceProse, emotionalRangeProse, verbosityProse, formattingProse, teachingMetaphorsProse, examplesProse,
 	}
 	for field, values := range v2AllowedPresentationValues {
 		for value := range values {
@@ -855,5 +856,117 @@ func TestProfileCatalogScannerExcludesNonProfileNamespace(t *testing.T) {
 
 	if names := listProfileNames(fSys); len(names) != 0 {
 		t.Fatalf("profile catalog names = %v, want no entries outside the profile namespace", names)
+	}
+}
+
+// TestEveryPresentationEnumResolvesToDirectiveProse locks the renderer contract
+// for every presentation field that resolves through a prose map or through
+// presentationRegister: each schema value must resolve to authored, directive
+// prose, never to its own label. The loops are driven off
+// v2AllowedPresentationValues so a newly added schema value with no prose entry
+// fails here automatically.
+func TestEveryPresentationEnumResolvesToDirectiveProse(t *testing.T) {
+	tables := map[string]map[string]string{
+		"vocabulary":         vocabularyProse,
+		"cadence":            cadenceProse,
+		"humor":              humorProse,
+		"emotional_range":    emotionalRangeProse,
+		"verbosity":          verbosityProse,
+		"formatting":         formattingProse,
+		"teaching_metaphors": teachingMetaphorsProse,
+		"examples":           examplesProse,
+		"address_pack":       addressPackProse,
+		"phrase_pack":        phrasePackProse,
+		"anti_caricature":    antiCaricatureProse,
+	}
+
+	// language is the one presentation field with no prose map: it feeds
+	// presentationLanguage for dialect gating, not a "- Field: prose" bullet.
+	const nonProseField = "language"
+
+	t.Run("every schema field has a prose resolver", func(t *testing.T) {
+		for field := range v2AllowedPresentationValues {
+			if field == nonProseField || field == "register" {
+				continue
+			}
+			if _, ok := tables[field]; !ok {
+				t.Fatalf("presentation field %q has no prose table in this guard; add it so its schema values are covered", field)
+			}
+		}
+	})
+
+	t.Run("register", func(t *testing.T) {
+		for value := range v2AllowedPresentationValues["register"] {
+			prose := presentationRegister(value)
+			if prose == value {
+				t.Fatalf("register=%q rendered the raw enum ID instead of authored prose", value)
+			}
+			if len(prose) <= len(value) {
+				t.Fatalf("register=%q prose = %q, want authored prose, not a bare label", value, prose)
+			}
+		}
+	})
+
+	for field, table := range tables {
+		t.Run(field, func(t *testing.T) {
+			for value := range v2AllowedPresentationValues[field] {
+				prose := proseFor(table, value)
+				if prose == value {
+					t.Fatalf("%s=%q rendered the raw enum ID instead of authored prose", field, value)
+				}
+				if len(prose) < 60 {
+					t.Fatalf("%s=%q prose = %q, want a directive instruction, not a label", field, value, prose)
+				}
+			}
+			if len(table) != len(v2AllowedPresentationValues[field]) {
+				t.Fatalf("%s prose table has %d entries, want one per schema value (%d)", field, len(table), len(v2AllowedPresentationValues[field]))
+			}
+		})
+	}
+}
+
+// TestPresentationRegisterCoversEverySchemaValue guards the register gap that
+// made friendly-professional (used by neutra) render its raw enum ID.
+func TestPresentationRegisterCoversEverySchemaValue(t *testing.T) {
+	for value := range v2AllowedPresentationValues["register"] {
+		if got := presentationRegister(value); got == value {
+			t.Fatalf("presentationRegister(%q) returned the raw enum ID, want authored prose", value)
+		}
+	}
+}
+
+// TestRenderedPresentationNeverPrintsBareEnumBullets renders every built-in
+// profile and fails if any presentation bullet is just its enum label.
+func TestRenderedPresentationNeverPrintsBareEnumBullets(t *testing.T) {
+	bullets := map[string]string{
+		"register":           "- Register: ",
+		"cadence":            "- Cadence: ",
+		"emotional_range":    "- Emotional range: ",
+		"verbosity":          "- Verbosity: ",
+		"formatting":         "- Formatting: ",
+		"teaching_metaphors": "- Teaching metaphors: ",
+		"examples":           "- Examples: ",
+	}
+
+	for _, name := range []string{"argentino", "asturiano", "galleguinho", "neutra", "sargento", "tony-stark", "yoda"} {
+		t.Run(name, func(t *testing.T) {
+			content, err := fs.ReadFile(jarvis.PersonaFS, "embed/personas/"+name+".yaml")
+			if err != nil {
+				t.Fatalf("read %s profile: %v", name, err)
+			}
+			preset, err := ValidateAndDecode(content)
+			if err != nil {
+				t.Fatalf("ValidateAndDecode(%s) error = %v", name, err)
+			}
+			for _, rendered := range []string{RenderLayer2(preset), RenderOutputStyle(preset)} {
+				for field, prefix := range bullets {
+					for value := range v2AllowedPresentationValues[field] {
+						if strings.Contains(rendered, prefix+value+"\n") {
+							t.Fatalf("%s rendered bare enum bullet %q:\n%s", name, prefix+value, rendered)
+						}
+					}
+				}
+			}
+		})
 	}
 }

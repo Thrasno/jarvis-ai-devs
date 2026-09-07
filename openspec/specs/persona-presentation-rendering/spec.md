@@ -155,8 +155,8 @@ prose — MUST live in `renderPresentation` (shared) or Layer 1 content,
 never in `RenderOutputStyle`-only frontmatter, so that `RenderLayer2`
 (OpenCode path) and `RenderOutputStyle` (Claude path) render byte-identical
 `### Presentation` and `### Language Behavior` bodies for every preset,
-differing only in the Claude-specific frontmatter block (which retains
-`keep-coding-instructions: true`).
+differing only in the Claude-specific frontmatter block (which emits
+`keep-coding-instructions: false`).
 
 #### Scenario: Identical persona behavior across agents
 
@@ -482,7 +482,7 @@ NOT restate or duplicate Layer 1 mentor-philosophy or supremacy-rule
 wording (forbidden strings such as `"CONCEPTS > CODE"`, `"AI IS A TOOL"`,
 `"Technical Behavior"`), MUST NOT leak the preset's internal `display_name`
 field into rendered output (rendering uses `toTitleCase(preset.Name)`
-instead), and MUST NOT alter `keep-coding-instructions: true` frontmatter
+instead), and MUST NOT alter the `keep-coding-instructions: false` frontmatter
 behavior in `RenderOutputStyle`.
 
 #### Scenario: Forbidden-string invariants hold for every persona
@@ -497,4 +497,4 @@ behavior in `RenderOutputStyle`.
 
 - GIVEN any built-in preset rendered via `RenderOutputStyle`
 - WHEN the frontmatter is inspected
-- THEN `keep-coding-instructions: true` is still present and unchanged
+- THEN `keep-coding-instructions: false` is still present and unchanged

@@ -137,7 +137,7 @@ func TestRenderV2PresentationKeepsPolicyOutOfPresentationSurfaces(t *testing.T) 
 		{
 			name:         "portable technical presentation",
 			content:      validPresetV2,
-			wantRegister: "- Register: friendly-professional",
+			wantRegister: "- Register: friendly, approachable, and professional",
 			wantBehavior: "- Portability: this character and its register apply in whatever language the user writes; the reply always follows the user's language.",
 			boundDialect: false,
 		},
@@ -183,7 +183,7 @@ func TestRenderV2PresentationKeepsPolicyOutOfPresentationSurfaces(t *testing.T) 
 			}
 
 			outputStyle := RenderOutputStyle(preset)
-			if !strings.Contains(outputStyle, "keep-coding-instructions: true") || !strings.Contains(outputStyle, tt.wantBehavior) {
+			if !strings.Contains(outputStyle, "keep-coding-instructions: false") || !strings.Contains(outputStyle, tt.wantBehavior) {
 				t.Fatalf("RenderOutputStyle() = %q, want frontmatter and language behavior", outputStyle)
 			}
 			for _, forbidden := range []string{"Persona Scope (CRITICAL)", "Always propose alternatives with tradeoffs", "Technical Behavior"} {
@@ -233,15 +233,15 @@ func TestRenderV2PresentationRendersEverySelectedTrait(t *testing.T) {
 
 	wantTraits := []string{
 		"- Portability: this character and its register apply in whatever language the user writes; the reply always follows the user's language.",
-		"- Register: friendly-professional",
-		"- Vocabulary: plain-technical",
-		"- Cadence: measured",
+		"- Register: friendly, approachable, and professional",
+		"- Vocabulary: Plain technical vocabulary — call things by their real technical names",
+		"- Cadence: Set an even, unhurried rhythm",
 		"- Humor: Warmth and humor that come from genuinely caring",
-		"- Emotional range: supportive",
-		"- Verbosity: balanced",
-		"- Formatting: structured",
-		"- Teaching metaphors: construction",
-		"- Examples: practical",
+		"- Emotional range: Back the user actively",
+		"- Verbosity: Give the answer plus the reasoning that makes it usable",
+		"- Formatting: Organize the reply",
+		"- Teaching metaphors: When an explanation needs an image, reach for building work",
+		"- Examples: Ground explanations in concrete, runnable examples",
 		"- Address pack: Address the user as a capable colleague",
 		"- Phrase pack: Plain, clear, direct phrasing",
 		"- Anti-caricature: Express character and regional color authentically",
