@@ -213,6 +213,7 @@ func TestValidatedEditRootsForProjectUsesValidatedTargetAndPermitsProjectAliases
 		t.Fatalf("create workspace root: %v", err)
 	}
 
+	canonicalRoot := canonicalSddTestPath(t, root)
 	for _, tt := range []struct {
 		name        string
 		projectName string
@@ -227,8 +228,8 @@ func TestValidatedEditRootsForProjectUsesValidatedTargetAndPermitsProjectAliases
 		t.Run(tt.name, func(t *testing.T) {
 			got := validatedEditRootsForProject(tt.projectName, tt.root)
 			if tt.wantRoot {
-				if len(got) != 1 || got[0] != root {
-					t.Fatalf("validatedEditRootsForProject(%q, %q) = %#v, want %q", tt.projectName, tt.root, got, root)
+				if len(got) != 1 || got[0] != canonicalRoot {
+					t.Fatalf("validatedEditRootsForProject(%q, %q) = %#v, want %q", tt.projectName, tt.root, got, canonicalRoot)
 				}
 				return
 			}
@@ -245,6 +246,7 @@ func TestBuildStatus_ApplyReadyUsesWorktreeRootAsAllowedEditRoot(t *testing.T) {
 		t.Fatalf("create worktree root: %v", err)
 	}
 	editRoots := validatedEditRootsForProject("jarvis-dev", worktreeRoot)
+	canonicalWorktreeRoot := canonicalSddTestPath(t, worktreeRoot)
 
 	status, err := buildStatus("my-feature", fakeSddArtifactSource{
 		artifacts: map[string]sddstatus.ArtifactState{
@@ -264,11 +266,11 @@ func TestBuildStatus_ApplyReadyUsesWorktreeRootAsAllowedEditRoot(t *testing.T) {
 	if got := status.ActionContext.Mode; got != sddstatus.ActionModeWorkspaceEdit {
 		t.Fatalf("ActionContext.Mode = %q, want %q", got, sddstatus.ActionModeWorkspaceEdit)
 	}
-	if got := status.ActionContext.AllowedEditRoots; len(got) != 1 || got[0] != worktreeRoot {
-		t.Fatalf("ActionContext.AllowedEditRoots = %#v, want [%q]", got, worktreeRoot)
+	if got := status.ActionContext.AllowedEditRoots; len(got) != 1 || got[0] != canonicalWorktreeRoot {
+		t.Fatalf("ActionContext.AllowedEditRoots = %#v, want [%q]", got, canonicalWorktreeRoot)
 	}
-	if got := status.AllowedEditRoots; len(got) != 1 || got[0] != worktreeRoot {
-		t.Fatalf("AllowedEditRoots = %#v, want [%q]", got, worktreeRoot)
+	if got := status.AllowedEditRoots; len(got) != 1 || got[0] != canonicalWorktreeRoot {
+		t.Fatalf("AllowedEditRoots = %#v, want [%q]", got, canonicalWorktreeRoot)
 	}
 }
 

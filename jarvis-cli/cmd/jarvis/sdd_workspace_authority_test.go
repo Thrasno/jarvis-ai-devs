@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -20,6 +21,15 @@ func (info sddWorkspaceTestFileInfo) Mode() os.FileMode  { return info.mode }
 func (info sddWorkspaceTestFileInfo) ModTime() time.Time { return time.Time{} }
 func (info sddWorkspaceTestFileInfo) IsDir() bool        { return info.mode.IsDir() }
 func (info sddWorkspaceTestFileInfo) Sys() any           { return nil }
+
+func canonicalSddTestPath(t *testing.T, path string) string {
+	t.Helper()
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("canonicalize test path %q: %v", path, err)
+	}
+	return filepath.Clean(canonical)
+}
 
 func TestHasSddWorkspaceSymlinkComponentUsesLstatNotPathNormalization(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "RUNNER~1", "workspace")
@@ -64,6 +74,7 @@ func TestResolveSddWorkspaceAuthorityFailsClosedOnGitDiscoveryFailures(t *testin
 		t.Fatalf("create project: %v", err)
 	}
 
+	canonicalWorkingDir := canonicalSddTestPath(t, workingDir)
 	tests := []struct {
 		name     string
 		discover func(string) (string, error)
@@ -75,7 +86,7 @@ func TestResolveSddWorkspaceAuthorityFailsClosedOnGitDiscoveryFailures(t *testin
 			discover: func(string) (string, error) {
 				return "", errSddNotGitWorktree
 			},
-			want: workingDir,
+			want: canonicalWorkingDir,
 		},
 		{
 			name: "timeout fails closed",
@@ -197,14 +208,18 @@ func TestResolveSddWorkspaceAuthorityPrefersGitWorktreeRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveSddWorkspaceAuthority: %v", err)
 	}
-	if got != repository {
-		t.Fatalf("resolveSddWorkspaceAuthority(%q) = %q, want git root %q", workingDir, got, repository)
+	wantRepository := canonicalSddTestPath(t, repository)
+	if got != wantRepository {
+		t.Fatalf("resolveSddWorkspaceAuthority(%q) = %q, want git root %q", workingDir, got, wantRepository)
 	}
 }
 
 func TestResolveSddWorkspaceAuthorityRejectsUnsafeFilesystemTargets(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", home)
+	}
 
 	project := filepath.Join(t.TempDir(), "project")
 	if err := os.Mkdir(project, 0o755); err != nil {
@@ -220,13 +235,14 @@ func TestResolveSddWorkspaceAuthorityRejectsUnsafeFilesystemTargets(t *testing.T
 		t.Fatalf("create symlink target: %v", err)
 	}
 
+	canonicalProject := canonicalSddTestPath(t, project)
 	tests := []struct {
 		name    string
 		target  string
 		want    string
 		wantErr error
 	}{
-		{name: "canonical non-git project", target: project, want: project},
+		{name: "canonical non-git project", target: project, want: canonicalProject},
 		{name: "missing target", target: missing, wantErr: errSddWorkspaceUnresolved},
 		{name: "file target", target: file, wantErr: errSddWorkspaceUnsafe},
 		{name: "filesystem root", target: string(filepath.Separator), wantErr: errSddWorkspaceUnsafe},
