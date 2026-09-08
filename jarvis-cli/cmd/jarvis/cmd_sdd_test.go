@@ -27,6 +27,19 @@ func (f fakeSddArtifactSource) ListChanges(context.Context) ([]string, error) {
 	return []string{"my-feature"}, nil
 }
 
+func TestSddWorkingDirectoryPreservesTargetWithProjectAlias(t *testing.T) {
+	workspace := t.TempDir()
+	t.Chdir(workspace)
+
+	workingDir, err := sddWorkingDirectory("team-project-alias")
+	if err != nil {
+		t.Fatalf("sddWorkingDirectory: %v", err)
+	}
+	if workingDir != workspace {
+		t.Fatalf("sddWorkingDirectory with --project = %q, want current workspace %q", workingDir, workspace)
+	}
+}
+
 func TestResolveSddProjectExplicitOverrideWins(t *testing.T) {
 	project, err := resolveSddProject("  Legacy_Project  ", filepath.Join(t.TempDir(), "missing"))
 	if err != nil {
@@ -194,30 +207,32 @@ func TestBuildStatus_IncludesValidatedAllowedEditRoot(t *testing.T) {
 	}
 }
 
-func TestValidatedEditRootsForProjectRequiresKnownProjectAndWorkspaceRoot(t *testing.T) {
+func TestValidatedEditRootsForProjectUsesValidatedTargetAndPermitsProjectAliases(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "jarvis-dev")
-
-	got := validatedEditRootsForProject("jarvis-dev", root)
-	if len(got) != 1 || got[0] != root {
-		t.Fatalf("validatedEditRootsForProject matching root = %#v, want %q", got, root)
-	}
-
-	mismatchedWorktreeRoot := filepath.Join(t.TempDir(), "epic-06-projects-repository-api")
-	got = validatedEditRootsForProject("jarvis-dev", mismatchedWorktreeRoot)
-	if len(got) != 1 || got[0] != mismatchedWorktreeRoot {
-		t.Fatalf("validatedEditRootsForProject worktree root = %#v, want %q", got, mismatchedWorktreeRoot)
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatalf("create workspace root: %v", err)
 	}
 
 	for _, tt := range []struct {
 		name        string
 		projectName string
 		root        string
+		wantRoot    bool
 	}{
-		{name: "missing project", projectName: "", root: root},
+		{name: "derived project identity", projectName: "jarvis-dev", root: root, wantRoot: true},
+		{name: "explicit project alias", projectName: "team-project-alias", root: root, wantRoot: true},
+		{name: "empty project identity", projectName: "", root: root, wantRoot: true},
 		{name: "missing root", projectName: "jarvis-dev", root: ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := validatedEditRootsForProject(tt.projectName, tt.root); len(got) != 0 {
+			got := validatedEditRootsForProject(tt.projectName, tt.root)
+			if tt.wantRoot {
+				if len(got) != 1 || got[0] != root {
+					t.Fatalf("validatedEditRootsForProject(%q, %q) = %#v, want %q", tt.projectName, tt.root, got, root)
+				}
+				return
+			}
+			if len(got) != 0 {
 				t.Fatalf("validatedEditRootsForProject(%q, %q) = %#v, want empty", tt.projectName, tt.root, got)
 			}
 		})
@@ -226,6 +241,9 @@ func TestValidatedEditRootsForProjectRequiresKnownProjectAndWorkspaceRoot(t *tes
 
 func TestBuildStatus_ApplyReadyUsesWorktreeRootAsAllowedEditRoot(t *testing.T) {
 	worktreeRoot := filepath.Join(t.TempDir(), "epic-06-projects-repository-api")
+	if err := os.Mkdir(worktreeRoot, 0o755); err != nil {
+		t.Fatalf("create worktree root: %v", err)
+	}
 	editRoots := validatedEditRootsForProject("jarvis-dev", worktreeRoot)
 
 	status, err := buildStatus("my-feature", fakeSddArtifactSource{
