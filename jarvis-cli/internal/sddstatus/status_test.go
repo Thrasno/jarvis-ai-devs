@@ -357,7 +357,7 @@ func TestComputeStatus_ArchiveBlockedWithPendingVerify(t *testing.T) {
 	}
 }
 
-func TestComputeStatus_ArchiveReadyWithPassingVerify(t *testing.T) {
+func TestComputeStatus_ArchiveReadyWithCompleteTasksAndPassingVerify(t *testing.T) {
 	arts := allPlanningDone()
 	arts[sddstatus.ArtifactApplyProgress] = "done"
 	arts[sddstatus.ArtifactVerifyReport] = "done"
@@ -366,7 +366,10 @@ func TestComputeStatus_ArchiveReadyWithPassingVerify(t *testing.T) {
 
 	s := sddstatus.ComputeStatus("my-feature", "hive", withWorkspaceEdit(sddstatus.Input{
 		Artifacts: arts,
-		Contents:  map[string]string{sddstatus.ArtifactVerifyReport: passingVerify},
+		Contents: map[string]string{
+			sddstatus.ArtifactTasks:        "- [x] T1\n",
+			sddstatus.ArtifactVerifyReport: passingVerify,
+		},
 	}))
 
 	if s.Dependencies[sddstatus.PhaseArchive] != sddstatus.DepReady {
@@ -374,6 +377,40 @@ func TestComputeStatus_ArchiveReadyWithPassingVerify(t *testing.T) {
 	}
 	if s.NextRecommended != sddstatus.PhaseArchive {
 		t.Errorf("nextRecommended = %q, want sdd-archive", s.NextRecommended)
+	}
+}
+
+func TestComputeStatus_ArchiveBlockersConjoinIncompleteTasksAndFailingVerify(t *testing.T) {
+	arts := allPlanningDone()
+	arts[sddstatus.ArtifactApplyProgress] = sddstatus.ArtifactDone
+	arts[sddstatus.ArtifactVerifyReport] = sddstatus.ArtifactDone
+	arts[sddstatus.ArtifactArchiveReport] = sddstatus.ArtifactDone
+
+	s := sddstatus.ComputeStatus("my-feature", "hive", withWorkspaceEdit(sddstatus.Input{
+		Artifacts: arts,
+		Contents: map[string]string{
+			sddstatus.ArtifactTasks:        "- [x] T1\n- [ ] T2\n",
+			sddstatus.ArtifactVerifyReport: "3 failures found.",
+		},
+	}))
+
+	if got := s.Dependencies[sddstatus.PhaseArchive]; got != sddstatus.DepBlocked {
+		t.Fatalf("archive dependency = %q, want blocked", got)
+	}
+	if got := s.NextRecommended; got != "" {
+		t.Fatalf("nextRecommended = %q, want empty when archive is blocked", got)
+	}
+	wantReasons := []string{
+		"phase sdd-archive blocked — task progress is incomplete (1/2 tasks complete)",
+		"phase sdd-archive blocked — verify report must pass before archiving",
+	}
+	if len(s.BlockedReasons) != len(wantReasons) {
+		t.Fatalf("blockedReasons = %#v, want %#v", s.BlockedReasons, wantReasons)
+	}
+	for i, want := range wantReasons {
+		if got := s.BlockedReasons[i]; got != want {
+			t.Fatalf("blockedReasons[%d] = %q, want %q", i, got, want)
+		}
 	}
 }
 
@@ -466,6 +503,23 @@ func TestComputeStatus_ApplyState_PresentWhenProgressExists(t *testing.T) {
 	}
 	if !s.ApplyState.HasProgress {
 		t.Error("HasProgress = false, want true")
+	}
+}
+
+func TestComputeStatus_ApplyStatePreservesLegacyCompleteMeaning(t *testing.T) {
+	arts := allPlanningDone()
+	arts[sddstatus.ArtifactApplyProgress] = sddstatus.ArtifactPartial
+	arts[sddstatus.ArtifactVerifyReport] = sddstatus.ArtifactDone
+
+	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{Artifacts: arts})
+	if s.ApplyState == nil {
+		t.Fatal("ApplyState is nil")
+	}
+	if !s.ApplyState.HasProgress {
+		t.Error("HasProgress = false, want true when apply-progress exists")
+	}
+	if !s.ApplyState.Complete {
+		t.Error("Complete = false, want true when verify-report exists even though apply-progress is partial")
 	}
 }
 

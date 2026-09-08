@@ -1,6 +1,7 @@
 package sddstatus
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -419,6 +420,11 @@ func computeDependencies(artifacts map[string]ArtifactState, tp *TaskProgress, a
 }
 
 func computePhaseDep(phase string, artifacts map[string]ArtifactState, tp *TaskProgress, ad *ApplyDecision, verifyContent string, actionContext ActionContext) DependencyState {
+	// A stale archive report must not bypass incomplete parsed task progress.
+	if phase == PhaseArchive && tp != nil && !tp.AllDone {
+		return DepBlocked
+	}
+
 	output := PhaseOutput[phase]
 	// When apply-progress is already done the delivery-decision gate is moot —
 	// the phase completed in a prior session and the gate was resolved then.
@@ -552,12 +558,18 @@ func phaseSpecificBlocker(phase string, artifacts map[string]ArtifactState, tp *
 			return []string{"phase sdd-verify blocked — apply-progress required or all tasks must be done"}
 		}
 	case PhaseArchive:
+		var blockers []string
+		if tp != nil && !tp.AllDone {
+			blockers = append(blockers, fmt.Sprintf("phase sdd-archive blocked — task progress is incomplete (%d/%d tasks complete)", tp.Completed, tp.Total))
+		}
 		if !isVerifyPassing(verifyContent) {
 			if verifyContent == "" {
-				return []string{"phase sdd-archive blocked — verify report is empty (re-run sdd-verify to generate content)"}
+				blockers = append(blockers, "phase sdd-archive blocked — verify report is empty (re-run sdd-verify to generate content)")
+			} else {
+				blockers = append(blockers, "phase sdd-archive blocked — verify report must pass before archiving")
 			}
-			return []string{"phase sdd-archive blocked — verify report must pass before archiving"}
 		}
+		return blockers
 	}
 	return nil
 }

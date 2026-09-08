@@ -820,6 +820,8 @@ func TestCatalogContract_SDDApplySourceUsesJarvisAdaptedStatusGuards(t *testing.
 		"Artifact store mode (`hive | openspec | hybrid | none`)",
 		"When prior `apply-progress = partial` exists, merge/reconcile it with current task state",
 		"do not jump to `sdd-verify` until apply progress and task checkboxes agree.",
+		"include `status: partial` on its own line",
+		"legacy `complete` boolean means a verify-report artifact exists",
 	}
 	for _, snippet := range requiredSnippets {
 		if !strings.Contains(content, snippet) {
@@ -884,6 +886,32 @@ func TestCatalogContract_MutatingPhaseSkillsFailClosedOnNativeWorkspaceAuthority
 				}
 			}
 		})
+	}
+}
+
+func TestCatalogContract_ApplyProgressMarkerCompatibility(t *testing.T) {
+	required := map[string][]string{
+		"embed/skills/sdd-apply/SKILL.md": {
+			"include `status: partial` on its own line",
+			"record `status: complete`",
+		},
+		"embed/skills/sdd-verify/SKILL.md": {
+			"only an exact `status: complete` marker",
+			"unknown, malformed, conflicting, or unmarked progress",
+		},
+		"embed/skills/sdd-archive/SKILL.md": {
+			"only an exact `status: complete` marker",
+			"unknown, malformed, conflicting, or unmarked progress",
+		},
+	}
+
+	for asset, snippets := range required {
+		content := readEmbeddedSkillAsset(t, asset)
+		for _, snippet := range snippets {
+			if !strings.Contains(content, snippet) {
+				t.Fatalf("expected %s to document apply-progress compatibility %q", asset, snippet)
+			}
+		}
 	}
 }
 

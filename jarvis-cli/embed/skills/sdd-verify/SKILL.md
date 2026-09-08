@@ -42,6 +42,7 @@ The orchestrator should provide structured status from `jarvis sdd status <chang
 - Read all available status `contextFiles` before judging implementation. Full spec-driven verification reads proposal, specs, design, tasks, and apply-progress; partial artifact sets degrade as described below.
 - Treat `artifactPaths` as the source of artifact locations. Do not assume fixed filenames when structured status provides paths.
 - Confirm the status field `schema` is exactly `jarvis.sdd-status` and `dependencies["sdd-verify"]` is exactly `ready`; otherwise STOP and return the phase-specific `blockedReasons`.
+- When reading apply-progress, treat only an exact `status: complete` marker as explicit completion. Treat `status: partial`, unknown, malformed, conflicting, or unmarked progress as incomplete unless structured status classified an unmarked artifact as done from deterministic all-complete task evidence.
 - If `actionContext.mode` is not exactly `workspace-edit`, STOP. Verification of unedited linked workspaces is planning-only and cannot prove implementation readiness.
 - `actionContext.allowedEditRoots` must be non-empty. Inspect only paths under those roots. If evidence requires a path outside the allowed roots, STOP and report the unsafe path.
 - If native status is unavailable, manual recovery may inspect artifacts but cannot invent workspace-edit authority; STOP before verification or report persistence.
