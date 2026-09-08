@@ -40,6 +40,12 @@ jarvis timeline --project <project>
 | `jarvis sdd status` | Yes | Show SDD phase status for a change. | `jarvis sdd status <change> --project <project>` |
 | `jarvis sdd continue` | Yes | Print next recommended SDD phase. | `jarvis sdd continue <change> --json` |
 
+## SDD workspace edit authority
+
+`jarvis sdd status` and `jarvis sdd continue` derive edit authority from the invocation's working directory, not from `--project` or an ambient repository. When that directory is inside a Git worktree, Jarvis uses the canonical worktree root. Otherwise, a canonical non-Git project directory is the only allowed edit root.
+
+`--project` remains a Hive project-identity alias, including names that do not match the directory or Git remote. It never grants edit authority outside the actual working directory. Missing, symlinked, root, home, temporary-root, or otherwise unresolved targets produce planning-only status rather than an editable workspace.
+
 ## `jarvis sync`
 
 `jarvis sync` reinstalls exactly what the setup wizard installed on this machine: model assignments, Jarvis-managed MCPs, installer-managed skills, the active persona, and the statusline only when you answered yes to it during installation. It reads the recorded manifest at `~/.jarvis/state.yaml` and the assets embedded in the installed binary; it never inspects the filesystem to guess what you once chose.

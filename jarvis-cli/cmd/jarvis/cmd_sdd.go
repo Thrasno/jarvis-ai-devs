@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -73,10 +71,9 @@ func init() {
 	sddCmd.AddCommand(sddStatusCmd, sddContinueCmd)
 }
 
-func sddWorkingDirectory(projectFlag string) (string, error) {
-	if strings.TrimSpace(projectFlag) != "" {
-		return "", nil
-	}
+func sddWorkingDirectory(_ string) (string, error) {
+	// --project is a Hive identity alias. It must not erase the working directory
+	// that determines the edit authority for this invocation.
 	return os.Getwd()
 }
 
@@ -89,21 +86,25 @@ func resolveSddProject(projectFlag, workingDir string) (string, error) {
 }
 
 func detectGitRoot() (string, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel").Output()
-	if err == nil {
-		root := strings.TrimSpace(string(out))
-		if root != "" {
-			return root, true
-		}
+	workingDir, err := os.Getwd()
+	if err != nil {
+		return "", false
 	}
-	return "", false
+	root, err := gitWorktreeRoot(workingDir)
+	return root, err == nil
 }
 
 // resolveSource returns an ArtifactSource and the active store mode label.
 // projectName is used when querying Hive and must already be resolved.
 func resolveSource(projectName string) (sddstatus.ArtifactSource, string, error) {
+	workingDir, err := os.Getwd()
+	if err != nil {
+		return nil, "", err
+	}
+	return resolveSourceAt(projectName, workingDir)
+}
+
+func resolveSourceAt(projectName, workingDir string) (sddstatus.ArtifactSource, string, error) {
 	contract, err := sddruntime.ResolveRuntimeStoreContract(sddruntime.StoreModeHive)
 	if err != nil {
 		return nil, "", fmt.Errorf("resolve store contract: %w", err)
@@ -111,23 +112,15 @@ func resolveSource(projectName string) (sddstatus.ArtifactSource, string, error)
 
 	switch contract.Mode {
 	case sddruntime.StoreModeOpenSpec:
-		root, err := os.Getwd()
-		if err != nil {
-			return nil, "", err
-		}
-		return sddstatus.NewOpenSpecSource(root), string(contract.Mode), nil
+		return sddstatus.NewOpenSpecSource(workingDir), string(contract.Mode), nil
 
 	case sddruntime.StoreModeHybrid:
 		hc, err := hiveclient.NewFromEnv()
 		if err != nil {
 			return nil, "", fmt.Errorf("connect to hive-daemon: %w", err)
 		}
-		root, err := os.Getwd()
-		if err != nil {
-			return nil, "", err
-		}
 		hiveS := sddstatus.NewHiveSource(hc, projectName)
-		osS := sddstatus.NewOpenSpecSource(root)
+		osS := sddstatus.NewOpenSpecSource(workingDir)
 		return sddstatus.NewHybridSource(hiveS, osS), string(contract.Mode), nil
 
 	case sddruntime.StoreModeNone:
@@ -191,18 +184,18 @@ func buildStatus(changeName string, src sddstatus.ArtifactSource, storeMode stri
 }
 
 func currentWorkspaceEditRoots(projectName string) []string {
-	root, ok := detectGitRoot()
-	if !ok {
+	workingDir, err := os.Getwd()
+	if err != nil {
 		return nil
 	}
-	return validatedEditRootsForProject(projectName, root)
+	return validatedEditRootsForProject(projectName, workingDir)
 }
 
-func validatedEditRootsForProject(projectName, workspaceRoot string) []string {
-	if projectName == "" || workspaceRoot == "" {
+func validatedEditRootsForProject(_ string, workingDir string) []string {
+	root, err := resolveSddWorkspaceAuthority(workingDir)
+	if err != nil {
 		return nil
 	}
-	root := filepath.Clean(workspaceRoot)
 	return []string{root}
 }
 
@@ -212,7 +205,7 @@ func runSddStatus(given, projectFlag, workingDir string, asJSON, withInstruction
 		return err
 	}
 
-	src, storeMode, err := resolveSource(project)
+	src, storeMode, err := resolveSourceAt(project, workingDir)
 	if err != nil {
 		return err
 	}
@@ -224,7 +217,7 @@ func runSddStatus(given, projectFlag, workingDir string, asJSON, withInstruction
 		return err
 	}
 
-	status, err := buildStatus(changeName, src, storeMode, currentWorkspaceEditRoots(project))
+	status, err := buildStatus(changeName, src, storeMode, validatedEditRootsForProject(project, workingDir))
 	if err != nil {
 		return err
 	}
@@ -242,7 +235,7 @@ func runSddContinue(given, projectFlag, workingDir string, asJSON bool) error {
 		return err
 	}
 
-	src, storeMode, err := resolveSource(project)
+	src, storeMode, err := resolveSourceAt(project, workingDir)
 	if err != nil {
 		return err
 	}
@@ -254,7 +247,7 @@ func runSddContinue(given, projectFlag, workingDir string, asJSON bool) error {
 		return err
 	}
 
-	status, err := buildStatus(changeName, src, storeMode, currentWorkspaceEditRoots(project))
+	status, err := buildStatus(changeName, src, storeMode, validatedEditRootsForProject(project, workingDir))
 	if err != nil {
 		return err
 	}
