@@ -468,6 +468,23 @@ func TestComputeStatus_ApplyState_PresentWhenProgressExists(t *testing.T) {
 	}
 }
 
+func TestComputeStatus_ApplyStatePreservesLegacyCompleteMeaning(t *testing.T) {
+	arts := allPlanningDone()
+	arts[sddstatus.ArtifactApplyProgress] = sddstatus.ArtifactPartial
+	arts[sddstatus.ArtifactVerifyReport] = sddstatus.ArtifactDone
+
+	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{Artifacts: arts})
+	if s.ApplyState == nil {
+		t.Fatal("ApplyState is nil")
+	}
+	if !s.ApplyState.HasProgress {
+		t.Error("HasProgress = false, want true when apply-progress exists")
+	}
+	if !s.ApplyState.Complete {
+		t.Error("Complete = false, want true when verify-report exists even though apply-progress is partial")
+	}
+}
+
 func TestComputeStatus_BlockedReasons_IncludesMissingDeps(t *testing.T) {
 	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{})
 
