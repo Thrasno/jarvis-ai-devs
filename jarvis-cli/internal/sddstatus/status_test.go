@@ -2,6 +2,7 @@ package sddstatus_test
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -219,9 +220,9 @@ func TestComputeStatus_ProposalDone_SpecAndDesignReady(t *testing.T) {
 }
 
 func TestComputeStatus_PlanningComplete_ApplyReady(t *testing.T) {
-	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
+	s := sddstatus.ComputeStatus("my-feature", "hive", withWorkspaceEdit(sddstatus.Input{
 		Artifacts: allPlanningDone(),
-	})
+	}))
 
 	if s.Dependencies[sddstatus.PhaseApply] != sddstatus.DepReady {
 		t.Errorf("apply dep = %q, want ready", s.Dependencies[sddstatus.PhaseApply])
@@ -245,9 +246,9 @@ func TestComputeStatus_VerifyReadyWithApplyProgress(t *testing.T) {
 	arts := allPlanningDone()
 	arts[sddstatus.ArtifactApplyProgress] = "done"
 
-	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
+	s := sddstatus.ComputeStatus("my-feature", "hive", withWorkspaceEdit(sddstatus.Input{
 		Artifacts: arts,
-	})
+	}))
 
 	if s.Dependencies[sddstatus.PhaseVerify] != sddstatus.DepReady {
 		t.Errorf("verify dep = %q, want ready", s.Dependencies[sddstatus.PhaseVerify])
@@ -275,10 +276,10 @@ func TestComputeStatus_VerifyBlockedWithPartialApplyProgressEvenWhenAllTasksDone
 	arts[sddstatus.ArtifactApplyProgress] = "partial"
 	const tasksContent = "- [x] T1\n- [x] T2\n"
 
-	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
+	s := sddstatus.ComputeStatus("my-feature", "hive", withWorkspaceEdit(sddstatus.Input{
 		Artifacts: arts,
 		Contents:  map[string]string{sddstatus.ArtifactTasks: tasksContent},
-	})
+	}))
 
 	if got := s.Dependencies[sddstatus.PhaseVerify]; got != sddstatus.DepBlocked {
 		t.Errorf("verify dep = %q, want blocked while apply-progress is partial even when all tasks are done", got)
@@ -298,10 +299,10 @@ func TestComputeStatus_VerifyReadyWhenAllTasksDone(t *testing.T) {
 	arts := allPlanningDone()
 	const tasksContent = "- [x] T1\n- [x] T2\n"
 
-	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
+	s := sddstatus.ComputeStatus("my-feature", "hive", withWorkspaceEdit(sddstatus.Input{
 		Artifacts: arts,
 		Contents:  map[string]string{sddstatus.ArtifactTasks: tasksContent},
-	})
+	}))
 
 	if s.Dependencies[sddstatus.PhaseVerify] != sddstatus.DepReady {
 		t.Errorf("verify dep = %q, want ready (all tasks done)", s.Dependencies[sddstatus.PhaseVerify])
@@ -363,10 +364,10 @@ func TestComputeStatus_ArchiveReadyWithPassingVerify(t *testing.T) {
 
 	const passingVerify = "## Verify Report\n\nAll checks passed. No issues found."
 
-	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
+	s := sddstatus.ComputeStatus("my-feature", "hive", withWorkspaceEdit(sddstatus.Input{
 		Artifacts: arts,
 		Contents:  map[string]string{sddstatus.ArtifactVerifyReport: passingVerify},
-	})
+	}))
 
 	if s.Dependencies[sddstatus.PhaseArchive] != sddstatus.DepReady {
 		t.Errorf("archive dep = %q, want ready", s.Dependencies[sddstatus.PhaseArchive])
@@ -555,10 +556,10 @@ func TestVerifyBlockPatterns_ZeroFailedDoesNotBlock(t *testing.T) {
 	arts[sddstatus.ArtifactApplyProgress] = "done"
 	arts[sddstatus.ArtifactVerifyReport] = "done"
 	const passingVerify = "## Verify Report\n\n0 failed, all checks passed."
-	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
+	s := sddstatus.ComputeStatus("my-feature", "hive", withWorkspaceEdit(sddstatus.Input{
 		Artifacts: arts,
 		Contents:  map[string]string{sddstatus.ArtifactVerifyReport: passingVerify},
-	})
+	}))
 	if s.Dependencies[sddstatus.PhaseArchive] != sddstatus.DepReady {
 		t.Errorf("archive dep = %q, want ready when verify says '0 failed'", s.Dependencies[sddstatus.PhaseArchive])
 	}
@@ -590,10 +591,16 @@ const applyDecisionBlockedContent = "Decision needed before apply: Yes\n"
 
 // allPlanningDoneWithTasksContent returns allPlanningDone() artifacts plus tasks content in Contents.
 func allPlanningDoneWithTasksContent(content string) sddstatus.Input {
-	return sddstatus.Input{
+	return withWorkspaceEdit(sddstatus.Input{
 		Artifacts: allPlanningDone(),
 		Contents:  map[string]string{sddstatus.ArtifactTasks: content},
-	}
+	})
+}
+
+func withWorkspaceEdit(in sddstatus.Input) sddstatus.Input {
+	in.ActionMode = sddstatus.ActionModeWorkspaceEdit
+	in.AllowedEditRoots = []string{"/workspace/jarvis-dev"}
+	return in
 }
 
 // TestApplyDecisionGate_BlockedWhenDecisionRequired covers spec scenario
@@ -782,6 +789,172 @@ func TestApplyDecisionGate_BlockedWhenPartialProgressAndDecisionUnresolved(t *te
 	}
 }
 
+func TestComputeStatus_WorkspaceAuthorityBlocksMutatingPhasesButNotPlanning(t *testing.T) {
+	status := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
+		Artifacts: artifacts(sddstatus.ArtifactProposal, string(sddstatus.ArtifactDone)),
+	})
+
+	for _, phase := range []string{sddstatus.PhaseApply, sddstatus.PhaseVerify, sddstatus.PhaseArchive} {
+		if got := status.Dependencies[phase]; got != sddstatus.DepBlocked {
+			t.Errorf("dependency[%s] = %q, want blocked without workspace-edit authority", phase, got)
+		}
+		if !containsString(status.BlockedReasons, "phase "+phase+" blocked — workspace-edit mode with non-empty allowed edit roots required") {
+			t.Errorf("BlockedReasons = %#v, want workspace authority blocker for %s", status.BlockedReasons, phase)
+		}
+	}
+
+	for _, phase := range []string{sddstatus.PhaseSpec, sddstatus.PhaseDesign} {
+		if got := status.Dependencies[phase]; got != sddstatus.DepReady {
+			t.Errorf("dependency[%s] = %q, want planning phase to remain routable", phase, got)
+		}
+	}
+}
+
+func TestComputeStatus_WorkspaceAuthorityConjoinsPhaseSpecificBlockers(t *testing.T) {
+	status := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
+		Artifacts: allPlanningDone(),
+		Contents: map[string]string{
+			sddstatus.ArtifactTasks: applyDecisionBlockedContent,
+		},
+	})
+
+	for _, reason := range []string{
+		"phase sdd-apply blocked — workspace-edit mode with non-empty allowed edit roots required",
+		"phase sdd-apply blocked — delivery decision required",
+	} {
+		found := false
+		for _, got := range status.BlockedReasons {
+			if strings.Contains(got, reason) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("BlockedReasons = %#v, want %q", status.BlockedReasons, reason)
+		}
+	}
+}
+
+func TestComputeStatus_WorkspaceAuthorityOnlyDoesNotInventPhaseSpecificBlockers(t *testing.T) {
+	testCases := []struct {
+		name      string
+		phase     string
+		artifacts map[string]sddstatus.ArtifactState
+		contents  map[string]string
+	}{
+		{
+			name:      "apply",
+			phase:     sddstatus.PhaseApply,
+			artifacts: allPlanningDone(),
+		},
+		{
+			name:  "verify",
+			phase: sddstatus.PhaseVerify,
+			artifacts: func() map[string]sddstatus.ArtifactState {
+				arts := allPlanningDone()
+				arts[sddstatus.ArtifactApplyProgress] = sddstatus.ArtifactDone
+				return arts
+			}(),
+		},
+		{
+			name:  "archive",
+			phase: sddstatus.PhaseArchive,
+			artifacts: func() map[string]sddstatus.ArtifactState {
+				arts := allPlanningDone()
+				arts[sddstatus.ArtifactApplyProgress] = sddstatus.ArtifactDone
+				arts[sddstatus.ArtifactVerifyReport] = sddstatus.ArtifactDone
+				return arts
+			}(),
+			contents: map[string]string{sddstatus.ArtifactVerifyReport: "All checks passed."},
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
+			status := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
+				Artifacts: tt.artifacts,
+				Contents:  tt.contents,
+			})
+
+			if got := phaseBlockedReasons(status.BlockedReasons, tt.phase); len(got) != 1 || got[0] != "phase "+tt.phase+" blocked — workspace-edit mode with non-empty allowed edit roots required" {
+				t.Fatalf("phase blockers = %#v, want workspace authority only", got)
+			}
+		})
+	}
+}
+
+func TestComputeStatus_WorkspaceAuthorityConjoinsGenuinePhaseSpecificBlockers(t *testing.T) {
+	testCases := []struct {
+		name      string
+		phase     string
+		artifacts map[string]sddstatus.ArtifactState
+		contents  map[string]string
+		want      []string
+	}{
+		{
+			name:      "apply delivery decision",
+			phase:     sddstatus.PhaseApply,
+			artifacts: allPlanningDone(),
+			contents:  map[string]string{sddstatus.ArtifactTasks: applyDecisionBlockedContent},
+			want: []string{
+				"phase sdd-apply blocked — workspace-edit mode with non-empty allowed edit roots required",
+				"phase sdd-apply blocked — delivery decision required (tasks declare 'Decision needed before apply: Yes' and no resolved chain strategy/size:exception)",
+			},
+		},
+		{
+			name:  "verify partial apply progress",
+			phase: sddstatus.PhaseVerify,
+			artifacts: func() map[string]sddstatus.ArtifactState {
+				arts := allPlanningDone()
+				arts[sddstatus.ArtifactApplyProgress] = sddstatus.ArtifactPartial
+				return arts
+			}(),
+			want: []string{
+				"phase sdd-verify blocked — workspace-edit mode with non-empty allowed edit roots required",
+				"phase sdd-verify blocked — apply-progress is partial; complete or reconcile sdd-apply before verification",
+			},
+		},
+		{
+			name:  "archive failing verify report",
+			phase: sddstatus.PhaseArchive,
+			artifacts: func() map[string]sddstatus.ArtifactState {
+				arts := allPlanningDone()
+				arts[sddstatus.ArtifactApplyProgress] = sddstatus.ArtifactDone
+				arts[sddstatus.ArtifactVerifyReport] = sddstatus.ArtifactDone
+				return arts
+			}(),
+			contents: map[string]string{sddstatus.ArtifactVerifyReport: "2 failures found."},
+			want: []string{
+				"phase sdd-archive blocked — workspace-edit mode with non-empty allowed edit roots required",
+				"phase sdd-archive blocked — verify report must pass before archiving",
+			},
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
+			status := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
+				Artifacts: tt.artifacts,
+				Contents:  tt.contents,
+			})
+			if got := phaseBlockedReasons(status.BlockedReasons, tt.phase); !slices.Equal(got, tt.want) {
+				t.Fatalf("phase blockers = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func phaseBlockedReasons(reasons []string, phase string) []string {
+	prefix := "phase " + phase + " blocked —"
+	var phaseReasons []string
+	for _, reason := range reasons {
+		if strings.HasPrefix(reason, prefix) {
+			phaseReasons = append(phaseReasons, reason)
+		}
+	}
+	return phaseReasons
+}
+
 func TestVerifyBlockPatterns_NegatedNounFormsDoNotBlock(t *testing.T) {
 	// Common CI summary phrases that contain failure/blocker words in a zero/negated context
 	// must NOT block archive. These were false-positives before the verifyNegatedForms strip.
@@ -803,10 +976,10 @@ func TestVerifyBlockPatterns_NegatedNounFormsDoNotBlock(t *testing.T) {
 	}
 
 	for _, content := range passingContents {
-		s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
+		s := sddstatus.ComputeStatus("my-feature", "hive", withWorkspaceEdit(sddstatus.Input{
 			Artifacts: arts,
 			Contents:  map[string]string{sddstatus.ArtifactVerifyReport: content},
-		})
+		}))
 		if s.Dependencies[sddstatus.PhaseArchive] != sddstatus.DepReady {
 			t.Errorf("archive dep = %q, want ready for content %q", s.Dependencies[sddstatus.PhaseArchive], content)
 		}

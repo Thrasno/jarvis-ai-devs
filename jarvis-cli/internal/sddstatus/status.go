@@ -241,26 +241,27 @@ func ComputeStatus(changeName, artifactStore string, in Input) *ChangeStatus {
 	if len(phaseInstructions) == 0 {
 		phaseInstructions = buildPhaseInstructions(changeName)
 	}
+	actionContext := ActionContext{
+		Mode:             actionMode,
+		AllowedEditRoots: copyStringSlice(allowedEditRoots),
+	}
 	taskProgress := parseTaskProgress(in.Contents[ArtifactTasks])
 	applyDecision := parseApplyDecision(in.Contents[ArtifactTasks])
 	applyState := buildApplyState(in.Artifacts)
-	dependencies := computeDependencies(in.Artifacts, taskProgress, applyDecision, in.Contents[ArtifactVerifyReport])
-	nextRecommended, blockedReasons := computeNextAndBlockers(in.Artifacts, dependencies, applyDecision, in.Contents[ArtifactVerifyReport])
+	dependencies := computeDependencies(in.Artifacts, taskProgress, applyDecision, in.Contents[ArtifactVerifyReport], actionContext)
+	nextRecommended, blockedReasons := computeNextAndBlockers(in.Artifacts, dependencies, taskProgress, applyDecision, in.Contents[ArtifactVerifyReport], actionContext)
 
 	return &ChangeStatus{
-		Schema:        StatusSchema,
-		ChangeName:    changeName,
-		ArtifactStore: artifactStore,
-		PlanningHome:  planningHome,
-		ChangeRoot:    changeRoot,
-		ArtifactPaths: artifactPaths,
-		ContextFiles:  contextFiles,
-		Artifacts:     normalizeArtifacts(in.Artifacts),
-		Dependencies:  dependencies,
-		ActionContext: ActionContext{
-			Mode:             actionMode,
-			AllowedEditRoots: copyStringSlice(allowedEditRoots),
-		},
+		Schema:            StatusSchema,
+		ChangeName:        changeName,
+		ArtifactStore:     artifactStore,
+		PlanningHome:      planningHome,
+		ChangeRoot:        changeRoot,
+		ArtifactPaths:     artifactPaths,
+		ContextFiles:      contextFiles,
+		Artifacts:         normalizeArtifacts(in.Artifacts),
+		Dependencies:      dependencies,
+		ActionContext:     actionContext,
 		AllowedEditRoots:  allowedEditRoots,
 		Relationships:     buildPhaseRelationships(),
 		PhaseInstructions: phaseInstructions,
@@ -409,15 +410,15 @@ func buildApplyState(artifacts map[string]ArtifactState) *ApplyState {
 	}
 }
 
-func computeDependencies(artifacts map[string]ArtifactState, tp *TaskProgress, ad *ApplyDecision, verifyContent string) map[string]DependencyState {
+func computeDependencies(artifacts map[string]ArtifactState, tp *TaskProgress, ad *ApplyDecision, verifyContent string, actionContext ActionContext) map[string]DependencyState {
 	deps := make(map[string]DependencyState, len(PhaseOrder))
 	for _, phase := range PhaseOrder {
-		deps[phase] = computePhaseDep(phase, artifacts, tp, ad, verifyContent)
+		deps[phase] = computePhaseDep(phase, artifacts, tp, ad, verifyContent, actionContext)
 	}
 	return deps
 }
 
-func computePhaseDep(phase string, artifacts map[string]ArtifactState, tp *TaskProgress, ad *ApplyDecision, verifyContent string) DependencyState {
+func computePhaseDep(phase string, artifacts map[string]ArtifactState, tp *TaskProgress, ad *ApplyDecision, verifyContent string, actionContext ActionContext) DependencyState {
 	output := PhaseOutput[phase]
 	// When apply-progress is already done the delivery-decision gate is moot —
 	// the phase completed in a prior session and the gate was resolved then.
@@ -429,6 +430,10 @@ func computePhaseDep(phase string, artifacts map[string]ArtifactState, tp *TaskP
 	// explore is considered implicitly complete — routing should not suggest going back.
 	if phase == PhaseExplore && artifacts[ArtifactProposal] == ArtifactDone {
 		return DepAllDone
+	}
+
+	if requiresWorkspaceEditAuthority(phase) && !hasWorkspaceEditAuthority(actionContext) {
+		return DepBlocked
 	}
 
 	for _, dep := range PhaseRequiredDeps[phase] {
@@ -488,7 +493,7 @@ func isVerifyPassing(content string) bool {
 	return true
 }
 
-func computeNextAndBlockers(artifacts map[string]ArtifactState, deps map[string]DependencyState, ad *ApplyDecision, verifyContent string) (next string, reasons []string) {
+func computeNextAndBlockers(artifacts map[string]ArtifactState, deps map[string]DependencyState, tp *TaskProgress, ad *ApplyDecision, verifyContent string, actionContext ActionContext) (next string, reasons []string) {
 	var blocked []string
 	for _, phase := range PhaseOrder {
 		state := deps[phase]
@@ -504,31 +509,11 @@ func computeNextAndBlockers(artifacts map[string]ArtifactState, deps map[string]
 			for _, d := range missingDeps {
 				blocked = append(blocked, "phase "+phase+" requires artifact "+d)
 			}
-			// Soft blockers: phase is DepBlocked but all hard-dep artifacts are present.
-			// The block comes from a secondary condition in computePhaseDep's switch block.
+			if requiresWorkspaceEditAuthority(phase) && !hasWorkspaceEditAuthority(actionContext) {
+				blocked = append(blocked, "phase "+phase+" blocked — workspace-edit mode with non-empty allowed edit roots required")
+			}
 			if len(missingDeps) == 0 {
-				switch phase {
-				case PhaseApply:
-					blocked = append(blocked, "phase sdd-apply blocked — delivery decision required (tasks declare 'Decision needed before apply: Yes' and no resolved chain strategy/size:exception)")
-				case PhaseVerify:
-					if artifacts[ArtifactApplyProgress] == ArtifactPartial {
-						blocked = append(blocked, "phase sdd-verify blocked — apply-progress is partial; complete or reconcile sdd-apply before verification")
-					} else {
-						blocked = append(blocked, "phase sdd-verify blocked — apply-progress required or all tasks must be done")
-					}
-				case PhaseArchive:
-					// verifyContent is always "" here only when the verify-report artifact
-					// exists (it is a hard dep and passed the dep check above) but was stored
-					// with no body. In that case the message must distinguish "empty" from
-					// "failing" so the user knows to re-run sdd-verify, not fix failures.
-					if verifyContent == "" {
-						blocked = append(blocked, "phase sdd-archive blocked — verify report is empty (re-run sdd-verify to generate content)")
-					} else {
-						blocked = append(blocked, "phase sdd-archive blocked — verify report must pass before archiving")
-					}
-				default:
-					blocked = append(blocked, "phase "+phase+" blocked — secondary condition not met")
-				}
+				blocked = append(blocked, phaseSpecificBlocker(phase, artifacts, tp, ad, verifyContent)...)
 			}
 		}
 	}
@@ -538,6 +523,43 @@ func computeNextAndBlockers(artifacts map[string]ArtifactState, deps map[string]
 	}
 
 	return next, blocked
+}
+
+func requiresWorkspaceEditAuthority(phase string) bool {
+	switch phase {
+	case PhaseApply, PhaseVerify, PhaseArchive:
+		return true
+	default:
+		return false
+	}
+}
+
+func hasWorkspaceEditAuthority(actionContext ActionContext) bool {
+	return actionContext.Mode == ActionModeWorkspaceEdit && len(actionContext.AllowedEditRoots) > 0
+}
+
+func phaseSpecificBlocker(phase string, artifacts map[string]ArtifactState, tp *TaskProgress, ad *ApplyDecision, verifyContent string) []string {
+	switch phase {
+	case PhaseApply:
+		if ad != nil && ad.Required && !ad.Resolved {
+			return []string{"phase sdd-apply blocked — delivery decision required (tasks declare 'Decision needed before apply: Yes' and no resolved chain strategy/size:exception)"}
+		}
+	case PhaseVerify:
+		if artifacts[ArtifactApplyProgress] == ArtifactPartial {
+			return []string{"phase sdd-verify blocked — apply-progress is partial; complete or reconcile sdd-apply before verification"}
+		}
+		if artifacts[ArtifactApplyProgress] != ArtifactDone && (tp == nil || !tp.AllDone) {
+			return []string{"phase sdd-verify blocked — apply-progress required or all tasks must be done"}
+		}
+	case PhaseArchive:
+		if !isVerifyPassing(verifyContent) {
+			if verifyContent == "" {
+				return []string{"phase sdd-archive blocked — verify report is empty (re-run sdd-verify to generate content)"}
+			}
+			return []string{"phase sdd-archive blocked — verify report must pass before archiving"}
+		}
+	}
+	return nil
 }
 
 func missingDepsFor(phase string, artifacts map[string]ArtifactState) []string {

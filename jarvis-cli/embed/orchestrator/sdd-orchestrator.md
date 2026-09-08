@@ -87,6 +87,8 @@ The JSON contract fields used for routing:
 
 Routing rule: launch the `nextRecommended` phase only when that phase dependency is `ready`. If `blockedReasons` apply to the recommended phase or to terminal work (`verify`/`archive` completion), report the relevant `blockedReasons` and stop only for the blocked phase or terminal action. Do not infer that downstream verify/archive blockers prevent a safe upstream `sdd-apply` when native status recommends `sdd-apply` and the apply dependency is ready.
 
+Before launching `sdd-apply`, `sdd-verify`, or `sdd-archive`, the orchestrator MUST verify native authority from the current status: the `schema` field equals `jarvis.sdd-status`, `dependencies[phase] == `ready``, `actionContext.mode == `workspace-edit``, and `actionContext.allowedEditRoots` is non-empty. Treat the phase-specific `blockedReasons` as authoritative and stop that phase. Manual recovery cannot invent workspace-edit authority: if native status is unavailable or does not prove all four fields, recovery is read-only and the orchestrator MUST NOT launch a mutating phase.
+
 ### SDD Entry Routing
 
 SDD is recommendation-only until the user explicitly accepts or requests it. Absence of an SDD signal means ordinary direct execution; never require the user to opt out with "without SDD".

@@ -808,8 +808,10 @@ func TestCatalogContract_SDDApplySourceUsesJarvisAdaptedStatusGuards(t *testing.
 		"applyState.hasProgress",
 		"applyState.complete",
 		"phaseInstructions",
-		"If `jarvis sdd status <change> --json` is unavailable, STOP before editing unless the maintainer explicitly approves manual recovery mode in the current conversation.",
-		"Manual recovery mode does not make missing status safe by default; report missing status dimensions: blockers, dependencies, workspace-planning, artifact context, and allowed edit roots.",
+		"If `jarvis sdd status <change> --json` is unavailable, STOP before editing.",
+		"Manual recovery may inspect artifacts, but cannot invent workspace-edit authority or authorize an edit",
+		"Confirm the status field `schema` is exactly `jarvis.sdd-status`.",
+		"Confirm `dependencies[\"sdd-apply\"]` is exactly `ready`",
 		"If `actionContext.allowedEditRoots` is missing or empty, STOP before editing.",
 		"If a needed edit is outside every `actionContext.allowedEditRoots` entry, STOP",
 		"Read context from `contextFiles` and `artifactPaths` before reading implementation files.",
@@ -839,6 +841,49 @@ func TestCatalogContract_SDDApplySourceUsesJarvisAdaptedStatusGuards(t *testing.
 		if strings.Contains(content, snippet) {
 			t.Fatalf("expected sdd-apply source not to contain %q", snippet)
 		}
+	}
+}
+
+func TestCatalogContract_MutatingPhaseSkillsFailClosedOnNativeWorkspaceAuthority(t *testing.T) {
+	testCases := []struct {
+		path     string
+		required []string
+	}{
+		{
+			path: "embed/skills/sdd-apply/SKILL.md",
+			required: []string{
+				"schema` is exactly `jarvis.sdd-status`",
+				"dependencies[\"sdd-apply\"]` is exactly `ready`",
+				"cannot invent workspace-edit authority",
+			},
+		},
+		{
+			path: "embed/skills/sdd-verify/SKILL.md",
+			required: []string{
+				"dependencies[\"sdd-verify\"]` is exactly `ready`",
+				"`actionContext.allowedEditRoots` must be non-empty.",
+				"manual recovery may inspect artifacts but cannot invent workspace-edit authority",
+			},
+		},
+		{
+			path: "embed/skills/sdd-archive/SKILL.md",
+			required: []string{
+				"dependencies[\"sdd-archive\"]` is exactly `ready`",
+				"`actionContext.allowedEditRoots` must be non-empty.",
+				"manual recovery may inspect artifacts but cannot invent workspace-edit authority",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.path, func(t *testing.T) {
+			content := readEmbeddedSkillAsset(t, tc.path)
+			for _, snippet := range tc.required {
+				if !strings.Contains(content, snippet) {
+					t.Fatalf("expected %s to fail closed on native workspace authority with %q", tc.path, snippet)
+				}
+			}
+		})
 	}
 }
 

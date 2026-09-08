@@ -57,11 +57,12 @@ From the orchestrator:
 
 Before syncing specs, moving folders, or writing an archive report, consume the structured status from `jarvis sdd status <change> --json`.
 
-- Confirm `schema: jarvis.sdd-status` and read `blockedReasons`, `taskProgress`, `applyState`, `artifacts`, `artifactPaths`, `contextFiles`, `actionContext`, and `phaseInstructions`.
+- Confirm the actual `schema` field is exactly `jarvis.sdd-status`, `dependencies["sdd-archive"]` is exactly `ready`, and read `blockedReasons`, `taskProgress`, `applyState`, `artifacts`, `artifactPaths`, `contextFiles`, `actionContext`, and `phaseInstructions`.
 - Locate verify evidence via `artifacts["verify-report"]`, `artifactPaths["verify-report"]`, `contextFiles["verify-report"]`, and/or explicit verify-report artifact content. There is no top-level verify report status field.
-- If `blockedReasons` is non-empty, STOP and return `blocked` with the reasons. Do not archive.
-- If `actionContext.mode` is `workspace-planning`, STOP. Do not move workspace changes into repo-local archives or edit linked repositories.
-- If `actionContext.allowedEditRoots` is present, every archive edit, spec merge, and folder move must stay inside those roots. If an edit would escape them, STOP.
+- If phase-specific `blockedReasons` apply to archive, STOP and return `blocked` with the reasons. Do not archive.
+- If `actionContext.mode` is not exactly `workspace-edit`, STOP. Do not move workspace changes into repo-local archives or edit linked repositories.
+- `actionContext.allowedEditRoots` must be non-empty. Every archive edit, spec merge, and folder move must stay inside those roots. If an edit would escape them, STOP.
+- If native status is unavailable, manual recovery may inspect artifacts but cannot invent workspace-edit authority; STOP before archive writes or report persistence.
 - Generated artifacts are output, never sources of truth. Never fix archive readiness by editing generated user-machine artifacts, installed skill copies, generated registries, or local runtime config. Change Jarvis source templates/assets instead.
 
 ### Verification Gate
