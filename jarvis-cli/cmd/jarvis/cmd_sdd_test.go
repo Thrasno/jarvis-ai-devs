@@ -317,6 +317,47 @@ func TestRunSddContinue_BlockedWhenApplyDecisionUnresolved(t *testing.T) {
 	}
 }
 
+func TestRunSddContinue_IncompleteTasksBlockArchiveRouting(t *testing.T) {
+	status, err := buildStatus("my-feature", fakeSddArtifactSource{
+		artifacts: map[string]sddstatus.ArtifactState{
+			sddstatus.ArtifactProposal:      sddstatus.ArtifactDone,
+			sddstatus.ArtifactSpec:          sddstatus.ArtifactDone,
+			sddstatus.ArtifactDesign:        sddstatus.ArtifactDone,
+			sddstatus.ArtifactTasks:         sddstatus.ArtifactDone,
+			sddstatus.ArtifactApplyProgress: sddstatus.ArtifactDone,
+			sddstatus.ArtifactVerifyReport:  sddstatus.ArtifactDone,
+			sddstatus.ArtifactArchiveReport: sddstatus.ArtifactDone,
+		},
+		contents: map[string]string{
+			sddstatus.ArtifactTasks:        "- [x] T1\n- [ ] T2\n",
+			sddstatus.ArtifactVerifyReport: "All checks passed.",
+		},
+	}, "hive", nil)
+	if err != nil {
+		t.Fatalf("buildStatus: %v", err)
+	}
+
+	if got := status.Dependencies[sddstatus.PhaseArchive]; got != sddstatus.DepBlocked {
+		t.Fatalf("sdd-archive dependency = %q, want blocked", got)
+	}
+	if got := status.NextRecommended; got != "" {
+		t.Fatalf("nextRecommended = %q, want empty so continue reports the blocker", got)
+	}
+	const wantReason = "phase sdd-archive blocked — task progress is incomplete (1/2 tasks complete)"
+	if !containsStatusReason(status.BlockedReasons, wantReason) {
+		t.Fatalf("blockedReasons = %#v, want %q", status.BlockedReasons, wantReason)
+	}
+}
+
+func containsStatusReason(reasons []string, want string) bool {
+	for _, reason := range reasons {
+		if reason == want {
+			return true
+		}
+	}
+	return false
+}
+
 // TestPrintStatusHuman_BlockedWithNoNextRecommended guards against the regression
 // where printStatusHuman showed "all phases complete ✓" while also showing blocked
 // reasons — contradictory output that occurred when NextRecommended was "" and

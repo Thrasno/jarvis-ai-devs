@@ -1,6 +1,7 @@
 package sddstatus
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -245,7 +246,7 @@ func ComputeStatus(changeName, artifactStore string, in Input) *ChangeStatus {
 	applyDecision := parseApplyDecision(in.Contents[ArtifactTasks])
 	applyState := buildApplyState(in.Artifacts)
 	dependencies := computeDependencies(in.Artifacts, taskProgress, applyDecision, in.Contents[ArtifactVerifyReport])
-	nextRecommended, blockedReasons := computeNextAndBlockers(in.Artifacts, dependencies, applyDecision, in.Contents[ArtifactVerifyReport])
+	nextRecommended, blockedReasons := computeNextAndBlockers(in.Artifacts, dependencies, taskProgress, applyDecision, in.Contents[ArtifactVerifyReport])
 
 	return &ChangeStatus{
 		Schema:        StatusSchema,
@@ -418,6 +419,11 @@ func computeDependencies(artifacts map[string]ArtifactState, tp *TaskProgress, a
 }
 
 func computePhaseDep(phase string, artifacts map[string]ArtifactState, tp *TaskProgress, ad *ApplyDecision, verifyContent string) DependencyState {
+	// A stale archive report must not bypass incomplete parsed task progress.
+	if phase == PhaseArchive && tp != nil && !tp.AllDone {
+		return DepBlocked
+	}
+
 	output := PhaseOutput[phase]
 	// When apply-progress is already done the delivery-decision gate is moot —
 	// the phase completed in a prior session and the gate was resolved then.
@@ -488,7 +494,7 @@ func isVerifyPassing(content string) bool {
 	return true
 }
 
-func computeNextAndBlockers(artifacts map[string]ArtifactState, deps map[string]DependencyState, ad *ApplyDecision, verifyContent string) (next string, reasons []string) {
+func computeNextAndBlockers(artifacts map[string]ArtifactState, deps map[string]DependencyState, tp *TaskProgress, ad *ApplyDecision, verifyContent string) (next string, reasons []string) {
 	var blocked []string
 	for _, phase := range PhaseOrder {
 		state := deps[phase]
@@ -517,13 +523,16 @@ func computeNextAndBlockers(artifacts map[string]ArtifactState, deps map[string]
 						blocked = append(blocked, "phase sdd-verify blocked — apply-progress required or all tasks must be done")
 					}
 				case PhaseArchive:
+					if tp != nil && !tp.AllDone {
+						blocked = append(blocked, fmt.Sprintf("phase sdd-archive blocked — task progress is incomplete (%d/%d tasks complete)", tp.Completed, tp.Total))
+					}
 					// verifyContent is always "" here only when the verify-report artifact
 					// exists (it is a hard dep and passed the dep check above) but was stored
 					// with no body. In that case the message must distinguish "empty" from
 					// "failing" so the user knows to re-run sdd-verify, not fix failures.
 					if verifyContent == "" {
 						blocked = append(blocked, "phase sdd-archive blocked — verify report is empty (re-run sdd-verify to generate content)")
-					} else {
+					} else if !isVerifyPassing(verifyContent) {
 						blocked = append(blocked, "phase sdd-archive blocked — verify report must pass before archiving")
 					}
 				default:
