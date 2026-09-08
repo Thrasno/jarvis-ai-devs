@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 )
@@ -42,6 +43,9 @@ func (h *HiveSource) FetchArtifacts(ctx context.Context, changeName string) (map
 		if row.Content != "" {
 			contents[row.Artifact] = row.Content
 		}
+	}
+	if _, ok := artifacts[ArtifactApplyProgress]; ok {
+		artifacts[ArtifactApplyProgress] = applyProgressState(contents[ArtifactApplyProgress], contents[ArtifactTasks])
 	}
 	return artifacts, contents, nil
 }
@@ -106,13 +110,49 @@ func (o *OpenSpecSource) FetchArtifacts(_ context.Context, changeName string) (m
 			}
 			return nil, nil, err
 		}
+		content := string(data)
 		artifacts[artifact] = ArtifactDone
-		if len(data) > 0 {
-			contents[artifact] = string(data)
+		if content != "" {
+			contents[artifact] = content
 		}
+	}
+	if _, ok := artifacts[ArtifactApplyProgress]; ok {
+		artifacts[ArtifactApplyProgress] = applyProgressState(contents[ArtifactApplyProgress], contents[ArtifactTasks])
 	}
 
 	return artifacts, contents, nil
+}
+
+// applyProgressState accepts only exact, line-oriented status markers. A legacy
+// unmarked artifact is complete only when task checkboxes provide deterministic
+// all-complete evidence. Unknown, malformed, and conflicting markers fail closed
+// as partial so incomplete work cannot enable verification.
+func applyProgressState(progressContent, tasksContent string) ArtifactState {
+	hasCompleteMarker := false
+	hasPartialMarker := false
+	for _, line := range strings.Split(progressContent, "\n") {
+		line = strings.TrimSpace(line)
+		switch line {
+		case "status: partial":
+			hasPartialMarker = true
+		case "status: complete":
+			hasCompleteMarker = true
+		default:
+			if strings.HasPrefix(line, "status:") {
+				return ArtifactPartial
+			}
+		}
+	}
+	if hasPartialMarker {
+		return ArtifactPartial
+	}
+	if hasCompleteMarker {
+		return ArtifactDone
+	}
+	if progress := parseTaskProgress(tasksContent); progress != nil && progress.AllDone {
+		return ArtifactDone
+	}
+	return ArtifactPartial
 }
 
 func (o *OpenSpecSource) ListChanges(_ context.Context) ([]string, error) {
@@ -179,6 +219,12 @@ func (h *HybridSource) FetchArtifacts(ctx context.Context, changeName string) (m
 		}
 	} else {
 		fmt.Fprintf(os.Stderr, "warning: hive source unavailable: %v\n", hiveErr)
+	}
+
+	// Reclassify after contents from both sources are merged: legacy progress in
+	// either direction may depend on task evidence supplied by the other source.
+	if _, ok := merged[ArtifactApplyProgress]; ok {
+		merged[ArtifactApplyProgress] = applyProgressState(mergedContents[ArtifactApplyProgress], mergedContents[ArtifactTasks])
 	}
 
 	return merged, mergedContents, nil

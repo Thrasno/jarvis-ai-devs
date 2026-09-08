@@ -61,7 +61,7 @@ Before reading implementation files or writing code, consume the structured stat
 - Read context from `contextFiles` and `artifactPaths` before reading implementation files. Do not assume fixed artifact filenames when status provides paths or Hive topics.
 - If status includes `blockedReasons`, review them first. If any blocker prevents apply, STOP and return `blocked` with those reasons.
 - Use dependency states to decide whether `sdd-apply` is blocked, ready, or already satisfied. If the `sdd-apply` dependency is blocked, STOP and return `blocked`.
-- Use `applyState.hasProgress` and `applyState.complete` to understand whether prior apply work exists and whether downstream verification has already happened. Do not invent extra `applyState` values beyond the Jarvis status contract.
+- Use `applyState.hasProgress` and `applyState.complete` to understand whether prior apply work exists and whether downstream verification has already happened. `hasProgress` means an apply-progress artifact exists; the legacy `complete` boolean means a verify-report artifact exists, not that task completion was inferred. Do not rename, remove, or invent extra `applyState` values beyond the Jarvis status contract.
 - If all assigned implementation is complete and no `apply-progress = partial` reconciliation is needed, do not edit. Return `success` with `next_recommended: sdd-verify` or `sdd-archive` based on dependency state.
 - If the `sdd-apply` dependency is ready, proceed only on the assigned pending tasks.
 - If `actionContext.mode` is `workspace-planning`, treat linked repos and folders as read-only planning context. STOP before editing and return `blocked` unless the orchestrator provides a safe workspace-edit status.
@@ -201,6 +201,8 @@ When saving apply-progress:
 2. If previous progress was partial, explicitly record what was reconciled, what remains, and why apply should continue or finish
 3. The final artifact should show the cumulative state of ALL assigned tasks across ALL batches
 4. Format: keep the same structure but ensure no completed task is lost from prior batches
+5. When work remains, include `status: partial` on its own line. This is the conservative machine-readable marker that preserves partial apply progress through Hive and OpenSpec; do not rely on free-form prose to signal partial state.
+6. When all apply work is reconciled, remove the `status: partial` marker or record `status: complete` before routing to verification.
 
 ### Step 7: Return Summary
 

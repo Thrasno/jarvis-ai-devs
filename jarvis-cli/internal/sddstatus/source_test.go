@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
@@ -39,6 +41,115 @@ func TestHiveSourceFetchArtifactsUsesDedicatedCompleteRoute(t *testing.T) {
 	status := sddstatus.ComputeStatus("epic-06", "hive", sddstatus.Input{Artifacts: artifacts, Contents: contents})
 	if status.NextRecommended == sddstatus.PhaseExplore {
 		t.Fatalf("valid exploration produced spurious %q recommendation", status.NextRecommended)
+	}
+}
+
+func TestOpenSpecSourceClassifiesApplyProgressWithExplicitAndLegacyMarkers(t *testing.T) {
+	tests := []struct {
+		name     string
+		progress string
+		tasks    string
+		want     sddstatus.ArtifactState
+	}{
+		{name: "explicit partial marker", progress: "status: partial\n- [x] T1\n", tasks: "- [x] T1\n", want: sddstatus.ArtifactPartial},
+		{name: "explicit complete marker", progress: "status: complete\n", tasks: "- [x] T1\n- [ ] T2\n", want: sddstatus.ArtifactDone},
+		{name: "malformed marker fails closed", progress: "status:complete\n", tasks: "- [x] T1\n", want: sddstatus.ArtifactPartial},
+		{name: "conflicting markers fail closed", progress: "status: complete\nstatus: partial\n", tasks: "- [x] T1\n", want: sddstatus.ArtifactPartial},
+		{name: "legacy progress needs deterministic task completion", progress: "legacy progress\n", tasks: "- [x] T1\n- [x] T2\n", want: sddstatus.ArtifactDone},
+		{name: "legacy progress with incomplete tasks fails closed", progress: "legacy progress\n", tasks: "- [x] T1\n- [ ] T2\n", want: sddstatus.ArtifactPartial},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			changeDir := filepath.Join(root, "openspec", "changes", "epic-06")
+			if err := os.MkdirAll(changeDir, 0o755); err != nil {
+				t.Fatalf("create change directory: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(changeDir, "apply-progress.md"), []byte(tt.progress), 0o644); err != nil {
+				t.Fatalf("write apply progress: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(changeDir, "tasks.md"), []byte(tt.tasks), 0o644); err != nil {
+				t.Fatalf("write tasks: %v", err)
+			}
+
+			artifacts, contents, err := sddstatus.NewOpenSpecSource(root).FetchArtifacts(context.Background(), "epic-06")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := artifacts[sddstatus.ArtifactApplyProgress]; got != tt.want {
+				t.Fatalf("apply-progress state = %q, want %q", got, tt.want)
+			}
+			if got := contents[sddstatus.ArtifactApplyProgress]; got != tt.progress {
+				t.Fatalf("apply-progress content = %q, want preserved content %q", got, tt.progress)
+			}
+		})
+	}
+}
+
+func TestHiveSourceClassifiesExplicitPartialApplyProgress(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"artifacts":[{"artifact":"apply-progress","content":"status: partial\n- [x] T1\n"}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	artifacts, _, err := newHiveSource(t, server.URL).FetchArtifacts(context.Background(), "epic-06")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := artifacts[sddstatus.ArtifactApplyProgress]; got != sddstatus.ArtifactPartial {
+		t.Fatalf("apply-progress state = %q, want partial", got)
+	}
+}
+
+func TestHybridSourceReclassifiesApplyProgressAfterMergingContents(t *testing.T) {
+	tests := []struct {
+		name          string
+		hiveArtifacts string
+		openSpecFiles map[string]string
+		want          sddstatus.ArtifactState
+	}{
+		{
+			name:          "hive progress uses OpenSpec task evidence",
+			hiveArtifacts: `[{"artifact":"apply-progress","content":"legacy progress"}]`,
+			openSpecFiles: map[string]string{"tasks.md": "- [x] T1\n- [x] T2\n"},
+			want:          sddstatus.ArtifactDone,
+		},
+		{
+			name:          "OpenSpec progress uses Hive task evidence",
+			hiveArtifacts: `[{"artifact":"tasks","content":"- [x] T1\n- [x] T2\n"}]`,
+			openSpecFiles: map[string]string{"apply-progress.md": "legacy progress\n"},
+			want:          sddstatus.ArtifactDone,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`{"artifacts":` + tt.hiveArtifacts + `}`))
+			}))
+			t.Cleanup(server.Close)
+
+			root := t.TempDir()
+			changeDir := filepath.Join(root, "openspec", "changes", "epic-06")
+			if err := os.MkdirAll(changeDir, 0o755); err != nil {
+				t.Fatalf("create change directory: %v", err)
+			}
+			for name, content := range tt.openSpecFiles {
+				if err := os.WriteFile(filepath.Join(changeDir, name), []byte(content), 0o644); err != nil {
+					t.Fatalf("write %s: %v", name, err)
+				}
+			}
+
+			source := sddstatus.NewHybridSource(newHiveSource(t, server.URL), sddstatus.NewOpenSpecSource(root))
+			artifacts, _, err := source.FetchArtifacts(context.Background(), "epic-06")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := artifacts[sddstatus.ArtifactApplyProgress]; got != tt.want {
+				t.Fatalf("apply-progress state = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

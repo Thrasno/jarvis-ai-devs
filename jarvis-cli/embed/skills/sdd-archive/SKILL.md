@@ -59,6 +59,7 @@ Before syncing specs, moving folders, or writing an archive report, consume the 
 
 - Confirm `schema: jarvis.sdd-status` and read `blockedReasons`, `taskProgress`, `applyState`, `artifacts`, `artifactPaths`, `contextFiles`, `actionContext`, and `phaseInstructions`.
 - Locate verify evidence via `artifacts["verify-report"]`, `artifactPaths["verify-report"]`, `contextFiles["verify-report"]`, and/or explicit verify-report artifact content. There is no top-level verify report status field.
+- When reading apply-progress, treat only an exact `status: complete` marker as explicit completion. Treat `status: partial`, unknown, malformed, conflicting, or unmarked progress as incomplete unless structured status classified an unmarked artifact as done from deterministic all-complete task evidence.
 - If `blockedReasons` is non-empty, STOP and return `blocked` with the reasons. Do not archive.
 - If `actionContext.mode` is `workspace-planning`, STOP. Do not move workspace changes into repo-local archives or edit linked repositories.
 - If `actionContext.allowedEditRoots` is present, every archive edit, spec merge, and folder move must stay inside those roots. If an edit would escape them, STOP.
@@ -83,7 +84,7 @@ Before syncing specs or moving any archive folder, inspect the tasks artifact:
 
 Any incomplete task checkbox or `taskProgress` entry blocks archive. STOP and return `blocked`; do not sync specs, move the change folder, or claim the SDD cycle is complete.
 
-Stale checkboxes are not archive-ready by themselves. If checkboxes, `taskProgress`, `applyState`, apply-progress, or verify-report evidence disagree, STOP and report that `sdd-apply` and `sdd-verify` must reconcile the persisted artifacts before archive. Do not mark archive-ready based only on stale checkboxes, internal todos, or conversation claims.
+Stale checkboxes are not archive-ready by themselves. `applyState.hasProgress` means the apply-progress artifact exists, while the legacy `applyState.complete` boolean means a verify-report artifact exists; neither boolean proves task completion. If checkboxes, `taskProgress`, `applyState`, apply-progress, or verify-report evidence disagree, STOP and report that `sdd-apply` and `sdd-verify` must reconcile the persisted artifacts before archive. Do not mark archive-ready based only on stale checkboxes, internal todos, or conversation claims.
 
 When prior `apply-progress = partial` exists, STOP until current tasks, apply-progress, and verify-report have been reconciled and re-verified. Partial apply-progress means archive must wait for reconciliation and verification, even if checkboxes look complete.
 
