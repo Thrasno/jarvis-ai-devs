@@ -207,6 +207,41 @@ func TestBuildStatus_IncludesValidatedAllowedEditRoot(t *testing.T) {
 	}
 }
 
+func TestBuildStatus_WorkspacePlanningBlocksMutatingPhases(t *testing.T) {
+	status, err := buildStatus("my-feature", fakeSddArtifactSource{
+		artifacts: map[string]sddstatus.ArtifactState{
+			sddstatus.ArtifactProposal: sddstatus.ArtifactDone,
+		},
+	}, "hive", nil)
+	if err != nil {
+		t.Fatalf("buildStatus: %v", err)
+	}
+
+	for _, phase := range []string{sddstatus.PhaseApply, sddstatus.PhaseVerify, sddstatus.PhaseArchive} {
+		if got := status.Dependencies[phase]; got != sddstatus.DepBlocked {
+			t.Errorf("dependency[%s] = %q, want blocked without validated workspace authority", phase, got)
+		}
+		if !containsSddStatusReason(status.BlockedReasons, "phase "+phase+" blocked — workspace-edit mode with non-empty allowed edit roots required") {
+			t.Errorf("BlockedReasons = %#v, want workspace authority blocker for %s", status.BlockedReasons, phase)
+		}
+	}
+
+	for _, phase := range []string{sddstatus.PhaseSpec, sddstatus.PhaseDesign} {
+		if got := status.Dependencies[phase]; got != sddstatus.DepReady {
+			t.Errorf("dependency[%s] = %q, want planning phase to remain ready", phase, got)
+		}
+	}
+}
+
+func containsSddStatusReason(reasons []string, want string) bool {
+	for _, reason := range reasons {
+		if reason == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestValidatedEditRootsForProjectUsesValidatedTargetAndPermitsProjectAliases(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "jarvis-dev")
 	if err := os.Mkdir(root, 0o755); err != nil {

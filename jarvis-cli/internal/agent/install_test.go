@@ -195,6 +195,9 @@ func TestInstallSkillsFromEmbeddedSDDVerify_RendersModelSpecificSections(t *test
 		"A documented manual verification path is not evidence by itself.",
 		"Manual or runtime verification counts as `PASS` only when it was executed and the report records the command or manual action, result, timestamp or session, and operator/evidence source.",
 		"Unresolved CRITICAL verification finding exists",
+		"dependencies[\"sdd-verify\"]` is exactly `ready`",
+		"`actionContext.allowedEditRoots` must be non-empty.",
+		"manual recovery may inspect artifacts but cannot invent workspace-edit authority",
 	}
 	forbiddenVerifierDrift := []string{
 		"Do NOT run tests unless `strict_tdd` is active and the test runner is explicitly provided.",
@@ -318,8 +321,10 @@ func TestInstallSkillsFromEmbeddedSDDApply_PreservesJarvisStatusAndWorkspaceGuar
 		"applyState.hasProgress",
 		"applyState.complete",
 		"phaseInstructions",
-		"If `jarvis sdd status <change> --json` is unavailable, STOP before editing unless the maintainer explicitly approves manual recovery mode in the current conversation.",
-		"Manual recovery mode does not make missing status safe by default; report missing status dimensions: blockers, dependencies, workspace-planning, artifact context, and allowed edit roots.",
+		"If `jarvis sdd status <change> --json` is unavailable, STOP before editing.",
+		"Manual recovery may inspect artifacts, but cannot invent workspace-edit authority or authorize an edit",
+		"Confirm the status field `schema` is exactly `jarvis.sdd-status`.",
+		"Confirm `dependencies[\"sdd-apply\"]` is exactly `ready`",
 		"If `actionContext.allowedEditRoots` is missing or empty, STOP before editing.",
 		"If a needed edit is outside every `actionContext.allowedEditRoots` entry, STOP",
 		"Generated artifacts are output, never sources of truth",
@@ -389,6 +394,9 @@ func TestInstallSkillsFromEmbeddedSDDArchive_PreservesJarvisArchiveSafetyGuards(
 		"Partial, missing, or stale artifacts block archive until they are reconciled and re-verified",
 		"For `none` mode, return a closure summary only; do not persist an archive report",
 		"Generated artifacts are output, never sources of truth",
+		"dependencies[\"sdd-archive\"]` is exactly `ready`",
+		"`actionContext.allowedEditRoots` must be non-empty.",
+		"manual recovery may inspect artifacts but cannot invent workspace-edit authority",
 	}
 	for _, want := range requiredSnippets {
 		if !strings.Contains(content, want) {

@@ -55,17 +55,18 @@ From the orchestrator:
 
 ## Status and Workspace Guard
 
-Before reading implementation files or writing code, consume the structured status provided by the orchestrator. If status is not provided but `jarvis sdd status <change> --json` is available, run it. If `jarvis sdd status <change> --json` is unavailable, STOP before editing unless the maintainer explicitly approves manual recovery mode in the current conversation. Manual recovery mode does not make missing status safe by default; report missing status dimensions: blockers, dependencies, workspace-planning, artifact context, and allowed edit roots.
+Before reading implementation files or writing code, consume the structured status provided by the orchestrator. If status is not provided but `jarvis sdd status <change> --json` is available, run it. If `jarvis sdd status <change> --json` is unavailable, STOP before editing. Manual recovery may inspect artifacts, but cannot invent workspace-edit authority or authorize an edit; report missing status dimensions: schema, blockers, dependencies, workspace-planning, artifact context, and allowed edit roots.
 
-- Confirm the status uses schema: `jarvis.sdd-status`.
+- Confirm the status field `schema` is exactly `jarvis.sdd-status`.
+- Confirm `dependencies["sdd-apply"]` is exactly `ready`; otherwise STOP and return the phase-specific `blockedReasons`.
 - Read context from `contextFiles` and `artifactPaths` before reading implementation files. Do not assume fixed artifact filenames when status provides paths or Hive topics.
 - If status includes `blockedReasons`, review them first. If any blocker prevents apply, STOP and return `blocked` with those reasons.
 - Use dependency states to decide whether `sdd-apply` is blocked, ready, or already satisfied. If the `sdd-apply` dependency is blocked, STOP and return `blocked`.
 - Use `applyState.hasProgress` and `applyState.complete` to understand whether prior apply work exists and whether downstream verification has already happened. `hasProgress` means an apply-progress artifact exists; the legacy `complete` boolean means a verify-report artifact exists, not that task completion was inferred. Do not rename, remove, or invent extra `applyState` values beyond the Jarvis status contract.
 - If all assigned implementation is complete and no `apply-progress = partial` reconciliation is needed, do not edit. Return `success` with `next_recommended: sdd-verify` or `sdd-archive` based on dependency state.
 - If the `sdd-apply` dependency is ready, proceed only on the assigned pending tasks.
-- If `actionContext.mode` is `workspace-planning`, treat linked repos and folders as read-only planning context. STOP before editing and return `blocked` unless the orchestrator provides a safe workspace-edit status.
-- Treat `actionContext.allowedEditRoots` from valid status as the authoritative edit-root guard. If `actionContext.allowedEditRoots` is missing or empty, STOP before editing.
+- If `actionContext.mode` is not exactly `workspace-edit`, treat linked repos and folders as read-only planning context. STOP before editing and return `blocked`.
+- Treat `actionContext.allowedEditRoots` from valid native status as the authoritative edit-root guard. If `actionContext.allowedEditRoots` is missing or empty, STOP before editing. Manual recovery or maintainer approval cannot substitute for this authority.
 - If `actionContext.allowedEditRoots` is present, write only inside those roots. If a needed edit is outside every `actionContext.allowedEditRoots` entry, STOP and report the unsafe path.
 - Use `phaseInstructions` to report the next phase command when returning; do not invent phase routing.
 - Generated artifacts are output, never sources of truth. Do not edit installed user-machine agent configuration, generated registries, or runtime copies to make apply or verification pass; change the source assets/templates instead.

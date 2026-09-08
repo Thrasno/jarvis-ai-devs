@@ -1,7 +1,7 @@
 package config
 
 // sdd_gate_drift_test.go guards executor SKILL.md files and orchestrator prose against
-// drift on the ORCHESTRATOR GATE block and the apply-decision keyword contract.
+// drift on the ORCHESTRATOR GATE block and native phase authority.
 //
 // Canonical executor skills: embed/skills/sdd-{explore,propose,spec,design,tasks,apply,verify,archive}/SKILL.md
 // Canonical orchestrator:     embed/orchestrator/sdd-orchestrator.md
@@ -46,6 +46,23 @@ func TestGateDrift_ExecutorSkillsHaveOrchestratorGate(t *testing.T) {
 				t.Errorf("%s/SKILL.md: 'ORCHESTRATOR GATE' must appear before 'Executor Override' (gate at %d, override at %d)", skill, gateIdx, overrideIdx)
 			}
 		})
+	}
+}
+
+func TestGateDrift_OrchestratorRequiresNativeWorkspaceAuthorityForMutatingPhases(t *testing.T) {
+	content := readConfigTestFile(t, "embed/orchestrator/sdd-orchestrator.md")
+
+	for _, required := range []string{
+		"`sdd-apply`, `sdd-verify`, or `sdd-archive`",
+		"`schema` field equals `jarvis.sdd-status`",
+		"dependencies[phase] == `ready`",
+		"actionContext.mode == `workspace-edit`",
+		"actionContext.allowedEditRoots` is non-empty",
+		"Manual recovery cannot invent workspace-edit authority",
+	} {
+		if !strings.Contains(content, required) {
+			t.Fatalf("sdd-orchestrator.md missing native workspace-authority contract %q", required)
+		}
 	}
 }
 

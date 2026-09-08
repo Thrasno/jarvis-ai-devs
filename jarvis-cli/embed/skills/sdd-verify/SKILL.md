@@ -35,15 +35,17 @@ Public/contextual comments follow the target context language by default. Explic
 
 Run when the orchestrator launches verification for an SDD change. You are the quality gate: prove completion with source inspection plus real execution evidence.
 
-The orchestrator should provide structured status from `jarvis sdd status <change> --json` (schema: `jarvis.sdd-status`). Use its `schemaName`, `planningHome`, `changeRoot`, `artifactPaths`, `contextFiles`, task progress, dependency states, `phaseInstructions`, and `actionContext` before judging artifacts.
+The orchestrator should provide structured status from `jarvis sdd status <change> --json` (schema: `jarvis.sdd-status`). Use its actual `schema`, `planningHome`, `changeRoot`, `artifactPaths`, `contextFiles`, `blockedReasons`, `dependencies`, task progress, `phaseInstructions`, and `actionContext` before judging artifacts.
 
 ## Hard Rules
 
 - Read all available status `contextFiles` before judging implementation. Full spec-driven verification reads proposal, specs, design, tasks, and apply-progress; partial artifact sets degrade as described below.
 - Treat `artifactPaths` as the source of artifact locations. Do not assume fixed filenames when structured status provides paths.
+- Confirm the status field `schema` is exactly `jarvis.sdd-status` and `dependencies["sdd-verify"]` is exactly `ready`; otherwise STOP and return the phase-specific `blockedReasons`.
 - When reading apply-progress, treat only an exact `status: complete` marker as explicit completion. Treat `status: partial`, unknown, malformed, conflicting, or unmarked progress as incomplete unless structured status classified an unmarked artifact as done from deterministic all-complete task evidence.
-- If `actionContext.mode` is `workspace-planning`, STOP. Verification of unedited linked workspaces is planning-only and cannot prove implementation readiness.
-- If `actionContext.allowedEditRoots` is present, inspect only paths under those roots. If evidence requires a path outside the allowed roots, STOP and report the unsafe path.
+- If `actionContext.mode` is not exactly `workspace-edit`, STOP. Verification of unedited linked workspaces is planning-only and cannot prove implementation readiness.
+- `actionContext.allowedEditRoots` must be non-empty. Inspect only paths under those roots. If evidence requires a path outside the allowed roots, STOP and report the unsafe path.
+- If native status is unavailable, manual recovery may inspect artifacts but cannot invent workspace-edit authority; STOP before verification or report persistence.
 - Execute relevant tests; static analysis alone is never verification.
 - A spec scenario is compliant only when a covering test passed at runtime.
 - If runtime tests cannot be run, report runtime evidence as skipped and do not claim full PASS for behavior that was not executed.
@@ -104,7 +106,7 @@ The orchestrator should provide structured status from `jarvis sdd status <chang
 
 1. Load relevant skills via shared SDD Section A.
 2. Read structured status first when provided. Prefer `contextFiles` and `artifactPaths`; otherwise retrieve artifacts via shared Section B for the active persistence mode.
-3. Confirm the action context is safe: no workspace-planning verification, no required evidence outside `allowedEditRoots`, and no blocked `applyState`.
+3. Confirm native status authority: `schema` is `jarvis.sdd-status`, `dependencies["sdd-verify"]` is `ready`, `blockedReasons` do not block verify, `actionContext.mode` is `workspace-edit`, and `allowedEditRoots` is non-empty. Do not use manual recovery to bypass any missing authority.
 4. Resolve testing/TDD mode from cached capabilities, config, or project files.
 5. Count completed and incomplete tasks. Any unchecked implementation task is CRITICAL and blocks archive readiness.
 6. Read apply-progress when available. If it is missing, partial, or inconsistent with checked tasks, mark CRITICAL and recommend `sdd-apply` reconciliation.
