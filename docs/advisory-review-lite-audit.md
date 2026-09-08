@@ -1,6 +1,6 @@
 # Auditoría y propuesta de revisión consultiva ligera
 
-> **BORRADOR — NO APROBADO — NO IMPLEMENTADO.** Investigación documental del 8 de septiembre de 2026. Este documento no activa revisiones, no modifica instrucciones operativas y no autoriza implementación, instalación ni cambios de configuración.
+> **BORRADOR — NO IMPLEMENTADO.** Investigación documental del 8 de septiembre de 2026. Este documento no activa revisiones, no modifica instrucciones operativas y no autoriza implementación, instalación ni cambios de configuración. Las decisiones de producto y diseño registradas por el propietario del producto ese mismo día figuran en el [anexo de la sección 18](#18-anexo-decisiones-registradas-el-8-de-septiembre-de-2026); prevalecen sobre las recomendaciones anteriores cuando difieren y no autorizan implementación.
 
 ## 1. Resultado ejecutivo
 
@@ -25,6 +25,7 @@ La corrección sería una operación diferente: únicamente ante una petición a
 2. Implementación futura e integración: secciones 6–10.
 3. Seguridad y prueba de las promesas: secciones 11–13.
 4. Coste, decisiones pendientes y fuentes: secciones 14–17.
+5. Decisiones registradas y fuentes añadidas: sección 18.
 
 ### Leyenda de evidencia
 
@@ -742,8 +743,97 @@ No se han ejecutado builds, tests de producto, instalaciones, revisiones RDD, ll
 - [x] Definir corrección C→F, cobertura limitada y ausencia de cascadas automáticas.
 - [x] Identificar fuentes locales que entrarían en un cambio futuro y riesgos de config/replay.
 - [x] Proponer pruebas observables, paquetes de trabajo y estimación con incertidumbre.
-- [ ] Aprobar o ajustar decisiones de producto de la sección 15.
+- [x] Aprobar o ajustar decisiones de producto de la sección 15 — registradas en la sección 18.
 - [ ] Elegir versiones y presupuesto de prototipos para ambos hosts.
 - [ ] Autorizar expresamente una fase de implementación independiente de esta auditoría.
 
-**Estado final del documento: preparado para decidir; implementación no autorizada.**
+**Estado final del documento: decisiones registradas en la sección 18; siguiente paso, definición de requisitos; implementación no autorizada.**
+
+## 18. Anexo: decisiones registradas el 8 de septiembre de 2026
+
+Este anexo registra las decisiones que el propietario del producto tomó tras contrastar las secciones 1–17 con el código de Gentle AI en su rama `main` (`a609f88b`, 2026-09-07, versión instalada 2.7.0), con las issues públicas de ese proyecto y con el repositorio local en `0ad47416`. Complementa la auditoría; no la reescribe. Cuando una decisión difiere de una recomendación anterior, la decisión prevalece y la sección afectada se indica en cada fila. Ninguna decisión autoriza implementación: preparan la definición de requisitos.
+
+A la leyenda de evidencia de la sección 1 se añade un valor:
+
+- **DECIDIDO:** aceptado por el propietario del producto para la fase de requisitos; sin efecto operativo hasta que exista una implementación autorizada.
+
+### 18.1 Correcciones a afirmaciones anteriores
+
+| Sección | Afirmación anterior | Corrección | Evidencia |
+|---|---|---|---|
+| 2.1 | Una instalación externa era una causa plausible sin trazar de las revisiones observadas | La coinstalación con Gentle AI queda fuera del alcance soportado, pero las máquinas de desarrollo y prueba pueden conservar restos de ella; la traza del incidente debe registrar `gentle-ai --version`, los marcadores `gentle-ai:*` de `~/.claude/CLAUDE.md` y `gentle-ai review mode status` | Máquina de desarrollo observada con `~/.claude/CLAUDE.md` escrito por Gentle AI 2.7.0; la plantilla `jarvis-cli/embed/orchestrator/sdd-orchestrator.md` no contiene texto de RDD |
+| 2.1, 6.3 | No se analizaba la propiedad de los bloques generados | Jarvis escribe el bloque de Engram con el marcador `gentle-ai:engram-protocol`, el mismo nombre que usa Gentle AI; ambas herramientas se sobrescriben mutuamente ese bloque | `jarvis-cli/internal/agent/protocol.go` |
+| 3.2 (G4) | El Stop hook bloqueante era un rasgo de v2.6.0 | Se mantiene en `main`: sigue emitiendo `decision:"block"`. La instrucción «no copiarlo» se conserva por mérito propio, no porque el proyecto origen haya cambiado | `internal/cli/review_stop_hook.go:193` en `a609f88b` |
+| 4.2 | La petición manual con el modo en `off` se presentaba como una elección de diseño | En Gentle AI sigue sin resolverse: la issue #3119 se cerró como duplicada de #3302, que permanece abierta, porque los revisores están ligados a un binding de autoridad que `off` impide crear. Para Jarvis es una propiedad que debe demostrarse con pruebas de recorrido en ambos hosts, no una garantía heredada | Issues #3119 y #3302; sección 18.3, decisión 1 |
+| 4.1 | No se mencionaba el modo de permisos del host | `jarvis init` fija `permissions.defaultMode` a `bypassPermissions` cuando el usuario no lo ha fijado; Gentle AI hace lo mismo y cerró #3757 como comportamiento deseado. Decisión: mantenerlo y declarar que la revisión consultiva no compensa ni relaja los permisos del host | `jarvis-cli/internal/agent/claude.go:188`; issue #3757 |
+| 6.2, 15 | Se prefería `state.yaml` como almacén del modo global | Se invierte: el modo vive en ficheros propios. `state.Update` es una lectura-modificación-escritura del manifiesto completo bajo un lock exclusivo de fallo inmediato y no reentrante, y rechaza escribir mientras la migración desde `config.yaml` esté pendiente; un lock huérfano impediría apagar la revisión. Gentle AI guarda el modo global en su install state bajo lock y acumuló los defectos #2231, #3428, #3813 y #3972 | `jarvis-cli/internal/state/state.go:241`, `internal/state/lock.go:23–43`; `internal/cli/review_mode.go:429` en `a609f88b` |
+| 3.3, 11 | La no reproducibilidad del revisor se trataba como riesgo teórico | Evidencia empírica: dos revisiones sobre contenido staged byte a byte idéntico devolvieron hallazgos sin ningún solapamiento y ambas bloquearon el commit. Proviene de Gentleman Guardian Angel (gga), el hook pre-commit del mismo autor, no de RDD; la conclusión sobre revisores basados en modelos se mantiene | Issues #4098, #2648 y #2650 (gga) |
+| 14.2 | La estimación carecía de referencia empírica externa | Actividad de Gentle AI desde 2026-07-01 medida con la API de búsqueda de GitHub el 2026-09-08: 1921 issues, de las que 848 llevan «review» en el título, 36 «RDD», 56 «receipt» y 18 «gga»; 1419 pull requests. Es contexto de calibración, no una comparación de calidad | Consulta `search/issues` con `total_count` |
+
+### 18.2 Mecanismos verificados en Gentle AI `main`
+
+Lectura dirigida del clon local en `a609f88b`; ningún comando ejecutado. Estas observaciones fundamentan las decisiones de 18.3.
+
+| Mecanismo | Observación | Fuente |
+|---|---|---|
+| Entrada del revisor | Un bloque materializado por Go: binding, manifiesto de rutas cambiadas, un **párrafo** de mandato por lente, JSON Schema del resultado, `git diff --name-status` y `--numstat`, y un diff unificado por ruta con tres líneas de contexto. Presupuesto de 4 MiB para el bloque completo, impuesto por rechazo total y nunca por truncado. Los binarios no se vuelcan. No se envían archivos completos a las lentes | G17, G18 |
+| Reglas detalladas de las lentes | Viven en las definiciones de agente instaladas (`review-*.md`, `sdd-overlay-*.json`). En la ruta aislada no llegan al revisor: el plugin de OpenCode sustituye el system prompt del hijo y el proceso fresco de Claude usa un `--system-prompt` fijo | G5, G6, G17 |
+| Intención del cambio | Ningún campo de propósito, spec, tarea ni mensaje de commit alcanza al revisor; `--focus` solo elige la lente del nivel medio | G17, flags de `review start` |
+| Clase de evidencia | La declara el propio revisor (`evidence_class`, `causal_disposition`). Un hallazgo autodeclarado determinista pasa a corroborado sin refutador; el inferencial causado por el candidato exige una tanda de refutación | G20 (`compact.go:1189–1211`) |
+| Validación de citas | Los tokens `ruta:línea` del texto libre se comprueban con `git ls-tree` contra los árboles base y candidato; una ruta desconocida rechaza la captura completa. No se comprueban rangos de líneas ni fragmentos | G19 |
+| Clasificador | Niveles `low/medium/high` → 0/1/4 lentes. Alto si dispara cualquier señal alta o ruta caliente; bajo si todo el contenido autorado es pasivo probado por bytes y no toca configuración; medio en el resto, con una lente elegida por el usuario. El volumen nunca decide. Escanea base y candidato. Deduplica por código y señal. Recalcula el nivel desde sus razones y falla si no coincide. `review assess --json` lo expone sin ejecutar modelos | G21 |
+| Señales del clasificador | `hot_path` (`auth`, `update`, `security`, `webhook`, `payments`), `service_token`, `shell_source`, `process_boundary` (patrones de spawn multilenguaje, límite de 8 MiB con fallo cerrado), `executable_mode`, `configuration_change`; markdown operacional de agentes, skills y prompts excluido de lo pasivo | G21 |
+| Interruptor | Global `on/off` en el install state bajo lock; clon solo `off/inherit` en `<git-common-dir>/gentle-ai/review-mode/...` como ficheros de generación con digest, compare-and-set, `LOCK`, doble ubicación por compatibilidad (#2882, #3284) y latch de consentimiento. Resolución: clon `off` gana, luego global, ausencia es `off`, cualquier error de lectura es `off` | G22 |
+| Modelo por lente | Un solo modelo para las cuatro lentes (`{{CLAUDE_MODEL}}` o `inherit`); el proceso fresco de Claude no pasa `--model` (#4275); solo los jueces de Judgment Day admiten modelos distintos | G6, activos `review-*.md`; issue #4275 |
+| Medición | Telemetría anónima de uso con enums cerrados y contadores; harness de fricción con siete dimensiones y clasificador mecánico de bloqueos que rechaza expresamente un índice compuesto. Ninguno mide calidad de los hallazgos | G23, G24 |
+| Principio de adaptadores | «The adapter can execute a provider-issued transition or decline it. It cannot construct a command, candidate hash, target relation, lineage, authorization, correction budget, or recovery binding» | G16 |
+
+### 18.3 Decisiones
+
+Todas las filas tienen estado **DECIDIDO**.
+
+| # | Decisión | Detalle | Secciones afectadas |
+|---|---|---|---|
+| 1 | Evidencia atada, sin autoridad | Se conserva el binding de evidencia: `run_id`, identidades de snapshot, digest de contexto, nonce para emparejar los hooks de transporte y deduplicación por instancia de plugin. Se elimina el binding de autoridad: lineage, almacén de autoridad, compare-and-set, recibos, acknowledge y burn, refutador obligatorio, presupuesto en ledger y verbos de recuperación. Un fallo de binding produce `not_run` con motivo, nunca un bloqueo. Claude: proceso fresco lanzado por Go, binding inherente. OpenCode: plugin que intercepta el Task de revisión, sustituye el prompt por el paquete congelado y devuelve el resultado; un Task de revisión sin ejecución previa crea una ejecución manual con `trigger:"host_task"` en lugar de rechazarse | 4, 6, 7 |
+| 2 | Sin coinstalación con Gentle AI | Jarvis implementa su propio sistema. `jarvis doctor` detecta el binario de Gentle AI y los marcadores `gentle-ai:*` en los ficheros que Jarvis gestiona y lo informa. Los marcadores propios pasan a `jarvis:*`, con migración del nombre heredado `gentle-ai:engram-protocol` | 2.1, 6.3 |
+| 3 | Interruptor | Semántica de Gentle AI: global `on/off`, clon solo `off/inherit`, ausencia es `off`, error de lectura es `off`, el estado nombra la fuente que decide. Almacenamiento propio: `~/.jarvis/review/mode.json` y `<git-common-dir>/jarvis/review-mode.json` (rutas propuestas), escritura atómica, sin lock compartido, sin generaciones ni compare-and-set; `recorded_at` solo como diagnóstico. Nunca en `state.yaml` ni en `config.yaml` | 4.2, 6.2, 15 |
+| 4 | Lentes | Las reglas completas de cada lente viajan en el paquete congelado bajo un identificador de política versionado, de modo que ambos hosts reciben lo mismo por construcción. Se organizan en packs por stack (Go, Zoho Deluge, genérico) más un perfil de proyecto versionado (`.jarvis/review.yaml`, ruta propuesta). Resilience se reescribe hacia fallos observables en código (timeouts, cancelación, liberación de recursos, reintentos con tope, idempotencia, fallo parcial en bucles, llamadas externas sin comprobar respuesta) en lugar de umbrales de producción. Se copian la puerta de precisión, el presupuesto de barridos, los identificadores estables y la respuesta exacta «No findings». Las severidades no usan `BLOCKER`. El revisor recibe el diff más ventanas de contexto ancladas; lo que no entra en presupuesto se lista en `excluded` con motivo | 8.3, 10.3 |
+| 5 | Intención del cambio, opcional | El paquete incluye como **dato**, nunca como instrucción de sistema, la intención declarada: propuesta, spec y tareas cuando hay SDD; en su ausencia, el pedido del usuario capturado al crear la ejecución; en alcance `revisions`, el mensaje de commit. El revisor responde además si el diff implementa lo pedido, si hace algo fuera de lo pedido y si falta algo. El informe lleva `intent_reviewed`; con intención ausente es `false` y la conformidad no se evalúa | 8, 10.3 |
+| 6 | Revisión ciega | El revisor recibe intención, diff, ventanas ancladas y resultados de checks declarados. Nunca recibe la explicación, la autoevaluación ni el informe de verificación del escritor | 4.1, 11 |
+| 7 | Anclas de evidencia | Cada hallazgo declara `path`, `side` (`base` o `candidate`), `line_start`, `line_end` y `quote` literal. El núcleo valida en orden: ruta en el manifiesto del lado indicado, rango dentro del archivo, fragmento coincidente con los bytes congelados tras normalizar espacios, y pertenencia a un hunk cambiado. Resultados: `anchored`; `misanchored` (ruta existe, fragmento no coincide: se conserva con confianza baja y fuera de la selección para corregir); `unanchored` (ruta inexistente: se muestra en una sección de no verificables y se contabiliza como error del revisor). Nunca se rechaza la captura completa. `touches_change` sustituye la causalidad autodeclarada; las anclas coincidentes de distintas lentes se fusionan | 10.3, 11 |
+| 8 | Escalera de confirmación | De más a menos fuerte: **test** (falla en C y pasa en F, ejecutado por el núcleo con el comando declarado en el perfil sobre un checkout de scratch); **check declarado** (linter, vet, comprobador de tipos, validador de esquema); **reverificación independiente** (revisor fresco, sin herramientas, distinto del original, que recibe solo la afirmación en redacción neutra, el fragmento anclado con contexto y la intención, nunca la severidad ni el razonamiento originales; responde presente, ausente o no concluyente); **humano** (selección con motivo). La clase de evidencia la deriva el núcleo del escalón superado; el revisor no la declara. La escalera informa la decisión humana y fija el criterio de validación C→F; no es una puerta de acción. La reverificación independiente se ejecuta automáticamente solo en severidad alta y a demanda en el resto. Sin runner, como en Zoho Deluge, solo existen los dos últimos escalones y el informe lo declara como juicio con `full_candidate_reviewed:false` | 9, 12 |
+| 9 | El humano decide qué se corrige | Todos los hallazgos se muestran siempre, incluidos los `misanchored` y `unanchored` en una sección aparte etiquetada. El humano selecciona qué corregir y descarta con motivo; el motivo alimenta el ledger. No existe corrección automática. La corrección sigue siendo una operación distinta, autorizada, con criterios fijados antes de editar, validación dirigida de C→F y sin cascadas | 5, 9 |
+| 10 | Selección determinista de lentes | Señales declarativas con predicados mecánicos: glob de ruta, expresión regular sobre bytes congelados, modo Git, binario o no, y propiedades del manifiesto. Tres capas fusionadas: genérica embebida, pack del stack, perfil del proyecto. Cada señal nombra las lentes que exige. Lentes = unión de lo exigido, tope cuatro; todo pasivo, cero; ninguna señal y cambio no pasivo, la lente por defecto del perfil; límite de bytes superado o contenido no clasificable, cuatro. Una señal del lado base cuenta solo si el hunk cambiado cae en su región y se etiqueta `pre_existing`. `--lenses` y `--focus` del usuario prevalecen. Opcionalmente, las señales disparadas se pasan a la lente como pistas de revisión sin eximirla del barrido completo. `jarvis review assess --json` expone nivel, señales y lentes sin ejecutar modelos. El informe registra la versión de la política y el motivo de cada lente | 8.3, 15 |
+| 11 | Ledger local | Por ejecución: señales disparadas, lentes ejecutadas, modelo resuelto, duración, tokens si el host los expone, hallazgos por severidad, porcentaje anclado, confirmados por escalón, seleccionados para corregir y descartados con motivo de lista cerrada. Consulta con `jarvis review stats`. Sin índice compuesto. Sirve para ajustar señales, lentes y presupuesto por decisión humana; nunca se autoajusta. La agregación de equipo vía Hive API, solo contadores y enums, queda como incremento posterior | 12, 14.3 |
+| 12 | Modelos por rol de revisión | El configurador de modelos incorpora `review-risk`, `review-resilience`, `review-readability`, `review-reliability`, la reverificación independiente y `jd-judge-a`, `jd-judge-b`, `jd-fix-agent`, extendiendo el registro `jarvis-cli/internal/agent/sdd_phase_agents.go`. El proceso fresco de Claude recibe `--model` explícito. El informe registra `model_requested` y `model_resolved` por revisor. La diversidad de modelo entre lentes queda apagada por defecto; el primer encendido posible es `independent-only` | 7, 10.3 |
+| 13 | Permisos del host | Sin cambios en la política de instalación actual. La sección 4.1 pasa a declarar que la revisión consultiva no compensa ni relaja los permisos del host | 4.1 |
+| 14 | Prompt del orquestador | La obligación de revisión fresca antes de commit, push o PR en `sdd-orchestrator.md:17–30` se reescribe como entrada explícita y no bloqueante que consulta el modo. Es el primer paquete de trabajo, anterior a P0, y no depende del núcleo Go | 5.1, 14.1 |
+| 15 | Bucle de aprendizaje con Hive | Sin cambios en esta fase: el protocolo Hive ya obliga a guardar memoria tras cada corrección y la sincronización de fondo existe cuando `auto_sync` está habilitado. Quedan para después una clave de tema fija para memorias nacidas de una revisión y la decisión de adjuntar memorias relevantes al paquete congelado, que es superficie de inyección y de privacidad | 11, 14.3 |
+
+### 18.4 Pendientes fuera del diseño
+
+- Traza del incidente del equipo de pruebas con las comprobaciones de la fila 2.1 de 18.1.
+- Renombrado de marcadores a `jarvis:*` con migración del nombre heredado.
+- Fijar versiones de host y presupuesto de prototipos (lista de la sección 17).
+- Definición de requisitos a partir de este anexo.
+
+### 18.5 Fuentes añadidas
+
+Lectura dirigida en un clon local de Gentle AI en `main` `a609f88b` (2026-09-07). Ningún comando de ese repositorio fue ejecutado.
+
+| ID | Fuente | Uso |
+|---|---|---|
+| G13 | [the-organic-rdd-story.md](https://github.com/Gentleman-Programming/gentle-ai/blob/a609f88b/docs/architecture/the-organic-rdd-story.md) | Cronología, plano de control especulativo borrado, kill switch nunca invocado, regla «un mensaje solo nombra un comando si ejecutarlo resuelve el bloqueo» |
+| G14 | [2026-07-21-rdd-system-audit.md](https://github.com/Gentleman-Programming/gentle-ai/blob/a609f88b/docs/audits/2026-07-21-rdd-system-audit.md) | Defectos críticos de integración, deriva de contrato, taxonomía por incidente |
+| G15 | [2026-07-24-organic-rdd-recovery-plan.md](https://github.com/Gentleman-Programming/gentle-ai/blob/a609f88b/docs/audits/2026-07-24-organic-rdd-recovery-plan.md) | Plan de recuperación y borrado |
+| G16 | [rdd-root-simplification-design.md](https://github.com/Gentleman-Programming/gentle-ai/blob/a609f88b/docs/architecture/rdd-root-simplification-design.md) | Propiedad única de transición; principio de adaptadores |
+| G17 | [review_lens_context.go](https://github.com/Gentleman-Programming/gentle-ai/blob/a609f88b/internal/cli/review_lens_context.go) | Bloque materializado para la lente, presupuesto de 4 MiB |
+| G18 | [reviewer_context_level.go](https://github.com/Gentleman-Programming/gentle-ai/blob/a609f88b/internal/reviewtransaction/reviewer_context_level.go) | Mandatos de un párrafo por lente |
+| G19 | [artifact_admission.go](https://github.com/Gentleman-Programming/gentle-ai/blob/a609f88b/internal/reviewtransaction/artifact_admission.go) | Validación de citas por ruta |
+| G20 | [compact.go](https://github.com/Gentleman-Programming/gentle-ai/blob/a609f88b/internal/reviewtransaction/compact.go) | Tratamiento de clases de evidencia y refutación |
+| G21 | [risk.go](https://github.com/Gentleman-Programming/gentle-ai/blob/a609f88b/internal/reviewtransaction/risk.go) | Clasificador, señales, prueba de pasividad, `review assess` |
+| G22 | [rdd_mode.go](https://github.com/Gentleman-Programming/gentle-ai/blob/a609f88b/internal/reviewtransaction/rdd_mode.go), [review_mode.go](https://github.com/Gentleman-Programming/gentle-ai/blob/a609f88b/internal/cli/review_mode.go) | Interruptor global y por clon |
+| G23 | [bench/README.md](https://github.com/Gentleman-Programming/gentle-ai/blob/a609f88b/bench/README.md) | Harness de fricción y clasificador de bloqueos |
+| G24 | [telemetry-collector.md](https://github.com/Gentleman-Programming/gentle-ai/blob/a609f88b/docs/telemetry-collector.md) | Telemetría anónima con enums cerrados |
+
+Issues de Gentle AI citadas, consultadas el 2026-09-08: #1809, #2231, #2648, #2650, #3119, #3302, #3428, #3757, #3813, #3972, #4051, #4086, #4098, #4275, #4290, #4295, #4304, #4310. Los estados de cierre se verificaron con `stateReason`: #3119 duplicada de #3302; #3757 no planificada por diseño; #4295 y #4304 completadas.
