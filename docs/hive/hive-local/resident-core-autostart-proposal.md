@@ -1,21 +1,26 @@
 # Proposal: Resident per-user Hive Core with client-independent autostart
 
-> **Recommendation:** evolve Hive from a client-owned MCP stdio process into one **resident, per-user Hive Core** that solely owns `~/.jarvis/memory.db`, local HTTP/API state, migrations, and sync. Each AI client starts only a thin stdio MCP bridge. The bridge uses a portable, idempotent `ensure-running` operation before it connects to Core. Introduce an OS user service only after the Core/bridge protocol is stable; it should become the default lifecycle manager later, not the first dependency.
+> **Recommendation:** evolve Hive from a client-owned MCP stdio process into one **resident, per-user Hive Core** that solely owns `~/.jarvis/memory.db`, local HTTP/API state, migrations, and sync. Each AI client starts only a thin stdio MCP bridge. The bridge uses a portable, idempotent `ensure-running` operation before it connects to Core. The `jarvis` install wizard leaves Core running, verified, and registered as a per-user OS service by default, so Hive is available without opening Claude Code or OpenCode; the service is never a correctness dependency because `ensure-running` remains the fallback.
 
 This is an architecture proposal, not an implementation plan. It deliberately does **not** claim that a resident service, bridge protocol, authentication token, service units, or automatic startup exists today.
 
 **Immediate priority:** issue **#639 remains the bootstrap safety fix**. Its scope is directory-backed canonical project bootstrap across `mem_save`, `mem_session_summary`, Claude Code SessionStart fallback, and OpenCode `/prompts`, including Git-origin/basename identity rules, explicit-project mismatch handling, idempotence, the reserved `default` guard, session/project mismatch preservation, and observable OpenCode non-2xx failures. It does not generally make the client-owned daemon ready, establish a resident owner, or change this proposal's security/lifecycle contract. Any temporary cold-start retry or readiness hardening is a separately scoped prerequisite or follow-up with its own bounded behavior and acceptance criteria.
 
+**Related cheap mitigation (separate issue):** the install scripts must refuse to replace `hive-daemon` while a daemon process is running and tell the user to close Claude Code and OpenCode first. Today `scripts/install.sh` moves the new binary over the running one and `scripts/install.ps1` force-kills the process before replacing it. This mitigation is not part of this proposal's implementation scope.
+
 ## Review path
 
 ### Document scope and size exception
 
-The proposal's 494-line single-file baseline is an accepted review-size exception. It remains one cohesive architecture document because process ownership, local trust, descriptor/readiness lifecycle, upgrade fencing, platform services, and rollout gates are mutually constraining decisions. Splitting it would force reviewers to reconstruct incomplete fragments and obscure the invariants that must be reviewed together; headings, tables, and the review path provide the intended review slices instead.
+The proposal's single-file size is an accepted review-size exception. It remains one cohesive architecture document because process ownership, local trust, descriptor/readiness lifecycle, upgrade fencing, platform services, and rollout gates are mutually constraining decisions. Splitting it would force reviewers to reconstruct incomplete fragments and obscure the invariants that must be reviewed together; headings, tables, and the review path provide the intended review slices instead.
 
 1. Review the recommendation and boundaries in [Decision summary](#decision-summary).
-2. Validate the current-state evidence in [Why the current lifecycle cannot be the target](#why-the-current-lifecycle-cannot-be-the-target).
-3. Challenge the ownership, authentication, and upgrade invariants in [Target architecture](#target-architecture).
-4. Approve, defer, or resolve the questions in [Open decisions](#open-decisions).
+2. Check the install surface, platform, and terminology baseline in [Assumptions](#assumptions), [Terminology](#terminology), and [Supported platforms](#supported-platforms).
+3. Validate the current-state evidence in [Why the current lifecycle cannot be the target](#why-the-current-lifecycle-cannot-be-the-target).
+4. Challenge the ownership, authentication, and upgrade invariants in [Target architecture](#target-architecture).
+5. Approve, defer, or resolve the questions in [Open decisions](#open-decisions).
+
+Related documents: `docs/hive/hive-local/hive-spec.md` is the baseline Hive specification this proposal extends, and `docs/hive/sync-guide.md` describes the credential and `sync.json` handling the resident Core must keep.
 
 ## Decision summary
 
@@ -24,7 +29,9 @@ The proposal's 494-line single-file baseline is an accepted review-size exceptio
 | Process owner | One Core process per OS user owns durable state and sync. | SQLite, migrations, and sync state have one serial authority. |
 | MCP integration | Claude Code and OpenCode run a short-lived stdio bridge, not the Core. | A client closing no longer terminates local memory availability. |
 | Startup | Every bridge calls an idempotent `ensure-running` before its first Core request. | Correct even when no OS service is installed or loaded. |
-| Service manager | Add opt-in/diagnostic user services first; make them the default only after rollout evidence. | Faster startup without making OS integration the availability prerequisite. |
+| Install surface | The `jarvis` install wizard (TUI and non-TUI) leaves Core running, verified, and registered for per-user autostart, with autosync enabled when configured. | Hive is available right after installation without opening any AI client. The team never runs `jarvis init`. |
+| Service manager | Register the per-user OS service from the wizard by default, with opt-out; `ensure-running` stays the fallback and the readiness authority. | Hive returns after login or reboot without a client, while correctness never depends on the service manager. |
+| Client fallback | Bridges and hooks still start a stopped Core through `ensure-running` and surface a user-visible warning when they cannot. | Preserves today's "open the client and Hive comes up" behavior and makes failures visible instead of silent. |
 | Local transport | Retain loopback HTTP initially, but require per-install local authentication and capability scopes. | A persistent unauthenticated loopback API is not an acceptable capability boundary. |
 | Port | A descriptor advertises the actual loopback port; do not make a fixed port the identity. | Prevents multi-client bind races and supports collision recovery. |
 | State | Core alone opens `memory.db`, executes migrations, owns backups, and runs sync. | Prevents concurrent migration and write ownership ambiguity. |
@@ -33,6 +40,8 @@ The proposal's 494-line single-file baseline is an accepted review-size exceptio
 ### Goals
 
 - Make Hive available independently of the lifetime or startup ordering of Claude Code, OpenCode, or any future client.
+- Leave Core running, verified, and registered for per-user autostart at the end of the `jarvis` install wizard, with autosync enabled when the user configured Hive API credentials.
+- Keep the client-side fallback: when Claude Code or OpenCode start and Core is stopped, they start it; when they cannot, the user sees a warning instead of a silent failure.
 - Preserve local-first behavior: Core continues serving local reads and writes when remote sync is unavailable.
 - Make startup safe under concurrent clients, stale descriptors, crashed processes, port collisions, and interrupted upgrades.
 - Give `jarvis doctor` and `jarvis reconcile` enough observable state to diagnose and repair lifecycle drift.
@@ -44,10 +53,46 @@ The proposal's 494-line single-file baseline is an accepted review-size exceptio
 - Replacing MCP stdio with a network MCP transport.
 - Exposing Hive outside the local user boundary or supporting remote access to the local API.
 - Changing Hive API/cloud authorization or the Hive ↔ Hive API sync protocol.
-- Making service installation mandatory in the first migration stage.
+- Making the OS service a correctness dependency: `ensure-running` must work with the service missing, disabled, or failed.
+- Sharing one Core or one `memory.db` between a Windows host and a WSL distro.
 - Solving #639 by waiting indefinitely in a hook, adding arbitrary sleeps, or assuming MCP already exists.
 - Deleting, moving, or recreating `memory.db` during ordinary install, upgrade, reconcile, or uninstall.
 - Reinterpreting `jarvis sync`: it remains desired-state replay, not Hive memory synchronization.
+
+### Assumptions
+
+- The team installs and reconfigures the ecosystem through the `jarvis` wizard (`jarvis-cli/internal/tui`, TUI and non-TUI variants). `jarvis init` is not the install surface in practice and this proposal does not target it.
+- Today the wizard writes `~/.jarvis/sync.json`, creates an empty `memory.db` placeholder, and registers `hive-daemon` as an MCP stdio command. It never starts the daemon and never verifies HTTP readiness.
+- One OS user owns one Hive data root. Multi-user machines get one Core per user.
+- Users are technical team members; clear diagnostics and explicit remediation messages are acceptable where a consumer product would need silent self-healing.
+- Supported AI clients are Claude Code and OpenCode. Future clients reuse the bridge contract.
+- Hive API sync is optional. A Core with no cloud credentials is fully functional locally.
+
+### Terminology
+
+| Term | Meaning |
+| --- | --- |
+| Core | The resident per-user `hive-daemon` process that owns SQLite, migrations, the local API, logs, and sync. |
+| Bridge | The short-lived stdio MCP adapter a client launches; it talks to Core and owns no durable state. |
+| `ensure-running` | The idempotent operation that returns a verified Core endpoint, starting Core only when no live owner exists. |
+| Descriptor | The state-root file that advertises a candidate Core, its endpoint, identity, and lifecycle state. |
+| Start lock | The atomic filesystem lock that elects one starter during startup transitions. |
+| Coordinator fence | The persistent marker an installer or uninstaller holds so nothing respawns Core while it is being replaced or removed. |
+| Readiness generation | A counter Core bumps each time it publishes a new `ready` descriptor, so stale readiness can be detected. |
+| Legacy daemon | A `hive-daemon` started the current way by an AI client, holding the fixed port and the database without a descriptor. |
+| Service manager | The per-user OS facility that starts Core at login: `systemd --user`, LaunchAgent, or Windows Scheduled Task. |
+
+### Supported platforms
+
+The supported set is everything Jarvis already claims to support. The proposal must not silently narrow it.
+
+| Platform | Support level | Autostart mechanism | Platform rule |
+| --- | --- | --- | --- |
+| Linux native | Supported | `systemd --user` unit registered by the wizard; on-demand `ensure-running` fallback. | Do not assume lingering; if the user manager is unavailable, report the fallback through doctor. |
+| Windows native | Supported | Per-user Scheduled Task at logon; on-demand fallback. | Job Objects and locked executables need the detachment and staged-replacement rules below. Windows CI already validates the CLI and PowerShell hooks. |
+| WSL | Supported, treated as Ubuntu/Linux | `systemd --user` inside the distro, which requires `systemd=true` under `[boot]` in `/etc/wsl.conf`; on-demand fallback when systemd is disabled. | Core lives only while the distro lives. WSL shuts the distro down shortly after the last session closes, so "always on" needs a Windows-side keep-alive: the wizard should register a Windows logon task that boots and holds the distro, or the guide must document the keep-alive requirement. A Windows host and a WSL distro are two separate data roots with two separate Cores; they never share memory. |
+| macOS | Best effort | LaunchAgent; on-demand fallback. | No release gate blocks on macOS-only defects, matching the repository's current release posture. |
+| Containers, SSH-only hosts, devcontainers | On-demand only | `ensure-running` from bridges and hooks. | No service registration; doctor reports the on-demand mode explicitly. |
 
 ## Why the current lifecycle cannot be the target
 
@@ -108,12 +153,16 @@ Issue #639 addresses directory-backed canonical project bootstrap across `mem_sa
 | Sync ownership | `run` creates a `SyncRunner`; MCP `syncRuntime` reloads configuration and creates sync runners around the same store. | Concurrent drains, duplicated attempts, and unclear retry/backoff ownership become more likely. |
 | Client shutdown | stdio shutdown cancels the root context that owns HTTP and DB. | OpenCode prompt capture and CLI/TUI governance lose Core when an unrelated MCP client exits. |
 | Hook ordering | Hooks call HTTP before MCP readiness is guaranteed. | Cold-start behavior depends on timing, not a contract. |
+| Version skew | `hive-daemon/internal/mcp/server.go` hardcodes the MCP server version and nothing in `jarvis-cli` checks a daemon version. | An old daemon and a new CLI or bridge can silently disagree about API and schema. |
+| Install surface | The `jarvis` wizard registers the daemon as an MCP command and never starts or verifies it. | After a fresh install nothing runs until an AI client opens. |
 
 ### Existing local boundary is insufficient for a persistent server
 
 `httpapi.Server.Start` rejects non-loopback listener addresses, and selected handlers call `requireLoopback`. The code explicitly describes the current phase as loopback access **rather than a bearer-token boundary** (`hive-daemon/internal/httpapi/server.go:isLoopbackAddr`). `jarvis-cli/internal/hiveclient.Client` sends no local authorization header.
 
 Loopback-only is a useful exposure reduction, but not an authorization boundary for a long-lived API with endpoints that read memory, update sync configuration, create backups, restore data, or execute governance mutations. A resident Core must not inherit this unauthenticated trust model.
+
+Credential handling has the same shape. When Hive API credentials exist, `jarvis-cli/internal/agent/opencode.go` writes `HIVE_API_URL`, `HIVE_API_EMAIL`, and `HIVE_API_PASSWORD` in plaintext into the `environment` block of the managed OpenCode MCP entry, so the daemon's sync configuration depends on which client launched it. The launcher template `jarvis-cli/embed/templates/hive-daemon-start.sh.tmpl` is not used by any production code path; it appears only in a test fixture. `hive-daemon` already reads the same credentials from `~/.jarvis/sync.json`, which is the source a resident Core must use.
 
 ## Target architecture
 
@@ -151,7 +200,7 @@ flowchart LR
 
 **Hive MCP bridge** is a client-launched stdio adapter. It must not open SQLite, bind the Core port, run schema migrations, or independently own sync. On startup it calls `ensure-running`, waits only for bounded readiness, authenticates to Core, and translates MCP tool calls into Core API calls. Its exit affects only that bridge's stdio connection.
 
-**Client hooks/plugins** become Core clients. Claude Code hooks retain their non-blocking/fail-safe behavior. OpenCode performs bounded, awaited, non-fatal prompt capture: it waits at most one second for descriptor/ensure resolution and the capture attempt, then returns without surfacing a prompt-blocking error. Both must invoke the same bounded ensure/readiness path before a request that needs Core. They must not spawn their own long-lived daemon without coordination.
+**Client hooks/plugins** become Core clients. Claude Code hooks retain their non-blocking/fail-safe behavior. OpenCode performs bounded, awaited, non-fatal prompt capture: it waits at most one second for descriptor/ensure resolution and the capture attempt, then returns without surfacing a prompt-blocking error. Both must invoke the same bounded ensure/readiness path before a request that needs Core. They must not spawn their own long-lived daemon without coordination. When Core is stopped, this path starts it, preserving today's behavior of opening a client and getting Hive. When Core cannot be started, the client surfaces a user-visible warning: Claude Code through the Jarvis-managed statusline and the SessionStart context message, OpenCode through a plugin toast; `jarvis doctor` explains the typed failure.
 
 ### Core invariants
 
@@ -193,9 +242,24 @@ The proposal intentionally separates these concepts:
 
 Use atomic write-then-rename for descriptors, restrictive owner-only permissions for state/auth material, and a process-start fingerprint in addition to PID to defeat PID reuse. Core binds its listener first, then atomically publishes the provisional `starting` descriptor so other callers can discover the elected owner without treating it as ready. After migrations and recovery gates pass, Core atomically publishes `ready` with a new readiness generation. If a migration gate blocks, it atomically records `migration-blocked` instead. A stale descriptor is removed only after failed authenticated readiness and failed owner identity verification, never solely because its timestamp is old.
 
-The coordinator fence is a persistent state-root artifact, not an in-memory installer flag. Only the authorized installer/reconciler coordinator may acquire an in-progress fence; it records owner identity and a bounded lease, and `ensure-running` must check it before every spawn/replacement decision. A successful maintenance or upgrade explicitly releases its fence only after its terminal state is recorded. A successful uninstall instead transitions the fence to a persistent terminal `uninstalled` state, which `ensure-running` honors until an explicit reinstall/init atomically installs assets and clears it. If an in-progress coordinator crashes, recovery requires lease expiry **and** failed owner identity verification, records diagnostic evidence, and leaves data untouched; a live owner is never displaced merely because a timestamp is old.
+The coordinator fence is a persistent state-root artifact, not an in-memory installer flag. Only the authorized installer/reconciler coordinator may acquire an in-progress fence; it records owner identity and a bounded lease, and `ensure-running` must check it before every spawn/replacement decision. A successful maintenance or upgrade explicitly releases its fence only after its terminal state is recorded. A successful uninstall instead transitions the fence to a persistent terminal `uninstalled` state, which `ensure-running` honors until an explicit wizard reinstall atomically installs assets and clears it. If an in-progress coordinator crashes, recovery requires lease expiry **and** failed owner identity verification, records diagnostic evidence, and leaves data untouched; a live owner is never displaced merely because a timestamp is old.
 
 `/livez` may report that the process is alive; `/readyz` must report whether migrations/recovery gates are complete enough to accept the requested capability. A migration-blocked Core is alive but not generally ready; the response must preserve the existing recoverable migration status rather than making bridges retry forever.
+
+#### Spawn detachment and process-tree survival
+
+Claude Code and OpenCode terminate the process trees of their MCP children when they exit, and Windows can place children in a Job Object that kills grandchildren too. Nothing in the repository detaches a spawned process today: there is no `Setsid`, `Setpgid`, or `DETACHED_PROCESS` usage. A Core spawned naively from a bridge would die with the client that launched it, which is exactly the coupling this proposal removes.
+
+Required rules:
+
+1. When a per-user service is registered, `ensure-running` starts Core through the service manager (`systemctl --user start`, `launchctl kickstart`, `schtasks /Run`), so the service manager is the parent and the client is not.
+2. When no service is registered or the service manager fails, `ensure-running` spawns Core in a new session and process group (`setsid` semantics on Unix; `DETACHED_PROCESS` plus a new process group and job breakaway where permitted on Windows), closes inherited stdio and descriptors, and redirects Core output to its log file.
+3. If detachment is impossible in the current environment, `ensure-running` returns a typed `detach-unsupported` failure rather than starting a Core that will die with the caller.
+4. Integration tests must prove that Core survives the exit of the launching client under each supported client and platform.
+
+#### Core configuration source
+
+Core resolves its data root, port policy, log location, and sync credentials from the Hive state root (`~/.jarvis`), never from the environment of whichever process spawned it. A Core started by a service manager, by a bridge, or by hand must behave identically. `HIVE_DB_PATH` and `HIVE_HTTP_PORT` remain explicit compatibility overrides during migration; an override that would produce a different Core identity is rejected with a diagnostic rather than silently starting a second Core. Sync credentials come from `~/.jarvis/sync.json`; the plaintext `environment` block in the managed OpenCode MCP entry is removed once Core owns sync.
 
 ### Port strategy
 
@@ -255,13 +319,15 @@ The Core must retain the existing local-only fallback: malformed sync configurat
 | SQLite corruption or unrecoverable migration | Core fails closed with actionable doctor output; do not create a blank DB over `memory.db`. |
 | Remote sync failure | Core stays locally available; persist failure/backoff status as current health models intend. |
 | Service manager restarts repeatedly | Apply bounded restart backoff and surface a doctor-visible failure; avoid a hot crash loop. |
-| Client starts before Core is ready | Bounded `ensure-running` waits for readiness; client follows its existing fail-safe/degraded contract after a typed failure. |
+| Client starts before Core is ready | Bounded `ensure-running` waits for readiness; client follows its existing fail-safe/degraded contract after a typed failure and surfaces a user-visible warning. |
+| Legacy daemon holds the port and database | `ensure-running` classifies an occupant with no descriptor and no authenticated readiness as `legacy-daemon-active`. Core does not start a second writer beside it; the bridge returns a typed unavailable result whose remediation is to close the AI clients that own the legacy daemon, and doctor reports the same state. |
+| Core launched from a bridge dies with the client | Prevented by service-manager-parented start or detached spawn; a `detach-unsupported` environment returns a typed failure instead of a short-lived Core. |
 
 ## Lifecycle management by platform
 
 ### Phased service approach
 
-`ensure-running` is mandatory in every phase. A user service is an optimization and lifecycle hardening mechanism, not a condition for correctness. This supports portable installations, terminals without a user service manager, and repair flows.
+`ensure-running` is mandatory in every phase. The per-user service is the default lifecycle manager registered by the install wizard so Hive is present without opening a client; it is never a condition for correctness. Users may opt out, and the fallback must keep working with the service missing, disabled, or failed. This supports portable installations, terminals without a user service manager, and repair flows.
 
 Service lifecycle must start Core using a stable launcher/config file rather than embedding mutable credentials in a service definition. The service invokes Core in resident mode and shares the descriptor, start-lock, and maintenance-fence protocol with on-demand startup. Service restart policy must not bypass a valid coordinator fence.
 
@@ -282,7 +348,7 @@ Use a per-user `LaunchAgent`, not a system `LaunchDaemon`. A LaunchAgent runs in
 
 ### Linux: systemd --user, with fallback
 
-Where available, use a `systemd --user` unit tied to the user session and state root. Do not assume user lingering is configured or that every distribution/session exposes a usable user manager. If it is unavailable, disabled, or fails installation, retain on-demand `ensure-running` and report the fallback clearly through doctor. Do not replace the fallback with a root system unit.
+Where available, use a `systemd --user` unit tied to the user session and state root. Do not assume user lingering is configured or that every distribution/session exposes a usable user manager. If it is unavailable, disabled, or fails installation, retain on-demand `ensure-running` and report the fallback clearly through doctor. Do not replace the fallback with a root system unit. WSL follows this Linux path inside the distro; see [Supported platforms](#supported-platforms) for the distro-lifetime and keep-alive rule.
 
 ## Integration boundaries
 
@@ -290,14 +356,29 @@ Where available, use a `systemd --user` unit tied to the user session and state 
 
 | Surface | Proposed responsibility | Must not do |
 | --- | --- | --- |
-| Installer / `jarvis init` | Install/update Core and bridge assets; initialize state root and local auth material; optionally register the platform user service; configure managed clients to use the bridge/ensure contract. | Delete `memory.db`, start duplicate Cores, or treat service installation as proof of readiness. |
+| Installer / `jarvis` wizard (TUI and non-TUI) | Install/update Core and bridge assets; initialize state root and local auth material; register the per-user service by default with opt-out; configure managed clients to use the bridge/ensure contract; finish by running `ensure-running`, verifying authenticated readiness, and reporting the result, with autosync active when credentials were configured. | Delete `memory.db`, start duplicate Cores, treat service registration as proof of readiness, or replace `hive-daemon` while a daemon process is running. |
 | Reconfigure | Update desired Core/client/service policy; rotate local credentials through a controlled handoff; request Core reload/restart when needed. | Persist replay state in `~/.jarvis/config.yaml` or leak secrets into templates/logs. |
 | `jarvis doctor` | Check binary/version, descriptor integrity, authenticated readiness, auth permissions, start-lock and maintenance-fence state, service registration/status, data accessibility, migration/recovery state, and sync health. | Repair state silently. |
 | `jarvis reconcile` | Repair observed drift: missing/stale managed service definition, bridge configuration, descriptor/lock cleanup when safely proven stale, safely expired coordinator-fence recovery, and client integration. | Reconfigure user-owned settings broadly, clear a live fence, or conflate repair with desired-state replay. |
 | `jarvis sync` | Replay recorded agent configuration from `~/.jarvis/state.yaml`, including managed MCP/skills/persona/statusline according to current contract. It may render bridge configuration that uses ensure-running. | Synchronize Hive memory data, prompt, call `config.Save()`, or take the manifest lock in a way that deadlocks its own replay path. |
-| Uninstall | Acquire the persistent uninstall fence, stop/disable managed Core and its service/task, then remove managed binaries, bridges, descriptors, locks, auth material, and service definitions; atomically retain a terminal `uninstalled` fence until explicit reinstall/init clears it. | Delete `~/.jarvis/memory.db` or backups by default, or permit `ensure-running` to respawn Core during removal. |
+| Uninstall | Acquire the persistent uninstall fence, stop/disable managed Core and its service/task, then remove managed binaries, bridges, descriptors, locks, auth material, and service definitions; atomically retain a terminal `uninstalled` fence until explicit wizard reinstall clears it. | Delete `~/.jarvis/memory.db` or backups by default, or permit `ensure-running` to respawn Core during removal. |
 
 The existing replay boundary is important: `jarvis-cli/internal/sync/mcps.go:MCPComponent.Apply` renders/replaces Jarvis-managed MCP definitions, and its comments establish that replay is non-interactive managed-state replacement. The proposal changes the managed command from “start the stateful daemon” to “start the stateless bridge that ensures Core,” while preserving that boundary.
+
+### Lifecycle commands
+
+The issue asks for install, enable, start, stop, restart, upgrade, rollback, and uninstall behavior. Upgrade, rollback, and uninstall are covered below; the remaining verbs need a user-facing surface. Names are indicative and the exact placement is a technical-design decision, but the contract is part of this proposal:
+
+| Command | Contract |
+| --- | --- |
+| `jarvis hive status` | Show descriptor state, authenticated readiness, instance identity, endpoint, service registration and state, migration/recovery state, sync health, and any legacy daemon detected. Read-only. |
+| `jarvis hive start` | Run `ensure-running` and print the typed result. Never starts a second Core. |
+| `jarvis hive stop` | Identity-verified graceful stop of the resident Core; honors a live coordinator fence; never touches `memory.db`. |
+| `jarvis hive restart` | `stop` followed by `start` with readiness verification. |
+| `jarvis hive enable` / `disable` | Register or unregister the per-user service definition without touching data or the running Core. |
+| `jarvis hive logs` | Show the redacted tail of the Core log file, with a follow option. |
+
+`jarvis doctor` today has no check for the daemon binary, the port, or `memory.db` (`jarvis-cli/internal/lifecycle/engine.go`); the status model above is what doctor must gain.
 
 ### Claude Code
 
@@ -305,12 +386,14 @@ The existing replay boundary is important: `jarvis-cli/internal/sync/mcps.go:MCP
 - `RunSessionStart`, `RunPromptSubmit`, `RunSubagentStop`, and `RunSessionStop` in `jarvis-cli/internal/hook/events.go` call the Core client through `ensure-running` with their current bounded, non-fatal semantics.
 - SessionStart must not block indefinitely while Core migrates. It should return the protocol text and log/diagnose a typed Core-unavailable state. Before the architectural transition, #639 covers SessionStart only as one surface within the broader directory-backed canonical project bootstrap contract; it does not provide Core readiness.
 - The bridge obtains only the capabilities needed for MCP memory tools. Hook credentials must not grant governance/restore capabilities.
+- When Core is stopped, the hook path starts it. When it cannot, the Jarvis-managed statusline shows a Hive-unavailable state and the SessionStart context message names the typed failure.
 
 ### OpenCode
 
 - The existing embedded plugin at `jarvis-cli/embed/hooks/opencode/hive.ts` currently posts to `http://127.0.0.1:${HIVE_PORT}` and silently ignores unavailable daemon errors. Migrate it to descriptor/ensure resolution with one total one-second timeout for resolution and capture; awaiting that bounded attempt must not produce a prompt-blocking UI error.
 - Managed OpenCode MCP integration should use the same stateless bridge/Core split as Claude Code.
 - Preserve advisory migration-status behavior and make a missing Core diagnosable through doctor/logging rather than an unexplained fixed-port failure. Timeout, authentication, or unavailable outcomes are non-fatal after the one-second bounded attempt; the plugin must neither retry indefinitely nor detach an unbounded background request.
+- When Core cannot be started, the plugin shows a non-blocking toast with the typed failure instead of silently ignoring it.
 
 ## Compatibility and migration stages
 
@@ -320,19 +403,19 @@ Deliver the immediate directory-backed canonical project bootstrap contract acro
 
 ### Stage 1 — extract Core boundary behind compatibility APIs
 
-Refactor the daemon process conceptually into Core-owned state/API operations and bridge-owned stdio adaptation. Keep the current HTTP endpoint shapes where possible. Add versioned readiness and authenticated local calls, initially behind compatibility controls. Existing `memory.db` stays in place.
+Refactor the daemon process conceptually into Core-owned state/API operations and bridge-owned stdio adaptation. Keep the current HTTP endpoint shapes where possible. Add versioned readiness and authenticated local calls, initially behind compatibility controls. Existing `memory.db` stays in place. No version handshake exists today: `hive-daemon/internal/mcp/server.go` hardcodes the MCP server version and `jarvis-cli` never checks a daemon version, so this stage must add the versioned readiness endpoint before any compatibility policy can be enforced.
 
 ### Stage 2 — introduce descriptor, lock, and `ensure-running`
 
-All Jarvis-managed callers resolve Core through the portable ensure path. Continue accepting the configured/fixed-port compatibility path only for an explicitly defined deprecation window. Doctor identifies old client definitions and unmanaged legacy processes.
+All Jarvis-managed callers resolve Core through the portable ensure path. Continue accepting the configured/fixed-port compatibility path only for an explicitly defined deprecation window. Doctor identifies old client definitions and unmanaged legacy processes. During this window a legacy daemon owned by an already-open client may still hold the fixed port and the database. Core does not start beside it; `ensure-running` returns `legacy-daemon-active` with the remediation to close those clients, and doctor and the statusline report it. Once every legacy daemon exits, the next ensure starts Core normally.
 
 ### Stage 3 — resident on-demand Core default
 
-The bridge and hooks launch/verify Core on demand. Validate concurrency, crash recovery, migrations, and multi-client use across Windows, macOS, and Linux before enabling automatic user-service registration by default.
+The bridge and hooks launch/verify Core on demand. The install wizard finishes by running `ensure-running` and verifying readiness, so a fresh install has Core running before any client opens. Validate concurrency, crash recovery, migrations, and multi-client use across Windows, WSL, Linux, and macOS before enabling automatic user-service registration by default.
 
-### Stage 4 — optional/default OS user service
+### Stage 4 — default OS user service registered by the wizard
 
-Offer user-service registration with explicit status/repair flows. Promote it to default only after measured reliability meets the rollout criteria. `ensure-running` remains the fallback and the single readiness authority.
+The wizard registers the per-user service by default, with an explicit opt-out and `jarvis hive enable`/`disable` to change the choice later. Ship default-on only after platform acceptance tests pass on Linux, Windows, and WSL. `ensure-running` remains the fallback and the single readiness authority.
 
 ### Stage 5 — retire legacy client-owned daemon command
 
@@ -345,6 +428,7 @@ After a published compatibility window, stop rendering managed MCP commands that
 - Migrate managed MCP definitions through Jarvis renderers/reconcilers, never by manually editing user-generated Claude/OpenCode configuration.
 - Create local auth material atomically with owner-only permissions. Rotation must leave an overlap window or coordinated Core restart so bridges do not strand active sessions.
 - Maintain a clear compatibility matrix between bridge protocol version, Core protocol version, descriptor version, and client asset version. Refuse unsafe version skew with an upgrade instruction, not opaque transport errors.
+- Stop rendering Hive API credentials into the managed OpenCode MCP `environment` block once Core reads them from `~/.jarvis/sync.json`; reconcile removes the stale block.
 
 ## Alternatives and trade-offs
 
@@ -355,7 +439,7 @@ After a published compatibility window, stop rendering managed MCP commands that
 | Fixed port with retry | Simple discovery. | Does not identify the listener, prevent port hijack, or solve multiple writers. |
 | Direct SQLite from every client | Avoids an HTTP API. | Cross-language access, migrations, locking, security, and sync ownership become harder, not simpler. |
 | Keep loopback unauthenticated | Lowest friction. | Unacceptable for durable sensitive-memory and governance APIs, even though arbitrary same-user processes remain within the baseline trust boundary. |
-| Require OS service from day one | Fast steady-state startup. | Platform and privilege failures would make Hive unavailable; does not replace readiness/lock logic. |
+| Require the OS service for correctness | Fast steady-state startup. | Platform and privilege failures would make Hive unavailable; does not replace readiness/lock logic. Registering it by default is fine; depending on it is not. |
 | Windows Service first | Strong service semantics. | Elevated install/service account/ACL complexity conflicts with a per-user data owner. Scheduled Task fits the initial model. |
 | Unix socket/named pipe only | Strong local transport affinity. | Potential future option, but requires cross-platform transport and client/plugin support. Descriptor + authenticated loopback is a lower-risk transition from current HTTP. |
 
@@ -373,6 +457,7 @@ After a published compatibility window, stop rendering managed MCP commands that
 | Core upgrade/uninstall race | New/old binaries compete for DB/port, incompatible clients connect, or `ensure-running` respawns Core during replacement/removal. | Persistent coordinator maintenance/uninstall fence, start lock, shutdown/drain handshake, identity-verified exit, compatibility matrix, authenticated readiness version checks, and explicit fence release/recovery. |
 | Remote API compromise/confusion | Cloud auth reused as local authority. | Separate local and Hive API credentials/trust domains. |
 | Denial of service | Repeated ensure/spawn or failing service manager loops. | Coalesced start lock, bounded waits, restart backoff, rate-limited diagnostics. |
+| Detached Core dies with its launcher | Hive disappears when the client that started it exits. | Service-manager-parented start when available; new-session/process-group spawn with closed inherited descriptors otherwise; typed `detach-unsupported` failure. |
 
 ## Observability and supportability
 
@@ -389,6 +474,10 @@ Core should provide structured, redacted events and a doctor-readable status mod
 - Bridge connection count and request latency/error class; no MCP request payload logging by default.
 - Hook/plugin ensure failure classification for Core rollout diagnosis. This is optional observability for the resident-Core work, not a requirement or claimed behavior of #639.
 
+### Log file for a resident Core
+
+Today the daemon writes to stderr and the launching MCP client captures it. A Core started by a service manager or detached from a bridge has no console. Core therefore writes structured, redacted logs to a file under the state root (indicatively `~/.jarvis/logs/hive-daemon.log`) with owner-only permissions, size-based rotation, and a bounded number of retained files. Memory contents, credentials, and MCP payloads are never logged by default. `jarvis hive logs` shows the tail and `jarvis doctor` includes the last relevant lines when it reports a failure. Foreground manual runs may additionally log to stderr.
+
 Extend rather than discard the existing health surface: `hive-daemon/internal/httpapi/health.go:HealthSummaryResponse` already models reachability, authentication to the remote API, sync status, unsynced counts, and drain outcome. The new Core status must distinguish **local Core readiness/authentication** from existing **remote Hive API auth/sync health**.
 
 ## Testing strategy
@@ -400,10 +489,11 @@ Testing must prove contracts and failure recovery, not only successful startup.
 | Core unit tests | Provisional/ready/migration-blocked descriptor transitions, the selected server-authentication proof, token/capability verification, start-lock and coordinator-fence state machines, stale PID/start-fingerprint handling, version negotiation, and readiness state transitions. |
 | SQLite/migration tests | Existing database upgrade in place, concurrent ensure while migration is running, migration-blocked readiness, corruption/no-blank-DB behavior, backup/restore preservation. |
 | Bridge tests | MCP tool translation, no direct DB access, idempotent ensure before connection, typed unavailable responses, capability rejection. |
-| Hook/plugin tests | SessionStart-before-Core, prompt capture during Core startup, bounded timeout/fail-safe semantics, no arbitrary sleep, and OpenCode's awaited non-fatal one-second capture contract. |
+| Hook/plugin tests | SessionStart-before-Core, prompt capture during Core startup, bounded timeout/fail-safe semantics, no arbitrary sleep, OpenCode's awaited non-fatal one-second capture contract, and the user-visible warning when Core cannot be started. |
+| Installer tests | The wizard leaves Core running and verified; autosync active when configured; service registered by default and skipped on opt-out; install scripts refuse to replace a running daemon. |
 | Integration tests | Two concurrent Claude/OpenCode bridges converge on one Core; client exit leaves Core alive; port collision; stale descriptor; Core crash/restart; sync drain coalescing. |
 | Security tests | Non-loopback rejection, missing/wrong/expired/scope-mismatched token, descriptor tampering, port impostor, file permission failures, credential redaction. |
-| Platform acceptance | Windows Scheduled Task install/remove/recovery; macOS LaunchAgent; Linux `systemd --user` and no-systemd fallback. |
+| Platform acceptance | Windows Scheduled Task install/remove/recovery; macOS LaunchAgent; Linux `systemd --user` and no-systemd fallback; WSL with systemd enabled and disabled, including distro shutdown and Windows-side keep-alive; Core survives the exit of the launching client on each platform. |
 | Upgrade tests | Old bridge/new Core and new bridge/old Core policy; coordinator fence prevents respawn through replacement/removal; Windows locked executable replacement; rollback without data loss. |
 | Doctor/reconcile tests | Missing service, disabled service, stale lock, stale descriptor, live/expired coordinator fence, missing binary, wrong permissions, migration blocked, and repair boundaries. |
 
@@ -423,19 +513,21 @@ Use deterministic time/process abstractions for lock leases and readiness deadli
 
 **Windows locked executables:** an executing `.exe` may not be replaceable. The installer must use a versioned executable or staged replacement strategy: place the new binary under a new versioned name/path, update the launcher/service task atomically, stop the old Core, start the new Core, and delete the old binary only after it is no longer locked. A reboot-pending replacement is a last-resort, explicitly reported state—not a silent success.
 
+**Legacy daemon during upgrade:** the installer cannot stop a legacy daemon because an AI client owns it. It must detect one and tell the user to close Claude Code and OpenCode before continuing, never kill it. The current scripts do the opposite: `scripts/install.sh` moves the new binary over the running one, so the old process keeps running old code beside new client sessions, and `scripts/install.ps1` force-kills any running `hive-daemon` before replacing it. Fixing those scripts is the separate cheap mitigation named at the top of this document.
+
 ### Rollback
 
 Rollback changes the launcher/service/bridge to the last compatible Core version and restores only through explicit, verified backup/recovery procedures when schema compatibility requires it. It never deletes `memory.db` as a rollback shortcut. If a schema migration is not backward-compatible, the release must declare that fact before rollout and provide a tested restore path.
 
 ### Uninstall
 
-Default uninstall first acquires the persistent coordinator `uninstall` fence, disables the managed service/task, and stops Core with identity-verified exit. While that in-progress fence is valid, every `ensure-running` caller receives the typed uninstall result and must not spawn a replacement. Only then does uninstall remove managed executable artifacts, bridge registration, descriptors, start locks, and local auth material. On successful removal it atomically records the terminal `uninstalled` fence rather than releasing it; `ensure-running` honors that state until explicit reinstall/init installs managed assets and clears the fence. An interrupted in-progress fence is recovered only by bounded lease expiry plus failed owner-identity verification. Uninstall preserves `~/.jarvis/memory.db`, its backups, and user-owned sync configuration unless the user explicitly selects a separate destructive “remove Hive data” operation with clear confirmation. Reinstall must discover and reuse preserved memory.
+Default uninstall first acquires the persistent coordinator `uninstall` fence, disables the managed service/task, and stops Core with identity-verified exit. While that in-progress fence is valid, every `ensure-running` caller receives the typed uninstall result and must not spawn a replacement. Only then does uninstall remove managed executable artifacts, bridge registration, descriptors, start locks, and local auth material. On successful removal it atomically records the terminal `uninstalled` fence rather than releasing it; `ensure-running` honors that state until explicit wizard reinstall installs managed assets and clears the fence. An interrupted in-progress fence is recovered only by bounded lease expiry plus failed owner-identity verification. Uninstall preserves `~/.jarvis/memory.db`, its backups, and user-owned sync configuration unless the user explicitly selects a separate destructive “remove Hive data” operation with clear confirmation. Reinstall must discover and reuse preserved memory.
 
 ## Rollout and rollback gates
 
 1. Ship #639 first as the directory-backed canonical project bootstrap fix across all affected write and client surfaces; do not use it to claim general daemon readiness or require telemetry.
 2. Dogfood on-demand Core without user services across all supported platforms.
-3. Enable user-service registration behind explicit opt-in; retain on-demand fallback.
+3. Register the user service from the wizard by default with opt-out once platform acceptance passes; retain on-demand fallback.
 4. Promote only when telemetry/support evidence shows no unresolved duplicate-Core, auth, data-loss, or upgrade-blocking defects.
 5. Keep a documented feature flag/configuration path to render the legacy managed MCP command during the compatibility window.
 6. Halt promotion and revert integration rendering—not data—if authenticated readiness, migration recovery, or platform service installation fails at a material rate.
@@ -450,11 +542,13 @@ No rollout stage may claim “automatic availability” until both the on-demand
 | Credential handoff | Root secret file reference; scoped token broker; OS keychain/credential manager. | Define a cross-platform secure baseline and an optional OS-native enhancement before implementation. |
 | Core executable shape | New `hive-core` binary; resident mode of `hive-daemon`; subcommands in one binary. | Favor one binary with explicit `core`/`bridge` modes unless packaging evidence argues otherwise. |
 | Stable versus ephemeral port | Fixed default; always ephemeral; fixed-preferred fallback. | Fixed-preferred with ephemeral collision fallback and descriptor discovery. |
-| Service default timing | Opt-in indefinitely; default after staged evidence; mandatory. | Default later; never mandatory for correctness. |
+| Service default timing | Opt-in indefinitely; default from the wizard with opt-out; mandatory. | **Resolved:** default from the wizard with opt-out once platform acceptance passes; never mandatory for correctness. |
+| Windows detachment | Job breakaway; service-manager-only start; accept a client-bound Core on Windows. | Prefer service-manager start; breakaway as fallback; never accept a client-bound Core silently. Needs a Windows spike. |
+| WSL keep-alive ownership | Wizard registers a Windows logon task; document manual keep-alive only. | Wizard registration when the wizard runs inside WSL and can reach the Windows side; otherwise document. Needs a WSL spike. |
 | Linux persistence | `systemd --user` session-only; optional linger; on-demand only. | Do not enable lingering without explicit user/enterprise policy approval. |
 | API versioning | Single version; descriptor + endpoint semantic versions. | Version descriptor, local API, and bridge/Core compatibility independently. |
 | Core idle policy | Always running; idle shutdown; service-manager-dependent. | Start always-resident during initial rollout; consider idle policy only with clear sync/latency evidence. |
-| CLI/TUI direct DB access | Preserve direct access; route all through Core; exclusive maintenance mode. | Route normal operations through Core; explicitly design any maintenance exception. |
+| CLI/TUI direct DB access | Preserve direct access; route all through Core; exclusive maintenance mode. | **Resolved by evidence:** `jarvis-cli` never opens `memory.db` through SQL; the wizard only creates an empty placeholder file (`jarvis-cli/internal/tui/steps.go`, `nontui.go`). Route normal operations through Core, move placeholder creation to Core startup, and design any maintenance exception explicitly. |
 | Data-root override | Continue arbitrary `HIVE_DB_PATH`; managed profile roots. | Retain controlled compatibility first, then define how overrides map to a unique Core identity. |
 
 ## Approval acceptance criteria
@@ -462,6 +556,11 @@ No rollout stage may claim “automatic availability” until both the on-demand
 This proposal is ready to approve only when reviewers agree that it:
 
 - [ ] keeps #639 explicitly scoped as directory-backed canonical project bootstrap across `mem_save`, `mem_session_summary`, Claude Code SessionStart fallback, and OpenCode `/prompts`, with its derivation, mismatch, idempotence, reserved-value, session-safety, and observability guardrails, without claiming general daemon readiness or requiring telemetry;
+- [ ] targets the `jarvis` install wizard as the install surface and requires it to leave Core running, verified, and registered for per-user autostart, with autosync active when configured;
+- [ ] keeps the client-side start fallback and requires a user-visible warning when Core cannot be started;
+- [ ] states assumptions, terminology, and the supported platforms, including the WSL distro-lifetime and keep-alive rule and macOS as best effort;
+- [ ] defines the legacy-daemon coexistence rule and the detachment rules that keep Core alive after its launcher exits;
+- [ ] defines the lifecycle command surface and the resident-Core log file policy;
 - [ ] establishes one per-user Core as the sole normal owner of SQLite, migrations, HTTP/API state, and sync;
 - [ ] defines a thin stdio MCP bridge with no direct durable-state ownership;
 - [ ] specifies an idempotent, concurrent-safe portable `ensure-running` contract with provisional/ready/migration-blocked descriptor states, instance identity, readiness generations, start-lock semantics, and a maintenance/uninstall respawn fence;
@@ -491,4 +590,11 @@ The following current code anchors informed this proposal. They describe present
 | `jarvis-cli/internal/hiveclient/client.go:NewFromEnv` | Existing fixed default local API client behavior. |
 | `jarvis-cli/embed/hooks/opencode/hive.ts:Hive` | Existing OpenCode prompt plugin posts directly to fixed loopback HTTP. |
 | `jarvis-cli/internal/sync/mcps.go:MCPComponent.Apply` | Managed MCP replay boundary that must render bridge configuration rather than stateful Core ownership. |
-| `jarvis-cli/embed/templates/hive-daemon-start.sh.tmpl` | Existing launcher contains sync credentials; target service launch must avoid credential leakage. |
+| `jarvis-cli/internal/agent/opencode.go` | Writes Hive API credentials in plaintext into the managed OpenCode MCP `environment` block; the real credential-exposure surface today. |
+| `jarvis-cli/internal/agent/claude.go` | Registers `hive-daemon` for Claude Code through `claude mcp add` with no environment block. |
+| `jarvis-cli/embed/templates/hive-daemon-start.sh.tmpl` | Unused launcher template; no production code renders it. Kept only as a reminder that a launcher must never embed credentials. |
+| `jarvis-cli/internal/tui/steps.go`, `nontui.go` | The install wizard writes `sync.json`, creates an empty `memory.db` placeholder, and registers the daemon; it never starts it. |
+| `jarvis-cli/internal/lifecycle/engine.go:Doctor` | Doctor and reconcile have no daemon, port, or `memory.db` checks today. |
+| `hive-daemon/internal/sync/config.go` | Sync credentials are read from environment variables or `~/.jarvis/sync.json`. |
+| `hive-daemon/internal/mcp/server.go` | MCP server version is hardcoded; no version handshake exists. |
+| `scripts/install.sh`, `scripts/install.ps1` | Replace the binary over a running daemon (sh) or force-kill it first (ps1); neither checks readiness or coordinates with clients. |
