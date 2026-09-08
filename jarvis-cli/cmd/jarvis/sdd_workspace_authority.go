@@ -76,19 +76,49 @@ func canonicalSddWorkspaceDirectory(target string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("%w: target is not a directory", errSddWorkspaceUnsafe)
 	}
+	traversesSymlink, err := hasSddWorkspaceSymlinkComponent(absolute)
+	if err != nil {
+		return "", fmt.Errorf("%w: inspect target directory: %v", errSddWorkspaceUnresolved, err)
+	}
+	if traversesSymlink {
+		return "", fmt.Errorf("%w: target directory traverses a symlink", errSddWorkspaceUnsafe)
+	}
 
 	canonical, err := filepath.EvalSymlinks(absolute)
 	if err != nil {
 		return "", fmt.Errorf("%w: evaluate target directory: %v", errSddWorkspaceUnresolved, err)
 	}
 	canonical = filepath.Clean(canonical)
-	if canonical != absolute {
-		return "", fmt.Errorf("%w: target directory traverses a symlink", errSddWorkspaceUnsafe)
-	}
 	if isSddWorkspaceBroadPath(canonical) {
 		return "", fmt.Errorf("%w: target directory is overly broad", errSddWorkspaceUnsafe)
 	}
 	return canonical, nil
+}
+
+func hasSddWorkspaceSymlinkComponent(target string) (bool, error) {
+	return hasSddWorkspaceSymlinkComponentWithLstat(target, os.Lstat)
+}
+
+func hasSddWorkspaceSymlinkComponentWithLstat(target string, lstat func(string) (os.FileInfo, error)) (bool, error) {
+	volume := filepath.VolumeName(target)
+	root := volume + string(filepath.Separator)
+	remaining := strings.TrimPrefix(target, root)
+	current := root
+
+	for _, component := range strings.Split(remaining, string(filepath.Separator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		current = filepath.Join(current, component)
+		info, err := lstat(current)
+		if err != nil {
+			return false, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func isSddWorkspaceBroadPath(path string) bool {

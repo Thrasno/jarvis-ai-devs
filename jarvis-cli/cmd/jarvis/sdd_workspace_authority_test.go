@@ -7,7 +7,56 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
+
+type sddWorkspaceTestFileInfo struct {
+	mode os.FileMode
+}
+
+func (info sddWorkspaceTestFileInfo) Name() string       { return "" }
+func (info sddWorkspaceTestFileInfo) Size() int64        { return 0 }
+func (info sddWorkspaceTestFileInfo) Mode() os.FileMode  { return info.mode }
+func (info sddWorkspaceTestFileInfo) ModTime() time.Time { return time.Time{} }
+func (info sddWorkspaceTestFileInfo) IsDir() bool        { return info.mode.IsDir() }
+func (info sddWorkspaceTestFileInfo) Sys() any           { return nil }
+
+func TestHasSddWorkspaceSymlinkComponentUsesLstatNotPathNormalization(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "RUNNER~1", "workspace")
+	symlinkComponent := filepath.Join(filepath.Dir(filepath.Dir(target)), "RUNNER~1")
+
+	tests := []struct {
+		name             string
+		symlinkComponent string
+		want             bool
+	}{
+		{
+			name: "ordinary lexical normalization is not a symlink",
+		},
+		{
+			name:             "actual symlink component is rejected",
+			symlinkComponent: symlinkComponent,
+			want:             true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := hasSddWorkspaceSymlinkComponentWithLstat(target, func(path string) (os.FileInfo, error) {
+				if path == tt.symlinkComponent {
+					return sddWorkspaceTestFileInfo{mode: os.ModeSymlink | 0o777}, nil
+				}
+				return sddWorkspaceTestFileInfo{mode: os.ModeDir | 0o755}, nil
+			})
+			if err != nil {
+				t.Fatalf("hasSddWorkspaceSymlinkComponentWithLstat: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("hasSddWorkspaceSymlinkComponentWithLstat = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
 
 func TestResolveSddWorkspaceAuthorityFailsClosedOnGitDiscoveryFailures(t *testing.T) {
 	workingDir := filepath.Join(t.TempDir(), "project")
