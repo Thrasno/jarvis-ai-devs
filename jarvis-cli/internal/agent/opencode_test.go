@@ -13,6 +13,34 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
 
+// TestOpenCodeAgent_InstallPromptHookWarnsForRejectedPromptCapture verifies the
+// generated OpenCode hook records a non-blocking diagnostic for a definitive
+// rejected write without including prompt content in that diagnostic.
+func TestOpenCodeAgent_InstallPromptHookWarnsForRejectedPromptCapture(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	agent := &OpenCodeAgent{home: home}
+	if err := agent.InstallPromptHook(os.DirFS(filepath.Join("..", ".."))); err != nil {
+		t.Fatalf("InstallPromptHook: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(agent.ConfigDir(), "plugins", "hive.ts"))
+	if err != nil {
+		t.Fatalf("read installed hook: %v", err)
+	}
+	source := string(content)
+	for _, required := range []string{"if (!response.ok)", "console.warn", "HIVE_URL", "response.status"} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("hook missing rejected-write diagnostic fragment %q", required)
+		}
+	}
+	for _, line := range strings.Split(source, "\n") {
+		if strings.Contains(line, "console.warn") && strings.Contains(strings.ToLower(line), "content") {
+			t.Fatalf("warning must not include prompt content: %s", line)
+		}
+	}
+}
+
 // TestOpenCodeAgent_SupportsOutputStyles verifies OpenCodeAgent returns false (SPEC-001).
 func TestOpenCodeAgent_SupportsOutputStyles(t *testing.T) {
 	agent := &OpenCodeAgent{}
