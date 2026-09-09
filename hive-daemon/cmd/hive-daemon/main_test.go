@@ -384,12 +384,16 @@ func TestStdoutPurity(t *testing.T) {
 func TestE2E_SaveAndSearch(t *testing.T) {
 	session := spawnDaemon(t)
 	ctx := context.Background()
+	directory := filepath.Join(t.TempDir(), "e2e-test")
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatalf("mkdir directory: %v", err)
+	}
 	startRes, err := session.CallTool(ctx, &sdkmcp.CallToolParams{
 		Name: "mem_session_start",
 		Arguments: map[string]any{
 			"id":        "e2e-save-search-session",
 			"project":   "e2e-test",
-			"directory": t.TempDir(),
+			"directory": directory,
 			"dev_id":    "test-dev",
 			"client":    "test",
 		},
@@ -802,12 +806,16 @@ func TestRunStartupMigrationFreshDatabaseMigratesAndRestartsWithoutRestore(t *te
 func TestE2E_TopicKeyAlwaysInserts(t *testing.T) {
 	session := spawnDaemon(t)
 	ctx := context.Background()
+	directory := filepath.Join(t.TempDir(), "e2e-test")
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatalf("mkdir directory: %v", err)
+	}
 	startRes, err := session.CallTool(ctx, &sdkmcp.CallToolParams{
 		Name: "mem_session_start",
 		Arguments: map[string]any{
 			"id":        "e2e-topic-insert-session",
 			"project":   "e2e-test",
-			"directory": t.TempDir(),
+			"directory": directory,
 			"dev_id":    "test-dev",
 			"client":    "test",
 		},
