@@ -72,6 +72,88 @@ func TestPostSessions_EmptyProjectWithDirectory_DerivesProject(t *testing.T) {
 		"CreateSession should be called with derived canonical name, not empty string")
 }
 
+// TestPostSessions_WithProjectStoreUsesCentralResolution verifies that production
+// session registration applies the same project policy as prompt and memory writes.
+func TestPostSessions_WithProjectStoreUsesCentralResolution(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	t.Run("explicit matching directory resolves canonical project", func(t *testing.T) {
+		dir := t.TempDir()
+		initGitRepoHTTP(t, dir, "https://github.com/org/http-session.git")
+		var createdProject string
+		sessions := &mockSessionStore{createSessionFn: func(_, projectName, _, _, _ string) error {
+			createdProject = projectName
+			return nil
+		}}
+		srv := httpapi.NewServerWithAll("127.0.0.1:0", &mockPromptStore{}, mockProjectStore{}, nil, nil, nil, sessions)
+		rr := postJSON(srv, "/sessions", string(mustMarshal(t, map[string]string{
+			"id": "http-session", "project": "HTTP Session", "directory": dir, "dev_id": "dev", "client": "hook",
+		})))
+		require.Equal(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
+		assert.Equal(t, "http-session", createdProject)
+	})
+
+	t.Run("explicit directory mismatch blocks creation", func(t *testing.T) {
+		dir := t.TempDir()
+		initGitRepoHTTP(t, dir, "https://github.com/org/http-session.git")
+		created := false
+		sessions := &mockSessionStore{createSessionFn: func(_, _, _, _, _ string) error {
+			created = true
+			return nil
+		}}
+		srv := httpapi.NewServerWithAll("127.0.0.1:0", &mockPromptStore{}, mockProjectStore{}, nil, nil, nil, sessions)
+		rr := postJSON(srv, "/sessions", string(mustMarshal(t, map[string]string{
+			"id": "http-mismatch", "project": "other-project", "directory": dir, "dev_id": "dev", "client": "hook",
+		})))
+		require.Equal(t, http.StatusBadRequest, rr.Code, "body: %s", rr.Body.String())
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
+		assert.Equal(t, string(project.CodeProjectIdentityMismatch), body["error_code"])
+		assert.False(t, created, "CreateSession must not run after identity mismatch")
+	})
+
+	t.Run("omitted project derives Git origin", func(t *testing.T) {
+		dir := t.TempDir()
+		initGitRepoHTTP(t, dir, "https://github.com/org/http-derived.git")
+		var createdProject string
+		sessions := &mockSessionStore{createSessionFn: func(_, projectName, _, _, _ string) error {
+			createdProject = projectName
+			return nil
+		}}
+		srv := httpapi.NewServerWithAll("127.0.0.1:0", &mockPromptStore{}, mockProjectStore{}, nil, nil, nil, sessions)
+		rr := postJSON(srv, "/sessions", string(mustMarshal(t, map[string]string{
+			"id": "http-derived", "directory": dir, "dev_id": "dev", "client": "hook",
+		})))
+		require.Equal(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
+		assert.Equal(t, "http-derived", createdProject)
+	})
+}
+
+// TestPostSessions_WithProjectStore_PreservesDuplicateIdempotency verifies that
+// resolving project identity before session creation does not change duplicate
+// session handling for the production constructor.
+func TestPostSessions_WithProjectStore_PreservesDuplicateIdempotency(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	initGitRepoHTTP(t, dir, "https://github.com/org/http-idempotent.git")
+	realDB, err := db.Open(filepath.Join(t.TempDir(), "sessions.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = realDB.Close() })
+	srv := httpapi.NewServerWithAll("127.0.0.1:0", realDB, realDB, nil, nil, nil, realDB)
+	body := string(mustMarshal(t, map[string]string{
+		"id": "http-idempotent", "project": "HTTP Idempotent", "directory": dir, "dev_id": "dev", "client": "hook",
+	}))
+
+	for range 2 {
+		rr := postJSON(srv, "/sessions", body)
+		require.Equal(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
+	}
+}
+
 // TestPostSessions_EmptyProjectWithDirectory_KnownProjectsIncludesDerived verifies
 // that after a session create with directory derivation and a real DB,
 // KnownProjects includes the derived name (T-10 contribution).
@@ -156,6 +238,70 @@ func TestPostPrompts_EmptyProjectWithDirectory_DerivesProject(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
 	assert.Equal(t, "derived-prompt-proj", resp["project"],
 		"response should carry derived canonical name")
+}
+
+// TestPostPrompts_FirstDirectoryBootstrapIsIdempotent verifies that the first
+// prompt for a fresh Git identity is accepted and that a retry resolves the
+// registered identity without creating an error.
+func TestPostPrompts_FirstDirectoryBootstrapIsIdempotent(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	initGitRepoHTTP(t, dir, "https://github.com/org/prompt-bootstrap.git")
+
+	realDB, err := db.Open(filepath.Join(t.TempDir(), "prompts.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = realDB.Close() })
+	srv := httpapi.NewServerWithProjectStore("127.0.0.1:0", realDB, realDB)
+
+	for _, content := range []string{"first prompt", "retry prompt"} {
+		req := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewReader(mustMarshal(t, map[string]string{
+			"content":   content,
+			"directory": dir,
+		})))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		require.Equal(t, http.StatusCreated, rr.Code, "body: %s", rr.Body.String())
+	}
+
+	known, err := realDB.KnownProjects(context.Background())
+	require.NoError(t, err)
+	var matches int
+	for _, knownProject := range known {
+		if knownProject.Name == "prompt-bootstrap" {
+			matches++
+		}
+	}
+	assert.Equal(t, 1, matches, "bootstrap and retry must retain one project identity")
+}
+
+// TestPostPrompts_ExplicitDirectoryMismatchBlocksWrite proves a conflicting
+// explicit project cannot bypass directory identity evidence.
+func TestPostPrompts_ExplicitDirectoryMismatchBlocksWrite(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	initGitRepoHTTP(t, dir, "https://github.com/org/directory-identity.git")
+
+	store := &mockPromptStore{}
+	srv := httpapi.NewServerWithProjectStore("127.0.0.1:0", store, mockProjectStore{})
+	req := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewReader(mustMarshal(t, map[string]string{
+		"content":   "must not persist",
+		"project":   "different-identity",
+		"directory": dir,
+	})))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusBadRequest, rr.Code, "body: %s", rr.Body.String())
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
+	assert.Equal(t, "project_identity_mismatch", body["error_code"])
+	assert.False(t, store.called, "SavePrompt must not run after identity mismatch")
 }
 
 // ─── T-08: Chokepoint wiring: handleObservationsPassive derivation ────────────

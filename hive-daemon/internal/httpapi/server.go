@@ -521,16 +521,6 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Derive the effective project from directory when project is empty.
-	// Only pre-populate when derivation yields a concrete name (not the
-	// "default" fallback); otherwise leave project empty so the validator's
-	// own directory-based resolution can still match existing registered dirs.
-	if strings.TrimSpace(body.Project) == "" && strings.TrimSpace(body.Directory) != "" {
-		if derived := project.DeriveFromDirectory(body.Directory); derived != "default" && derived != "" {
-			body.Project = derived
-		}
-	}
-
 	if strings.TrimSpace(body.Project) == "" && (s.projects == nil || strings.TrimSpace(body.Directory) == "") {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "project is required"})
@@ -1186,12 +1176,19 @@ func (s *Server) handleSessionsCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session store not configured"})
 		return
 	}
-	// Derive the effective project from directory when project is empty.
-	// Sessions create has no validator gate; only apply when derivation yields
-	// a concrete name (not "default") so non-existent dirs don't pollute sessions.
-	// On a derivation error, log the reason and refuse to register "default"
-	// so a silent, unattributable fallback becomes diagnosable.
-	if strings.TrimSpace(body.Project) == "" && strings.TrimSpace(body.Directory) != "" {
+	if s.projects != nil {
+		resolved, err := project.ValidateWriteProject(r.Context(), s.projects, project.WriteInput{
+			Project:   body.Project,
+			Directory: body.Directory,
+		})
+		if err != nil {
+			writeProjectValidationError(w, err)
+			return
+		}
+		body.Project = resolved.Project
+	} else if strings.TrimSpace(body.Project) == "" && strings.TrimSpace(body.Directory) != "" {
+		// Compatibility path for constructors that only receive a SessionStore.
+		// Production passes s.projects and uses the shared validator above.
 		if derived, err := hivederive.Derive(body.Directory); err != nil {
 			logger.Log.Printf("derive: %q unresolved (%v); refusing to register %q", body.Directory, err, "default")
 		} else if derived != "default" && derived != "" {
