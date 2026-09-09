@@ -159,12 +159,13 @@ func TestMemSessionSummary_SelfHeal_Idempotent_SecondCallAlreadyKnown(t *testing
 	}
 }
 
-// ─── 2.3: Filesystem-Derived Name Wins on Conflict ──────────────────────────
+// ─── 2.3: Explicit and directory identity must corroborate ──────────────────
 
-// TestMemSessionSummary_DerivedName_WinsOverStaleCallerProject verifies that a
-// derivable directory overrides a stale caller-supplied project name: the write
-// is registered under the filesystem-derived name, not the caller's string.
-func TestMemSessionSummary_DerivedName_WinsOverStaleCallerProject(t *testing.T) {
+// TestMemSessionSummary_ExplicitDirectoryMismatchBlocksSave verifies that the
+// summary path uses the same identity contract as mem_save: a caller-supplied
+// project that differs from a valid directory derivation is rejected before any
+// memory row can be written.
+func TestMemSessionSummary_ExplicitDirectoryMismatchBlocksSave(t *testing.T) {
 	t.Parallel()
 
 	if _, err := exec.LookPath("git"); err != nil {
@@ -192,11 +193,15 @@ func TestMemSessionSummary_DerivedName_WinsOverStaleCallerProject(t *testing.T) 
 		"directory": dir,
 	})
 
-	if res.IsError {
-		t.Fatalf("conflict self-heal should succeed under derived name, got error: %s", textContent(t, res))
+	if !res.IsError {
+		t.Fatal("expected explicit/directory identity mismatch")
 	}
-	if savedProject != "actual-repo" {
-		t.Errorf("saved project = %q, want %q (filesystem-derived name must win)", savedProject, "actual-repo")
+	body := decodeJSONResponse(t, res)
+	if got := body["error_code"]; got != "project_identity_mismatch" {
+		t.Fatalf("error_code = %v, want project_identity_mismatch; body=%v", got, body)
+	}
+	if savedProject != "" {
+		t.Fatalf("saved project = %q, want no write", savedProject)
 	}
 }
 
@@ -366,16 +371,11 @@ func TestMemSave_ProvenanceEscape_Parity_Unchanged(t *testing.T) {
 	})
 }
 
-// ─── PR2 correction: caller-supplied valid project must win ──────────────────
+// ─── Explicit directory mismatch remains rejected for known projects ─────────
 
-// TestMemSessionSummary_ValidKnownProject_NotOverriddenByDirectory is the
-// regression guard for the CRITICAL finding: a valid, KNOWN caller-supplied
-// project must never be silently overridden by a directory that derives to a
-// DIFFERENT known project. Self-heal derivation is a fallback for an unknown or
-// empty caller project only — it must not hijack an authoritative one. This
-// mirrors memSaveHandler / ResolveEffectiveProject, where a non-empty caller
-// project short-circuits derivation.
-func TestMemSessionSummary_ValidKnownProject_NotOverriddenByDirectory(t *testing.T) {
+// TestMemSessionSummary_ValidKnownProjectDirectoryMismatchBlocksSave verifies
+// that known projects do not bypass directory corroboration.
+func TestMemSessionSummary_ValidKnownProjectDirectoryMismatchBlocksSave(t *testing.T) {
 	t.Parallel()
 
 	if _, err := exec.LookPath("git"); err != nil {
@@ -404,11 +404,15 @@ func TestMemSessionSummary_ValidKnownProject_NotOverriddenByDirectory(t *testing
 		"directory": dir, // derives to team-beta
 	})
 
-	if res.IsError {
-		t.Fatalf("valid known project summary should succeed, got error: %s", textContent(t, res))
+	if !res.IsError {
+		t.Fatal("expected explicit/directory identity mismatch")
 	}
-	if savedProject != "team-alpha" {
-		t.Errorf("saved project = %q, want %q (a valid known caller project must not be overridden by the directory)", savedProject, "team-alpha")
+	body := decodeJSONResponse(t, res)
+	if got := body["error_code"]; got != "project_identity_mismatch" {
+		t.Fatalf("error_code = %v, want project_identity_mismatch; body=%v", got, body)
+	}
+	if savedProject != "" {
+		t.Fatalf("saved project = %q, want no write", savedProject)
 	}
 }
 

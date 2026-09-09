@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -329,7 +331,10 @@ func TestMemSuggestTopicKey_HasNoPersistenceOrSyncSideEffects(t *testing.T) {
 // ─── mem_session_start ────────────────────────────────────────────────────
 
 func TestMemSessionStart_HappyPath_ReturnsSessionID(t *testing.T) {
-	directory := t.TempDir()
+	directory := filepath.Join(t.TempDir(), "jarvis-dev")
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatalf("mkdir directory: %v", err)
+	}
 	var createdID, createdProject, createdDir, createdDevID, createdClient string
 	store := &mockStore{
 		createSessionFn: func(id, project, directory, devID, client string) error {
@@ -3146,7 +3151,10 @@ func querySessionIDForMemory(t *testing.T, rawDB *sql.DB, memoryID float64) stri
 
 func TestE2E_FullSessionLifecycle(t *testing.T) {
 	session, store := connectRealServer(t)
-	directory := t.TempDir()
+	directory := filepath.Join(t.TempDir(), "e2e-project")
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatalf("mkdir directory: %v", err)
+	}
 
 	// ── Step 1: start session ────────────────────────────────────────────────
 	startRes := callTool(t, session, "mem_session_start", map[string]any{

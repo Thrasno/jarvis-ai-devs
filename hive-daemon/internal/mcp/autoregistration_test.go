@@ -195,6 +195,90 @@ func TestMemSave_EmptyProject_WithGitDirectory_EnsureManualSaveSessionCalledAfte
 	}
 }
 
+// TestMemSave_ExplicitProjectMatchingGitDirectory_Bootstraps validates that an
+// explicit project corroborated by its Git-derived directory may register on its
+// first idempotent save.
+func TestMemSave_ExplicitProjectMatchingGitDirectory_Bootstraps(t *testing.T) {
+	t.Parallel()
+
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	initGitRepoMCP(t, dir, "https://github.com/org/fresh-project.git")
+
+	var savedProject string
+	store := &mockStore{
+		knownProjectsFn: func(context.Context) ([]project.KnownProject, error) {
+			return nil, nil
+		},
+		saveMemoryFn: func(memory *models.Memory) (int64, error) {
+			savedProject = memory.Project
+			return 1, nil
+		},
+	}
+	session := connectTestServer(t, store)
+	res := callTool(t, session, "mem_save", map[string]any{
+		"title":     "First save",
+		"content":   "bootstrap evidence",
+		"type":      "decision",
+		"project":   "Fresh Project",
+		"directory": dir,
+	})
+	if res.IsError {
+		t.Fatalf("corroborated first save failed: %s", textContent(t, res))
+	}
+	if savedProject != "fresh-project" {
+		t.Fatalf("saved project = %q, want fresh-project", savedProject)
+	}
+}
+
+// TestMemSave_CorroboratedUnknownProjectSessionMismatchBlocksBootstrap proves
+// that session identity is validated before a corroborated unknown project can
+// create its first memory row.
+func TestMemSave_CorroboratedUnknownProjectSessionMismatchBlocksBootstrap(t *testing.T) {
+	t.Parallel()
+
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	initGitRepoMCP(t, dir, "https://github.com/org/fresh-project.git")
+
+	var saveCalled bool
+	store := &mockStore{
+		knownProjectsFn: func(context.Context) ([]project.KnownProject, error) {
+			return nil, nil
+		},
+		sessionProjectFn: func(context.Context, string) (string, error) {
+			return "other-project", nil
+		},
+		saveMemoryFn: func(*models.Memory) (int64, error) {
+			saveCalled = true
+			return 1, nil
+		},
+	}
+	session := connectTestServer(t, store)
+	res := callTool(t, session, "mem_save", map[string]any{
+		"title":      "Rejected save",
+		"content":    "must not persist",
+		"type":       "decision",
+		"project":    "Fresh Project",
+		"directory":  dir,
+		"session_id": "bound-session",
+	})
+	if !res.IsError {
+		t.Fatal("expected session/project mismatch")
+	}
+	body := decodeJSONResponse(t, res)
+	if got := body["error_code"]; got != string(project.CodeProjectSessionMismatch) {
+		t.Fatalf("error_code = %v, want %q; body=%v", got, project.CodeProjectSessionMismatch, body)
+	}
+	if saveCalled {
+		t.Fatal("SaveMemory must not run after a session/project mismatch")
+	}
+}
+
 // ─── T-09: mem_session_start MCP handler ─────────────────────────────────────
 
 // TestMemSessionStart_EmptyProjectWithDirectory_DerivesProject verifies that
@@ -232,6 +316,94 @@ func TestMemSessionStart_EmptyProjectWithDirectory_DerivesProject(t *testing.T) 
 	}
 	if capturedProject != "derived-mcp" {
 		t.Errorf("CreateSession called with project=%q, want %q", capturedProject, "derived-mcp")
+	}
+}
+
+// TestMemSessionStart_UsesCentralProjectResolution verifies session registration
+// follows the same corroboration contract as memory writes.
+func TestMemSessionStart_UsesCentralProjectResolution(t *testing.T) {
+	t.Parallel()
+
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	t.Run("explicit matching directory resolves canonical project", func(t *testing.T) {
+		dir := t.TempDir()
+		initGitRepoMCP(t, dir, "https://github.com/org/session-canonical.git")
+		var createdProject string
+		store := &mockStore{
+			knownProjectsFn: func(context.Context) ([]project.KnownProject, error) { return nil, nil },
+			createSessionFn: func(_, projectName, _, _, _ string) error {
+				createdProject = projectName
+				return nil
+			},
+		}
+		res := callTool(t, connectTestServer(t, store), "mem_session_start", map[string]any{
+			"id": "session-canonical", "project": "Session Canonical", "directory": dir, "dev_id": "dev", "client": "test",
+		})
+		if res.IsError {
+			t.Fatalf("mem_session_start failed: %s", textContent(t, res))
+		}
+		if createdProject != "session-canonical" {
+			t.Fatalf("created project = %q, want session-canonical", createdProject)
+		}
+	})
+
+	t.Run("explicit directory mismatch blocks creation", func(t *testing.T) {
+		dir := t.TempDir()
+		initGitRepoMCP(t, dir, "https://github.com/org/session-canonical.git")
+		created := false
+		store := &mockStore{
+			knownProjectsFn: func(context.Context) ([]project.KnownProject, error) { return nil, nil },
+			createSessionFn: func(_, _, _, _, _ string) error {
+				created = true
+				return nil
+			},
+		}
+		res := callTool(t, connectTestServer(t, store), "mem_session_start", map[string]any{
+			"id": "session-mismatch", "project": "other-project", "directory": dir, "dev_id": "dev", "client": "test",
+		})
+		if !res.IsError {
+			t.Fatal("expected project identity mismatch")
+		}
+		body := decodeJSONResponse(t, res)
+		if got := body["error_code"]; got != string(project.CodeProjectIdentityMismatch) {
+			t.Fatalf("error_code = %v, want %q", got, project.CodeProjectIdentityMismatch)
+		}
+		if created {
+			t.Fatal("CreateSession must not run after identity mismatch")
+		}
+	})
+}
+
+// TestMemSessionStart_HistoricalDirectoryMismatchBlocksCreation ensures a
+// persisted directory binding rejects an unrelated explicit project before the
+// session row can be created.
+func TestMemSessionStart_HistoricalDirectoryMismatchBlocksCreation(t *testing.T) {
+	directory := t.TempDir()
+	created := false
+	store := &mockStore{
+		knownProjectsFn: func(context.Context) ([]project.KnownProject, error) {
+			return []project.KnownProject{{Name: "legacy-project", Directory: directory}}, nil
+		},
+		createSessionFn: func(_, _, _, _, _ string) error {
+			created = true
+			return nil
+		},
+	}
+	res := callTool(t, connectTestServer(t, store), "mem_session_start", map[string]any{
+		"id": "historical-mismatch", "project": "other-project", "directory": directory, "dev_id": "dev", "client": "test",
+	})
+	if !res.IsError {
+		t.Fatal("expected project identity mismatch")
+	}
+	body := decodeJSONResponse(t, res)
+	if got := body["error_code"]; got != string(project.CodeProjectIdentityMismatch) {
+		t.Fatalf("error_code = %v, want %q", got, project.CodeProjectIdentityMismatch)
+	}
+	if created {
+		t.Fatal("CreateSession must not run after identity mismatch")
 	}
 }
 

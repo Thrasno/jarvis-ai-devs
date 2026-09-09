@@ -16,7 +16,6 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sanitize"
 	hivesync "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sync"
-	"github.com/Thrasno/jarvis-ai-devs/hivederive"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -131,7 +130,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 			"properties": {
 				"content":    {"type": "string", "description": "Session summary in markdown"},
 				"project":    {"type": "string", "description": "Project identifier"},
-				"directory":  {"type": "string", "description": "Working directory; the daemon derives the canonical project name from this path to self-heal an unknown/stale project. The filesystem-derived name wins over the supplied project on conflict."},
+				"directory":  {"type": "string", "description": "Working directory used as project identity evidence. A concrete directory identity must corroborate any supplied project."},
 				"session_id": {"type": "string", "description": "Optional session ID; absent triggers lazy manual-save fallback"},
 				"recovery_token": {"type": "string", "description": "Recovery token returned by an ambiguous project response"},
 				"project_choice_reason": {"type": "string", "description": "Original ambiguous project/context used when retrying with recovery_token"}
@@ -183,7 +182,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 // ─── Handlers ──────────────────────────────────────────────────────────────
 
 func memSessionStartHandler(store MemoryStore, activity *ActivityTracker) sdkmcp.ToolHandler {
-	return func(_ context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+	return func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
 		var p struct {
 			ID        string `json:"id"`
 			Project   string `json:"project"`
@@ -204,8 +203,14 @@ func memSessionStartHandler(store MemoryStore, activity *ActivityTracker) sdkmcp
 			return toolError(fmt.Errorf("client is required")), nil
 		}
 
-		// Derive the effective project from directory when project is empty.
-		p.Project, _ = project.ResolveEffectiveProject(p.Project, p.Directory)
+		resolved, err := project.ValidateWriteProject(ctx, store, project.WriteInput{
+			Project:   p.Project,
+			Directory: p.Directory,
+		})
+		if err != nil {
+			return toolValidationError(err), nil
+		}
+		p.Project = resolved.Project
 
 		if err := store.CreateSession(p.ID, p.Project, p.Directory, p.DevID, p.Client); err != nil {
 			return toolError(fmt.Errorf("create session failed: %w", err)), nil
@@ -279,37 +284,22 @@ func memSaveHandler(store MemoryStore, syncRuntime *syncRuntime, activity *Activ
 			return toolError(fmt.Errorf("invalid params: %w", err)), nil
 		}
 
-		// T-05: derive-then-validate with provenance-gated project_unknown escape.
-		// When project is empty and directory is provided, derive the canonical
-		// name from the real filesystem (git remote → basename → "default").
-		// The provenance bool tracks whether the name came from derivation (true)
-		// or was supplied by the caller (false). Only a derived name may bypass
-		// the project_unknown gate; an assistant-supplied name never does.
-		effective, derived := project.ResolveEffectiveProject(p.Project, p.Directory)
-		if effective != "" {
-			p.Project = effective
-		}
+		// Keep the caller value intact: ValidateWriteProject centrally combines
+		// explicit project and directory evidence, including safe bootstrap.
 
-		if p.Title == "" || p.Content == "" || p.Project == "" {
+		if p.Title == "" || p.Content == "" || (p.Project == "" && p.Directory == "") {
 			return toolError(fmt.Errorf("title, content, and project are required")), nil
 		}
 
-		resolved, err := project.ValidateWriteProject(ctx, store, project.WriteInput{Project: p.Project, SessionID: p.SessionID, RecoveryToken: p.RecoveryToken, ProjectChoiceReason: p.ProjectChoiceReason})
+		resolved, err := project.ValidateWriteProject(ctx, store, project.WriteInput{
+			Project:             p.Project,
+			Directory:           p.Directory,
+			SessionID:           p.SessionID,
+			RecoveryToken:       p.RecoveryToken,
+			ProjectChoiceReason: p.ProjectChoiceReason,
+		})
 		if err != nil {
-			var validationErr *project.ValidationError
-			if errors.As(err, &validationErr) &&
-				validationErr.Code == project.CodeProjectUnknown &&
-				derived &&
-				p.Project != "default" {
-				// Provenance-gated escape: the name came from real git/filesystem
-				// derivation, not from the assistant. Allow the write — the memory
-				// row itself registers the derived project in KnownProjects.
-				// "default" is explicitly excluded: it is a sentinel for "could not
-				// derive a real name" and must never auto-register as a pooling target.
-				resolved = project.Result{Project: p.Project}
-			} else {
-				return toolValidationError(err), nil
-			}
+			return toolValidationError(err), nil
 		}
 		p.Project = resolved.Project
 
@@ -531,54 +521,17 @@ func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkm
 
 		ctx := context.Background()
 
-		// Validate the caller-supplied project FIRST. A valid, known project is
-		// authoritative and is never overridden by the working directory — this
-		// mirrors memSaveHandler / ResolveEffectiveProject, where a non-empty
-		// caller project short-circuits derivation.
-		//
-		// Filesystem derivation is a SELF-HEAL fallback that runs ONLY when the
-		// caller project is unknown (or empty) AND a usable directory is present,
-		// outside a recovery retry. In that escape the filesystem-derived name
-		// wins — recovering an unknown/stale project instead of failing the
-		// summary — because the caller could not name a project the daemon knows.
-		resolved, err := project.ValidateWriteProject(ctx, store, project.WriteInput{Project: p.Project, SessionID: p.SessionID, RecoveryToken: p.RecoveryToken, ProjectChoiceReason: p.ProjectChoiceReason})
+		resolved, err := project.ValidateWriteProject(ctx, store, project.WriteInput{
+			Project:             p.Project,
+			Directory:           p.Directory,
+			SessionID:           p.SessionID,
+			RecoveryToken:       p.RecoveryToken,
+			ProjectChoiceReason: p.ProjectChoiceReason,
+		})
 		if err != nil {
-			var validationErr *project.ValidationError
-			canSelfHeal := errors.As(err, &validationErr) &&
-				validationErr.Code == project.CodeProjectUnknown &&
-				p.RecoveryToken == "" &&
-				strings.TrimSpace(p.Directory) != ""
-			if !canSelfHeal {
-				return toolValidationError(err), nil
-			}
-
-			// Derive directly from the real filesystem (not the
-			// "default"-collapsing DeriveFromDirectory adapter) so a failure
-			// surfaces as a typed error rather than masquerading as a derived
-			// name.
-			name, derr := hivederive.Derive(p.Directory)
-			if derr != nil {
-				// Surface a structured project_unknown carrying the typed derive
-				// reason instead of a generic uncoded "project is required", so
-				// the caller keeps the recovery_token contract and gets an
-				// actionable message.
-				return toolValidationError(&project.ValidationError{
-					Code:    project.CodeProjectUnknown,
-					Message: fmt.Sprintf("project is required: could not derive a project name from directory %q: %v", p.Directory, derr),
-				}), nil
-			}
-			if name == "" || name == "default" {
-				// "default" is the reserved pooling sentinel: it must never
-				// auto-register as a project. Keep the original project_unknown.
-				return toolValidationError(err), nil
-			}
-
-			// Derived name wins on conflict: the caller project was unknown, so
-			// the session-summary row registers the derived project instead.
-			p.Project = name
-		} else {
-			p.Project = resolved.Project
+			return toolValidationError(err), nil
 		}
+		p.Project = resolved.Project
 
 		// Guard: same 50K rune limit as memSaveHandler.
 		if runeCount := utf8.RuneCountInString(p.Content); runeCount > MaxObservationLength {
