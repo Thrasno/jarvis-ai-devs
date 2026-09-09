@@ -21,6 +21,7 @@ const (
 	CodeProjectUnknown            ErrorCode = "project_unknown"
 	CodeProjectAmbiguous          ErrorCode = "project_ambiguous"
 	CodeProjectSessionMismatch    ErrorCode = "project_session_mismatch"
+	CodeProjectIdentityMismatch   ErrorCode = "project_identity_mismatch"
 	CodeRecoveryTokenInvalid      ErrorCode = "recovery_token_invalid"
 	CodeRecoveryTokenExpired      ErrorCode = "recovery_token_expired"
 	CodeRecoveryTokenConsumed     ErrorCode = "recovery_token_consumed"
@@ -156,7 +157,7 @@ func ValidateWriteProjectWithConfig(ctx context.Context, store Store, input Writ
 		return Result{}, fmt.Errorf("known projects: %w", err)
 	}
 
-	projectName, candidates, err := resolveProject(known, input)
+	projectName, candidates, err := resolveProject(ctx, store, known, input)
 	if err != nil {
 		return Result{}, err
 	}
@@ -176,28 +177,16 @@ func ValidateWriteProjectWithConfig(ctx context.Context, store Store, input Writ
 		}
 		return Result{}, &ValidationError{Code: CodeProjectAmbiguous, Message: "project resolution is ambiguous", Candidates: candidates, RecoveryToken: token, ExpiresAt: expiresAt}
 	}
-	if projectName == "" {
-		// The requested project is not in KnownProjects. Check if it has an active
-		// alias redirect — source projects are hidden from KnownProjects, so the
-		// alias is the recovery path that redirects writes to the target.
-		if strings.TrimSpace(input.Project) != "" {
-			aliasTarget, found, aliasErr := store.ResolveAlias(ctx, strings.TrimSpace(input.Project))
-			if aliasErr != nil {
-				return Result{}, fmt.Errorf("resolve alias: %w", aliasErr)
-			}
-			if found {
-				projectName = aliasTarget
-			}
-		}
-		if projectName == "" {
-			return Result{}, &ValidationError{Code: CodeProjectUnknown, Message: "project is not known"}
-		}
+	if projectName == "" || projectName == "default" {
+		return Result{}, &ValidationError{Code: CodeProjectUnknown, Message: "project is not known"}
 	}
 
+	// This check deliberately happens after resolution but before the caller is
+	// allowed to bootstrap an unknown project. A bound session is stronger
+	// evidence than an otherwise corroborated directory identity.
 	if err := validateSessionProject(ctx, store, input.SessionID, projectName); err != nil {
 		return Result{}, err
 	}
-
 	return Result{Project: projectName}, nil
 }
 
@@ -271,12 +260,90 @@ func recoveryTokenValidationError(err error) error {
 	}
 }
 
-func resolveProject(known []KnownProject, input WriteInput) (string, []Candidate, error) {
-	if strings.TrimSpace(input.Project) != "" {
-		return resolveByName(known, input.Project)
+func resolveProject(ctx context.Context, store Store, known []KnownProject, input WriteInput) (string, []Candidate, error) {
+	explicit := strings.TrimSpace(input.Project)
+	derived, hasDerivedIdentity, deriveErr := deriveProjectIdentity(input.Directory)
+
+	if explicit != "" {
+		if strings.TrimSpace(input.Directory) != "" {
+			boundProject, boundCandidates, err := resolveByDirectory(known, input.Directory)
+			if err != nil || len(boundCandidates) > 1 {
+				return boundProject, boundCandidates, err
+			}
+			if boundProject != "" {
+				if normalizeName(explicit) == normalizeName(boundProject) {
+					return boundProject, boundCandidates, nil
+				}
+				aliasTarget, found, aliasErr := store.ResolveAlias(ctx, explicit)
+				if aliasErr != nil {
+					return "", nil, fmt.Errorf("resolve alias: %w", aliasErr)
+				}
+				if found && normalizeName(aliasTarget) == normalizeName(boundProject) {
+					return boundProject, boundCandidates, nil
+				}
+				return "", nil, &ValidationError{
+					Code:       CodeProjectIdentityMismatch,
+					Message:    "explicit project does not match directory identity",
+					Candidates: []Candidate{{Project: explicit}, {Project: boundProject, Directory: input.Directory}},
+				}
+			}
+		}
+
+		projectName, candidates, err := resolveByName(known, explicit)
+		if err != nil || len(candidates) > 1 {
+			return projectName, candidates, err
+		}
+		// Without a persisted directory binding, corroborate the caller's requested
+		// identity before an alias redirects persistence to its target.
+		if hasDerivedIdentity && normalizeName(explicit) != normalizeName(derived) {
+			return "", nil, &ValidationError{
+				Code:       CodeProjectIdentityMismatch,
+				Message:    "explicit project does not match directory identity",
+				Candidates: []Candidate{{Project: explicit}, {Project: derived, Directory: input.Directory}},
+			}
+		}
+
+		if projectName == "" {
+			aliasTarget, found, aliasErr := store.ResolveAlias(ctx, explicit)
+			if aliasErr != nil {
+				return "", nil, fmt.Errorf("resolve alias: %w", aliasErr)
+			}
+			if found {
+				projectName = aliasTarget
+			}
+		}
+		if projectName != "" {
+			return projectName, candidates, nil
+		}
+		if hasDerivedIdentity {
+			return derived, nil, nil
+		}
+		return "", nil, nil
 	}
+
 	if strings.TrimSpace(input.Directory) != "" {
-		return resolveByDirectory(known, input.Directory)
+		// A registered directory is stronger evidence than a current Git remote or
+		// basename. This preserves historical identities after a repository rename.
+		projectName, candidates, err := resolveByDirectory(known, input.Directory)
+		if err != nil || projectName != "" || len(candidates) > 0 {
+			return projectName, candidates, err
+		}
+	}
+	if hasDerivedIdentity {
+		projectName, candidates, err := resolveByName(known, derived)
+		if err != nil || len(candidates) > 1 {
+			return projectName, candidates, err
+		}
+		if projectName != "" {
+			return projectName, candidates, nil
+		}
+		return derived, nil, nil
+	}
+	if strings.TrimSpace(input.Directory) != "" && deriveErr != nil {
+		return "", nil, &ValidationError{
+			Code:    CodeProjectUnknown,
+			Message: fmt.Sprintf("project is required: could not derive a project name from directory %q: %v", input.Directory, deriveErr),
+		}
 	}
 	return "", nil, &ValidationError{Code: CodeProjectUnknown, Message: "project is required"}
 }
