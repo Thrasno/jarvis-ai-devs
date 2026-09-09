@@ -3,6 +3,8 @@ package project_test
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -193,6 +195,122 @@ func TestValidateWriteProject_AliasResolution(t *testing.T) {
 		}
 		if validationErr.Code != project.CodeProjectUnknown {
 			t.Fatalf("error code = %q, want %q", validationErr.Code, project.CodeProjectUnknown)
+		}
+	})
+}
+
+func TestValidateWriteProject_AliasSourceCorroboratesMatchingDirectory(t *testing.T) {
+	t.Parallel()
+
+	directory := filepath.Join(t.TempDir(), "alias-source")
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatalf("mkdir directory: %v", err)
+	}
+	store := &fakeStore{
+		known:   []project.KnownProject{{Name: "alias-target"}},
+		aliases: map[string]string{"alias-source": "alias-target"},
+	}
+
+	result, err := project.ValidateWriteProject(context.Background(), store, project.WriteInput{
+		Project:   "alias-source",
+		Directory: directory,
+	})
+	if err != nil {
+		t.Fatalf("ValidateWriteProject: %v", err)
+	}
+	if result.Project != "alias-target" {
+		t.Fatalf("resolved project = %q, want alias-target", result.Project)
+	}
+}
+
+func TestValidateWriteProject_DirectoryMatchWinsOverFreshDerivation(t *testing.T) {
+	t.Parallel()
+
+	directory := t.TempDir()
+	store := &fakeStore{known: []project.KnownProject{{
+		Name:      "legacy-project-name",
+		Directory: directory,
+	}}}
+
+	result, err := project.ValidateWriteProject(context.Background(), store, project.WriteInput{Directory: directory})
+	if err != nil {
+		t.Fatalf("ValidateWriteProject: %v", err)
+	}
+	if result.Project != "legacy-project-name" {
+		t.Fatalf("resolved project = %q, want legacy-project-name", result.Project)
+	}
+}
+
+func TestValidateWriteProject_ExplicitDirectoryBindingPrecedence(t *testing.T) {
+	t.Parallel()
+
+	t.Run("matching explicit project accepts historical directory identity", func(t *testing.T) {
+		directory := t.TempDir()
+		store := &fakeStore{known: []project.KnownProject{{Name: "legacy-project", Directory: directory}}}
+		result, err := project.ValidateWriteProject(context.Background(), store, project.WriteInput{
+			Project:   "Legacy Project",
+			Directory: directory,
+		})
+		if err != nil {
+			t.Fatalf("ValidateWriteProject: %v", err)
+		}
+		if result.Project != "legacy-project" {
+			t.Fatalf("resolved project = %q, want legacy-project", result.Project)
+		}
+	})
+
+	t.Run("alias source redirects to historical directory target", func(t *testing.T) {
+		directory := t.TempDir()
+		store := &fakeStore{
+			known:   []project.KnownProject{{Name: "legacy-project", Directory: directory}},
+			aliases: map[string]string{"old-project": "legacy-project"},
+		}
+		result, err := project.ValidateWriteProject(context.Background(), store, project.WriteInput{
+			Project:   "old-project",
+			Directory: directory,
+		})
+		if err != nil {
+			t.Fatalf("ValidateWriteProject: %v", err)
+		}
+		if result.Project != "legacy-project" {
+			t.Fatalf("resolved project = %q, want legacy-project", result.Project)
+		}
+	})
+
+	t.Run("directory binding disambiguates explicit name", func(t *testing.T) {
+		directory := t.TempDir()
+		store := &fakeStore{known: []project.KnownProject{
+			{Name: "legacy-project", Directory: directory},
+			{Name: "legacy_project", Directory: filepath.Join(t.TempDir(), "other")},
+		}}
+		result, err := project.ValidateWriteProject(context.Background(), store, project.WriteInput{
+			Project:   "legacy project",
+			Directory: directory,
+		})
+		if err != nil {
+			t.Fatalf("ValidateWriteProject: %v", err)
+		}
+		if result.Project != "legacy-project" {
+			t.Fatalf("resolved project = %q, want directory-bound legacy-project", result.Project)
+		}
+		if len(store.createdTokens) != 0 {
+			t.Fatalf("created recovery tokens = %d, want 0", len(store.createdTokens))
+		}
+	})
+
+	t.Run("different explicit project rejects historical directory identity", func(t *testing.T) {
+		directory := t.TempDir()
+		store := &fakeStore{known: []project.KnownProject{{Name: "legacy-project", Directory: directory}}}
+		_, err := project.ValidateWriteProject(context.Background(), store, project.WriteInput{
+			Project:   "other-project",
+			Directory: directory,
+		})
+		var validationErr *project.ValidationError
+		if !errors.As(err, &validationErr) {
+			t.Fatalf("error = %T %v, want ValidationError", err, err)
+		}
+		if validationErr.Code != project.CodeProjectIdentityMismatch {
+			t.Fatalf("error code = %q, want %q", validationErr.Code, project.CodeProjectIdentityMismatch)
 		}
 	})
 }
@@ -415,6 +533,27 @@ func TestValidateWriteProject_RecoveryTokenFailuresMapToValidationErrors(t *test
 				t.Fatalf("error code = %q, want %q", validationErr.Code, tt.code)
 			}
 		})
+	}
+}
+
+func TestValidateWriteProject_ExplicitProjectAndDirectoryMismatchIsTyped(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeStore{known: []project.KnownProject{{Name: "known-project"}}}
+	_, err := project.ValidateWriteProject(context.Background(), store, project.WriteInput{
+		Project:   "different-project",
+		Directory: t.TempDir(),
+	})
+
+	var validationErr *project.ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("error = %T %v, want ValidationError", err, err)
+	}
+	if validationErr.Code != "project_identity_mismatch" {
+		t.Fatalf("error code = %q, want project_identity_mismatch", validationErr.Code)
+	}
+	if len(validationErr.Candidates) != 2 {
+		t.Fatalf("candidates = %v, want explicit and directory identities", validationErr.Candidates)
 	}
 }
 
