@@ -7,9 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"syscall"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress/filelock"
 )
 
 var (
@@ -142,16 +142,8 @@ func (h Hybrid) Advance(request AdvanceRequest) (AdvanceResult, error) {
 	return AdvanceResult{Generation: request.Snapshot.Generation, Revision: request.Snapshot.Revision, Digest: request.Snapshot.Digest}, nil
 }
 
-func (h Hybrid) lock() (func(), error) {
-	file, err := os.OpenFile(filepath.Join(h.Root, ".apply-progress-hybrid.lock"), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
-		_ = file.Close()
-		return nil, err
-	}
-	return func() { _ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN); _ = file.Close() }, nil
+func (h Hybrid) lock() (func() error, error) {
+	return filelock.Acquire(filepath.Join(h.Root, ".apply-progress-hybrid.lock"))
 }
 
 func payloadDigestFor(request AdvanceRequest) string {

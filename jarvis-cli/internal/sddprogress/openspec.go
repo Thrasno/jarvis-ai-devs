@@ -8,9 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress/filelock"
 )
 
 // OpenSpec exposes the Go-only atomic publication seam used by a later adapter.
@@ -307,16 +307,8 @@ func (s OpenSpec) validateArchive(snapshot applyprogress.Snapshot, data []byte) 
 	return applyprogress.ValidateProgress(data, tasks, batches)
 }
 
-func (s OpenSpec) lock() (func(), error) {
-	file, err := os.OpenFile(filepath.Join(s.Root, "apply-progress.lock"), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
-		_ = file.Close()
-		return nil, err
-	}
-	return func() { _ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN); _ = file.Close() }, nil
+func (s OpenSpec) lock() (func() error, error) {
+	return filelock.Acquire(filepath.Join(s.Root, "apply-progress.lock"))
 }
 
 func (s OpenSpec) syncDir(path string) error {
