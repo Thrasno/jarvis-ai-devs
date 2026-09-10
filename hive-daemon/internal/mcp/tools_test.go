@@ -20,6 +20,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
 	hivesync "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sync"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -117,6 +118,51 @@ func decodeJSONResponse(t *testing.T, res *sdkmcp.CallToolResult) map[string]any
 }
 
 // ─── mem_suggest_topic_key ────────────────────────────────────────────────
+
+func TestSddApplyProgressMCPHandlersReturnTypedRecovery(t *testing.T) {
+	store, err := hivedb.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	session := connectTestServer(t, store)
+
+	for _, args := range []map[string]any{
+		{"project": "project", "change": "change"},
+		{"project": true, "change": "change"},
+		{"project": "project", "change": "change", "request_id": "request", "snapshot": map[string]any{}, "batches": []any{}},
+		{"project": "project", "change": "change", "request_id": true},
+	} {
+		name := "sdd_apply_progress_get"
+		if _, ok := args["request_id"]; ok {
+			name = "sdd_apply_progress_advance"
+		}
+		body := decodeJSONResponse(t, callTool(t, session, name, args))
+		recovery, ok := body["recovery"].(string)
+		if body["outcome"] != "invalid" || body["code"] != "validation" || !ok || recovery == "" {
+			t.Fatalf("%s response = %#v", name, body)
+		}
+	}
+
+	batch, _, err := applyprogress.SealBatch(applyprogress.Batch{Schema: applyprogress.EvidenceSchema, Project: "project", Change: "change", BatchID: "apb-56565656565656565656565656565656", Entries: []applyprogress.EvidenceEntry{{EntryID: "entry", TaskIDs: []string{}, CompletesTaskIDs: []string{}, Kind: applyprogress.EvidenceGreen, Summary: "green", Command: "go test", Outcome: applyprogress.OutcomePass, Files: []string{}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _, err := applyprogress.SealSnapshot(applyprogress.Snapshot{Schema: applyprogress.SnapshotSchema, Project: "project", Change: "change", Generation: 1, Revision: 1, TaskManifestSHA256: strings.Repeat("a", 64), Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{{BatchID: batch.BatchID, SHA256: batch.SHA256}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	advance := map[string]any{"project": "project", "change": "change", "request_id": "mcp-first", "snapshot": snapshot, "batches": []applyprogress.Batch{batch}}
+	body := decodeJSONResponse(t, callTool(t, session, "sdd_apply_progress_advance", advance))
+	if body["outcome"] != "committed" || body["receipt"] == nil {
+		t.Fatalf("commit response = %#v", body)
+	}
+	advance["request_id"] = "mcp-stale"
+	body = decodeJSONResponse(t, callTool(t, session, "sdd_apply_progress_advance", advance))
+	if body["outcome"] != "conflict" || body["code"] != "stale" || body["recovery"] == "" {
+		t.Fatalf("conflict response = %#v", body)
+	}
+}
 
 func TestMemSuggestTopicKey_ReturnsDeterministicTopicKey(t *testing.T) {
 	t.Parallel()

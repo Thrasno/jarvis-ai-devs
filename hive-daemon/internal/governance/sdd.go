@@ -32,7 +32,13 @@ var sddArtifactVocabulary = []string{
 type sddStore interface {
 	FetchSDDArtifacts(project, change string, artifacts []string) ([]db.SDDArtifact, error)
 	ListSDDChanges(project string, artifacts []string, after string, limit int) ([]string, error)
+	GetApplyProgress(project, change string) (db.ApplyProgressState, error)
+	AdvanceApplyProgress(db.ApplyProgressAdvance) (db.ApplyProgressAdvanceResult, error)
 }
+
+type ApplyProgressAdvanceRequest = db.ApplyProgressAdvance
+type ApplyProgressState = db.ApplyProgressState
+type ApplyProgressAdvanceResult = db.ApplyProgressAdvanceResult
 
 // SDDArtifact is the daemon response projection for one known artifact.
 type SDDArtifact struct {
@@ -92,6 +98,44 @@ func (s *Service) FetchSDDArtifacts(ctx context.Context, project, change string)
 		})
 	}
 	return result, nil
+}
+
+// GetApplyProgress returns the snapshot selected by the guarded v2 head.
+func (s *Service) GetApplyProgress(ctx context.Context, project, change string) (ApplyProgressState, error) {
+	project = strings.TrimSpace(project)
+	if project == "" {
+		return ApplyProgressState{}, ErrProjectRequired
+	}
+	change, err := validateSDDChange(change)
+	if err != nil {
+		return ApplyProgressState{}, err
+	}
+	if _, err := s.store.GetGovernanceProject(ctx, project); err != nil {
+		return ApplyProgressState{}, mapProjectError(err)
+	}
+	if s.sdd == nil {
+		return ApplyProgressState{}, errors.New("SDD store is not configured")
+	}
+	return s.sdd.GetApplyProgress(project, change)
+}
+
+// AdvanceApplyProgress performs the dedicated snapshot CAS operation.
+func (s *Service) AdvanceApplyProgress(ctx context.Context, request ApplyProgressAdvanceRequest) (ApplyProgressAdvanceResult, error) {
+	if strings.TrimSpace(request.Project) == "" {
+		return ApplyProgressAdvanceResult{}, ErrProjectRequired
+	}
+	change, err := validateSDDChange(request.Change)
+	if err != nil {
+		return ApplyProgressAdvanceResult{}, err
+	}
+	request.Change = change
+	if _, err := s.store.GetGovernanceProject(ctx, request.Project); err != nil {
+		return ApplyProgressAdvanceResult{}, mapProjectError(err)
+	}
+	if s.sdd == nil {
+		return ApplyProgressAdvanceResult{}, errors.New("SDD store is not configured")
+	}
+	return s.sdd.AdvanceApplyProgress(request)
 }
 
 func (s *Service) ListSDDChanges(ctx context.Context, request SDDChangePageRequest) (SDDChangePage, error) {
