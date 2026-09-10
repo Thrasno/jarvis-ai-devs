@@ -94,11 +94,15 @@ func TestOpenSpecAdvanceFsyncsCreatedEvidenceAndReceipts(t *testing.T) {
 
 func TestOpenSpecAdvanceRecoversFromDeadLockFile(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "apply-progress.lock"), nil, 0o600); err != nil {
+	store := OpenSpec{Root: root}
+	if err := os.WriteFile(store.lockPath(), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := (OpenSpec{Root: root}).Advance(request(t, "request-1", "apb-00000000000000000000000000000001", 1, 1, "")); err != nil {
+	if _, err := store.Advance(request(t, "request-1", "apb-00000000000000000000000000000001", 1, 1, "")); err != nil {
 		t.Fatalf("Advance() with crash-left lock file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "apply-progress.lock")); !os.IsNotExist(err) {
+		t.Fatalf("in-root lock stat error = %v, want no lock in archive topology", err)
 	}
 }
 
