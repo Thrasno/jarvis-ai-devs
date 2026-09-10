@@ -131,6 +131,9 @@ func ValidateEvidenceCoverage(snapshot Snapshot, batches map[string]Batch) error
 		}
 		covered[coverage.TaskID] = true
 	}
+	if len(covered) != len(completed) {
+		return invalid(CodeInvalidCoverage)
+	}
 	return nil
 }
 
