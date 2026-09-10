@@ -308,8 +308,12 @@ func (s OpenSpec) validateArchive(snapshot applyprogress.Snapshot, data []byte) 
 	return applyprogress.ValidateProgress(data, tasks, batches)
 }
 
+func (s OpenSpec) lockPath() string {
+	return filepath.Join(filepath.Dir(s.Root), "."+filepath.Base(s.Root)+".apply-progress.lock")
+}
+
 func (s OpenSpec) lock() (func() error, error) {
-	return filelock.Acquire(filepath.Join(s.Root, "apply-progress.lock"))
+	return filelock.Acquire(s.lockPath())
 }
 
 func (s OpenSpec) syncDir(path string) error {
