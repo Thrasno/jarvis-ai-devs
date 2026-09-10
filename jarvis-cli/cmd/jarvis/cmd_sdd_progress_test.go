@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -255,6 +258,208 @@ func executeSddProgressAdvance(t *testing.T, cmd *cobra.Command, root string, re
 	cmd.SetArgs([]string{"advance", "--root", root, "--request", path})
 	err = cmd.Execute()
 	var output progressAdvanceOutput
+	if decodeErr := json.Unmarshal(stdout.Bytes(), &output); decodeErr != nil {
+		t.Fatalf("decode command output %q: %v", stdout.String(), decodeErr)
+	}
+	return output, err
+}
+
+func TestSddProgressCheckpointCommitsInitialStream(t *testing.T) {
+	root := t.TempDir()
+	request := checkpointRequest(t, "checkpoint-1", "apb-00000000000000000000000000000001", nil, 0, "entry-1", []applyprogress.EvidenceEntry{checkpointEntry("entry-1", "1", "evidence")})
+	output, err := executeSddProgressCheckpoint(t, newSddProgressCommand(defaultOpenSpec), root, request)
+	if err != nil || output.Outcome != "committed" || output.State.Generation != 1 {
+		t.Fatalf("checkpoint = %#v, %v; want initial committed state", output, err)
+	}
+}
+
+type checkpointBackend struct {
+	current *applyprogress.Snapshot
+	calls   int
+}
+
+func (b *checkpointBackend) Current() (*applyprogress.Snapshot, error) { return b.current, nil }
+func (b *checkpointBackend) Advance(sddprogress.AdvanceRequest) (sddprogress.AdvanceResult, error) {
+	b.calls++
+	return sddprogress.AdvanceResult{}, errors.New("unexpected advance")
+}
+
+func TestSddProgressCheckpointCapacityDoesNotAdvance(t *testing.T) {
+	for name, test := range map[string]struct {
+		request checkpointInput
+		outcome string
+	}{
+		"evidence item": {checkpointRequest(t, "capacity-entry", "apb-00000000000000000000000000000002", nil, 0, "entry-1", []applyprogress.EvidenceEntry{checkpointEntry("entry-1", "1", strings.Repeat("x", applyprogress.MaxDocumentRunes))}), "evidence_item_too_large"},
+		"snapshot":      {checkpointSnapshotCapacityRequest(t), "snapshot_capacity_exhausted"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := test.request
+			backend := &checkpointBackend{current: request.Base}
+			output, err := executeSddProgressCheckpoint(t, newSddProgressCommand(func(string) progressAdvancer { return backend }), t.TempDir(), request)
+			if err != nil || backend.calls != 0 || output.Outcome != test.outcome || output.Code != test.outcome {
+				t.Fatalf("capacity = %#v, %v; calls=%d", output, err, backend.calls)
+			}
+		})
+	}
+}
+
+func TestSddProgressCheckpointDurablyContinues162725Runes(t *testing.T) {
+	root := t.TempDir()
+	tasks, entries := make([]applyprogress.Task, 5), make([]applyprogress.EvidenceEntry, 5)
+	for i := range entries {
+		id := fmt.Sprintf("%d", i+1)
+		tasks[i], entries[i] = applyprogress.Task{ID: id, Text: id}, checkpointEntry("entry-"+id, id, strings.Repeat("é", 32545))
+	}
+	var base *applyprogress.Snapshot
+	for cursor := 0; cursor < len(entries); {
+		request := checkpointInput{Project: "jarvis-dev", Change: "issue-653", Tasks: tasks, Base: base, ExpectedGeneration: checkpointState(base).Generation, ExpectedRevision: checkpointState(base).Revision, ExpectedDigest: checkpointState(base).Digest, RequestID: fmt.Sprintf("checkpoint-%d", cursor), BatchID: fmt.Sprintf("apb-%032x", cursor+10), Entries: entries, EntryIndex: cursor, EntryID: entries[cursor].EntryID}
+		output, err := executeSddProgressCheckpoint(t, newSddProgressCommand(defaultOpenSpec), root, request)
+		if err != nil || output.Snapshot == nil || output.Receipt == nil || output.Receipt.RequestID != request.RequestID || output.State != checkpointState(output.Snapshot) {
+			t.Fatalf("checkpoint %d = %#v, %v", cursor, output, err)
+		}
+		if cursor == 1 {
+			before, err := os.ReadDir(filepath.Join(root, "apply-evidence"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			replay, err := executeSddProgressCheckpoint(t, newSddProgressCommand(defaultOpenSpec), root, request)
+			after, readErr := os.ReadDir(filepath.Join(root, "apply-evidence"))
+			if err != nil || readErr != nil || replay.State != output.State || len(after) != len(before) {
+				t.Fatalf("replay = %#v, %v; batches=%d/%d", replay, err, len(before), len(after))
+			}
+		}
+		if output.Outcome == "continuation_required" {
+			if output.NextEntryIndex <= cursor || output.NextEntryID != entries[output.NextEntryIndex].EntryID {
+				t.Fatalf("continuation = %#v", output)
+			}
+			base, cursor = output.Snapshot, output.NextEntryIndex
+			continue
+		}
+		if output.Outcome != "committed" || cursor != len(entries)-1 {
+			t.Fatalf("final output = %#v", output)
+		}
+		base, cursor = output.Snapshot, len(entries)
+	}
+	resolved, err := (sddprogress.OpenSpec{Root: root}).Current()
+	if err != nil || resolved == nil || len(resolved.Coverage) != len(tasks) {
+		t.Fatalf("resolved = %#v, %v", resolved, err)
+	}
+	var recovered []applyprogress.EvidenceEntry
+	for _, ref := range resolved.Batches {
+		data, err := os.ReadFile(filepath.Join(root, "apply-evidence", ref.BatchID+".json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if utf8.RuneCount(data) > applyprogress.MaxDocumentRunes {
+			t.Fatalf("batch %q exceeds capacity", ref.BatchID)
+		}
+		batch, err := applyprogress.DecodeCanonicalBatch(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		recovered = append(recovered, batch.Entries...)
+	}
+	if len(recovered) != len(entries) || utf8.RuneCountInString(strings.Join(checkpointSummaries(recovered), "")) != 162725 {
+		t.Fatalf("recovered = %d entries", len(recovered))
+	}
+	for i := range entries {
+		if recovered[i].EntryID != entries[i].EntryID || recovered[i].Summary != entries[i].Summary {
+			t.Fatalf("entry %d = %#v", i, recovered[i])
+		}
+	}
+}
+
+func checkpointSummaries(entries []applyprogress.EvidenceEntry) []string {
+	summaries := make([]string, len(entries))
+	for i := range entries {
+		summaries[i] = entries[i].Summary
+	}
+	return summaries
+}
+
+func checkpointSnapshotCapacityRequest(t *testing.T) checkpointInput {
+	t.Helper()
+	tasks := []applyprogress.Task{{ID: "1", Text: "task"}}
+	_, manifest, err := applyprogress.TaskManifest(tasks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := applyprogress.Snapshot{Schema: applyprogress.SnapshotSchema, Project: "jarvis-dev", Change: "issue-653", Generation: 1, Revision: 1, TaskManifestSHA256: manifest, Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}}
+	for i := 0; ; i++ {
+		base.Batches = append(base.Batches, applyprogress.BatchRef{BatchID: fmt.Sprintf("apb-%032x", i+100), SHA256: strings.Repeat("a", 64)})
+		sealed, _, err := applyprogress.SealSnapshot(base)
+		if err != nil {
+			base.Batches = base.Batches[:len(base.Batches)-1]
+			base, _, err = applyprogress.SealSnapshot(base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+		base = sealed
+	}
+	return checkpointRequest(t, "capacity-snapshot", "apb-00000000000000000000000000000003", &base, 0, "entry-1", []applyprogress.EvidenceEntry{checkpointEntry("entry-1", "1", "fits")})
+}
+
+func TestSddProgressCheckpointRejectsStaleAndChangedRequestID(t *testing.T) {
+	root := t.TempDir()
+	first := checkpointRequest(t, "checkpoint-once", "apb-00000000000000000000000000000004", nil, 0, "entry-1", []applyprogress.EvidenceEntry{checkpointEntry("entry-1", "1", "evidence")})
+	output, err := executeSddProgressCheckpoint(t, newSddProgressCommand(defaultOpenSpec), root, first)
+	if err != nil || output.Outcome != "committed" {
+		t.Fatalf("first = %#v, %v", output, err)
+	}
+	base := output.Snapshot
+	stale := first
+	stale.RequestID, stale.BatchID = "checkpoint-stale", "apb-00000000000000000000000000000005"
+	output, err = executeSddProgressCheckpoint(t, newSddProgressCommand(defaultOpenSpec), root, stale)
+	if err != nil || output.Code != "stale" {
+		t.Fatalf("stale = %#v, %v", output, err)
+	}
+	changed := checkpointRequest(t, first.RequestID, "apb-00000000000000000000000000000006", base, 0, "entry-2", []applyprogress.EvidenceEntry{{EntryID: "entry-2", TaskIDs: []string{"1"}, CompletesTaskIDs: []string{}, Kind: applyprogress.EvidenceGreen, Summary: "changed", Command: "go test", Outcome: applyprogress.OutcomePass, Files: []string{}}})
+	output, err = executeSddProgressCheckpoint(t, newSddProgressCommand(defaultOpenSpec), root, changed)
+	if err != nil || output.Code != "request_id_conflict" {
+		t.Fatalf("changed ID = %#v, %v", output, err)
+	}
+}
+
+func TestSddProgressCheckpointRejectsDifferentIDCandidateReplay(t *testing.T) {
+	root := t.TempDir()
+	request := checkpointRequest(t, "checkpoint-once", "apb-00000000000000000000000000000007", nil, 0, "entry-1", []applyprogress.EvidenceEntry{checkpointEntry("entry-1", "1", "evidence")})
+	if output, err := executeSddProgressCheckpoint(t, newSddProgressCommand(defaultOpenSpec), root, request); err != nil || output.Outcome != "committed" {
+		t.Fatalf("first = %#v, %v", output, err)
+	}
+	request.RequestID = "checkpoint-different-id"
+	output, err := executeSddProgressCheckpoint(t, newSddProgressCommand(defaultOpenSpec), root, request)
+	if err != nil || output.Code != "request_id_conflict" || output.Receipt != nil {
+		t.Fatalf("replay = %#v, %v", output, err)
+	}
+}
+
+func checkpointRequest(t *testing.T, requestID, batchID string, base *applyprogress.Snapshot, index int, entryID string, entries []applyprogress.EvidenceEntry) checkpointInput {
+	t.Helper()
+	return checkpointInput{Project: "jarvis-dev", Change: "issue-653", Tasks: []applyprogress.Task{{ID: "1", Text: "task"}}, Base: base, ExpectedGeneration: checkpointState(base).Generation, ExpectedRevision: checkpointState(base).Revision, ExpectedDigest: checkpointState(base).Digest, RequestID: requestID, BatchID: batchID, Entries: entries, EntryIndex: index, EntryID: entryID}
+}
+
+func checkpointEntry(id, task, summary string) applyprogress.EvidenceEntry {
+	return applyprogress.EvidenceEntry{EntryID: id, TaskIDs: []string{task}, CompletesTaskIDs: []string{task}, Kind: applyprogress.EvidenceGreen, Summary: summary, Command: "go test", Outcome: applyprogress.OutcomePass, Files: []string{}}
+}
+
+func executeSddProgressCheckpoint(t *testing.T, cmd *cobra.Command, root string, request checkpointInput) (checkpointOutput, error) {
+	t.Helper()
+	data, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "checkpoint.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stdout)
+	cmd.SetArgs([]string{"checkpoint", "--root", root, "--request", path})
+	err = cmd.Execute()
+	var output checkpointOutput
 	if decodeErr := json.Unmarshal(stdout.Bytes(), &output); decodeErr != nil {
 		t.Fatalf("decode command output %q: %v", stdout.String(), decodeErr)
 	}
