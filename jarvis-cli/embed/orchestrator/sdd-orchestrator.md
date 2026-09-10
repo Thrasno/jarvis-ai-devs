@@ -428,13 +428,15 @@ The orchestrator resolves TDD status ONCE per session (at first apply/verify lau
 
 #### Bounded Apply-Progress Continuation (MANDATORY)
 
-When launching `sdd-apply` for a continuation batch, pass the canonical snapshot reference, expected generation/revision/digest, durable receipt state, and the next unpersisted entry. The executor MUST resolve the snapshot and its ordered immutable evidence batches through the dedicated progress reader before writing.
+When launching `sdd-apply` for a checkpoint or continuation, pass the canonical snapshot reference, expected generation/revision/digest, durable receipt state, complete ordered entries, and cursor. The executor MUST resolve the snapshot and its ordered immutable evidence batches through the dedicated progress reader before writing.
 
-1. Instruct the executor to append complete entries only, keep each serialized batch and snapshot at or below 40,000 Unicode runes, and request a guarded snapshot advance through `jarvis sdd progress advance`.
-2. On `continuation_required`, the checkpoint is committed: preserve its receipt and continue from the returned entry boundary.
-3. On transport loss or missing-side hybrid publication, replay the exact payload with the same request ID; repair only the receipt-recorded missing side.
-4. On conflict, invalid/capacity outcome, migration failure, or `backend_diverged`, STOP and forward the typed recovery/current state. Do not pick a backend winner, synthesize a replacement snapshot, or route downstream.
-5. For legacy progress, authorize migration only on the next mutating apply and preserve the legacy source until guarded v2 publication succeeds.
+1. Instruct the executor to use `jarvis sdd progress checkpoint`, retain a stable base snapshot and cursor, and keep each serialized batch and snapshot at or below 40,000 Unicode runes. One command plans and commits at most one whole-entry prefix.
+2. On `committed`, record the returned state and receipt. On `continuation_required`, preserve its receipt and continue only from the returned snapshot, coordinates, `next_entry_index`, and `next_entry_id`; create a new request ID and batch ID only after `continuation_required`.
+3. On `evidence_item_too_large` or `snapshot_capacity_exhausted`, STOP without a write or cursor advance and forward the typed recovery. These outcomes are not generic low-level capacity failures.
+4. On transport loss or missing-side hybrid publication, replay the same request ID, batch ID, base, cursor, and byte-identical payload; repair only the receipt-recorded missing side.
+5. On conflict, migration failure, invalid evidence, or `backend_diverged`, STOP and forward the typed recovery/current state. Do not pick a backend winner, synthesize a replacement snapshot, or route downstream.
+6. `advance` is retained only for recovery/compatibility of an already planned batch and snapshot. Do not ask low-level `advance`, HTTP, or MCP to select prefixes or plan capacity.
+7. For legacy progress, authorize migration only on the next mutating apply and preserve the legacy source until guarded v2 publication succeeds.
 
 Do not instruct an executor to merge or rewrite cumulative apply-progress observations. General `mem_save` is not an apply-progress replacement and must not be presented as a recovery path. This preserves durable evidence without losing prior batches.
 

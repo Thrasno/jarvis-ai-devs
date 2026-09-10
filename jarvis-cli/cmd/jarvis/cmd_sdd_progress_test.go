@@ -537,6 +537,40 @@ func TestConfiguredSddProgressCheckpointUsesHiveAndHybridStores(t *testing.T) {
 	}
 }
 
+func TestSddProgressCheckpointContinuationParityAcrossStores(t *testing.T) {
+	for _, mode := range []string{"openspec", "hive", "hybrid"} {
+		t.Run(mode, func(t *testing.T) {
+			root := t.TempDir()
+			open, hive := &configuredCheckpointBackend{}, &configuredCheckpointBackend{}
+			oldOpen, oldHive := newProgressOpenSpec, newProgressHive
+			t.Cleanup(func() { newProgressOpenSpec, newProgressHive = oldOpen, oldHive })
+			newProgressOpenSpec = func(string) progressAdvancer { return open }
+			newProgressHive = func() (progressAdvancer, error) { return hive, nil }
+			t.Setenv("JARVIS_SDD_STORE_MODE", mode)
+			tasks := []applyprogress.Task{{ID: "1", Text: "one"}, {ID: "2", Text: "two"}}
+			entries := []applyprogress.EvidenceEntry{
+				checkpointEntry("entry-1", "1", strings.Repeat("é", 32545)),
+				checkpointEntry("entry-2", "2", strings.Repeat("é", 32545)),
+			}
+			first := checkpointInput{Project: "jarvis-dev", Change: "issue-653", Tasks: tasks, RequestID: "parity-first-" + mode, BatchID: "apb-00000000000000000000000000000012", Entries: entries, EntryID: "entry-1"}
+			output, err := executeSddProgressCheckpoint(t, newSddProgressCommand(configuredProgressStore), root, first)
+			if err != nil || output.Outcome != "continuation_required" || output.NextEntryIndex != 1 || output.NextEntryID != "entry-2" {
+				t.Fatalf("first checkpoint = %#v, %v", output, err)
+			}
+			second := first
+			second.Base, second.ExpectedGeneration, second.ExpectedRevision, second.ExpectedDigest = output.Snapshot, output.State.Generation, output.State.Revision, output.State.Digest
+			second.RequestID, second.BatchID, second.EntryIndex, second.EntryID = "parity-second-"+mode, "apb-00000000000000000000000000000013", output.NextEntryIndex, output.NextEntryID
+			output, err = executeSddProgressCheckpoint(t, newSddProgressCommand(configuredProgressStore), root, second)
+			if err != nil || output.Outcome != "committed" || output.Snapshot == nil || output.Snapshot.Generation != 2 {
+				t.Fatalf("continuation = %#v, %v", output, err)
+			}
+			if mode == "openspec" && len(open.calls) != 2 || mode == "hive" && len(hive.calls) != 2 || mode == "hybrid" && (len(open.calls) != 2 || len(hive.calls) != 2) {
+				t.Fatalf("store calls open=%d hive=%d", len(open.calls), len(hive.calls))
+			}
+		})
+	}
+}
+
 func TestSddProgressCheckpointRecoversHybridReceiptBeforeDivergence(t *testing.T) {
 	for name, hiveFirst := range map[string]bool{"openspec then hive": false, "hive then openspec": true} {
 		t.Run(name, func(t *testing.T) {

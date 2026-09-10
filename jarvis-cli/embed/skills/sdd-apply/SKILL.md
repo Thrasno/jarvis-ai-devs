@@ -186,13 +186,14 @@ Update the persisted tasks artifact — change `- [ ]` to `- [x]` for completed 
 
 **This step is MANDATORY — do NOT skip it.**
 
-Use `jarvis sdd progress advance` for every progress checkpoint. Append only complete evidence entries into immutable evidence batches, then submit a guarded snapshot advance with the expected generation, revision, digest, and a collision-resistant request ID. The final serialized snapshot and every batch MUST be at most 40,000 Unicode runes. Do not use `mcp__hive__mem_save` to write, replace, or recover apply-progress.
+Use `jarvis sdd progress checkpoint` for every normal executor checkpoint. Submit the ordered complete entries with a stable base snapshot and cursor, expected generation/revision/digest, collision-resistant request ID, and fresh batch ID. It plans at most one whole-entry prefix; the final serialized snapshot and every batch MUST be at most 40,000 Unicode runes. Do not use `mcp__hive__mem_save` to write, replace, or recover apply-progress.
 
-- On success, record the committed state and durable receipt, then mark the matching persisted task checkbox `[x]`.
-- On `continuation_required`, the checkpoint succeeded: retain the receipt, resume at the supplied next unpersisted entry, and do not truncate, summarize, or rewrite an entry.
-- On `evidence_item_too_large` or `snapshot_capacity_exhausted`, STOP without advancing completion and return the typed recovery direction.
-- On a transport loss or missing-side hybrid recovery, Retry the same request ID and exact payload. Replay only the receipt-recorded missing side; never rewrite a committed side.
+- On `committed`, record the committed state and durable receipt, then mark the matching persisted task checkbox `[x]`.
+- On `continuation_required`, the prefix is committed: retain the receipt and resume only from the returned snapshot, expected coordinates, `next_entry_index`, and `next_entry_id`; use a new request ID and new batch ID only after `continuation_required`.
+- On `evidence_item_too_large`, STOP with no write: the first pending whole entry cannot fit. On `snapshot_capacity_exhausted`, STOP with no write: reconciliation or protocol evolution is required. Neither result advances completion.
+- On transport loss or missing-side hybrid recovery, retry the same request ID, batch ID, base, cursor, and byte-identical payload. Replay only the receipt-recorded missing side; never rewrite a committed side.
 - On conflict, migration failure, invalid evidence, or `backend_diverged`, STOP and return the typed current state/recovery. Do not choose a backend winner or create a replacement snapshot.
+- low-level `advance` remains a recovery/compatibility primitive for an already planned batch and snapshot. Do not ask `advance`, HTTP, or MCP to select prefixes or plan capacity. Their generic defensive capacity outcome is not a checkpoint capacity outcome.
 - For a legacy artifact, only the next authorized mutation may invoke guarded migration. Keep the legacy source authoritative until the v2 snapshot and referenced batches commit; failure leaves it readable and retryable.
 
 For legacy marker compatibility only, include `status: partial` on its own line when work remains and record `status: complete` only after validated complete coverage. The v2 snapshot and its referenced batches—not free-form cumulative prose—are authoritative.
