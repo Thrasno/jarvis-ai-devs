@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress/filelock"
@@ -211,6 +212,9 @@ func payloadDigest(snapshot []byte, request AdvanceRequest) string {
 }
 
 func syncDir(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	directory, err := os.Open(path)
 	if err != nil {
 		return err
