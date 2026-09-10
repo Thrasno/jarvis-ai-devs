@@ -1,7 +1,10 @@
 package sddprogress
 
 import (
+	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -54,6 +57,31 @@ func (b *retryBackend) Advance(AdvanceRequest) (AdvanceResult, error) {
 func (b *retryBackend) Current(AdvanceRequest) (AdvanceResult, error) {
 	b.currentCalls++
 	return b.current, b.currentErr
+}
+
+func TestHybridLegacyUpgradeRestoresSourceAfterHiveFailure(t *testing.T) {
+	root := t.TempDir()
+	legacy := []byte("status: complete\n")
+	if err := os.WriteFile(filepath.Join(root, "apply-progress.md"), legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "tasks.md"), []byte("- [x] 1.1 task\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hive := &retryBackend{err: errInterrupted}
+	h := Hybrid{Root: root, OpenSpec: OpenSpec{Root: root}, Hive: hive}
+	r := legacyRequest(t, "hybrid-legacy")
+	if _, upgraded, err := h.UpgradeLegacy(r); !upgraded || !errors.Is(err, errInterrupted) {
+		t.Fatalf("upgrade=%t err=%v", upgraded, err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, "apply-progress.md")); !bytes.Equal(got, legacy) {
+		t.Fatalf("legacy source changed: %q", got)
+	}
+	hive.err = nil
+	result, upgraded, err := h.UpgradeLegacy(r)
+	if err != nil || !upgraded || result.Generation != 1 || hive.calls != 2 {
+		t.Fatalf("retry=%#v upgraded=%t err=%v calls=%d", result, upgraded, err, hive.calls)
+	}
 }
 
 func TestHybridRetriesOnlyRecordedMissingSide(t *testing.T) {

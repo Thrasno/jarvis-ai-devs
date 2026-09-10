@@ -243,13 +243,34 @@ func applyProgressState(progressContent, tasksContent string) ArtifactState {
 	if hasPartialMarker {
 		return ArtifactPartial
 	}
-	if hasCompleteMarker {
+	if hasCompleteMarker && legacyTasksComplete(tasksContent) {
 		return ArtifactDone
 	}
-	if progress := parseTaskProgress(tasksContent); progress != nil && progress.AllDone {
+	if !hasCompleteMarker && legacyTasksComplete(tasksContent) {
 		return ArtifactDone
 	}
 	return ArtifactPartial
+}
+
+func legacyTasksComplete(content string) bool {
+	seen := map[string]bool{}
+	count := 0
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "- [") {
+			continue
+		}
+		if len(line) < 6 || (line[3] != 'x' && line[3] != ' ') || line[4] != ']' {
+			return false
+		}
+		fields := strings.Fields(line[5:])
+		if len(fields) < 2 || fields[0][0] < '0' || fields[0][0] > '9' || seen[fields[0]] || line[3] != 'x' {
+			return false
+		}
+		seen[fields[0]] = true
+		count++
+	}
+	return count > 0
 }
 
 func (o *OpenSpecSource) ListChanges(_ context.Context) ([]string, error) {

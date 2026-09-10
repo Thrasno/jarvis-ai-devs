@@ -340,6 +340,50 @@ func validArchiveRequest(t *testing.T, requestID string, status applyprogress.St
 	return r
 }
 
+func TestLegacyConversionRejectsOneFieldTaskRow(t *testing.T) {
+	root := t.TempDir()
+	tasks := filepath.Join(root, "tasks.md")
+	if err := os.WriteFile(tasks, []byte("- [x] 1.1 task\n- [x] garbage\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := legacyConversion([]byte("status: complete\n"), tasks); !errors.Is(err, ErrLegacyMigration) {
+		t.Fatalf("legacyConversion error = %v", err)
+	}
+}
+
+func TestLegacyConversionRejectsNondigitMultiwordTaskID(t *testing.T) {
+	root := t.TempDir()
+	tasks := filepath.Join(root, "tasks.md")
+	if err := os.WriteFile(tasks, []byte("- [x] 1.1 task\n- [x] garbage words\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := legacyConversion([]byte("status: complete\n"), tasks); !errors.Is(err, ErrLegacyMigration) {
+		t.Fatalf("legacyConversion error = %v", err)
+	}
+}
+
+func TestLegacyConversionRejectsMalformedTaskMarker(t *testing.T) {
+	root := t.TempDir()
+	tasks := filepath.Join(root, "tasks.md")
+	if err := os.WriteFile(tasks, []byte("- [x] 1.1 task\n- [z] 1.2 malformed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := legacyConversion([]byte("status: complete\n"), tasks); !errors.Is(err, ErrLegacyMigration) {
+		t.Fatalf("legacyConversion error = %v, want migration failure", err)
+	}
+}
+
+func TestLegacyConversionRejectsCompleteMarkerWithIncompleteTasks(t *testing.T) {
+	root := t.TempDir()
+	tasks := filepath.Join(root, "tasks.md")
+	if err := os.WriteFile(tasks, []byte("- [x] 1.1 done\n- [ ] 1.2 pending\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := legacyConversion([]byte("status: complete\n"), tasks); !errors.Is(err, ErrLegacyMigration) {
+		t.Fatalf("legacyConversion error = %v, want migration failure", err)
+	}
+}
+
 func TestOpenSpecLegacyUpgradeCommitsOnlyAfterConversion(t *testing.T) {
 	root := t.TempDir()
 	legacy := []byte("status: complete\n")
@@ -384,6 +428,34 @@ func TestOpenSpecLegacyUpgradeFailurePreservesSourceAndReadOnlyArchive(t *testin
 	}
 }
 
+func TestOpenSpecLegacyUpgradeRestoresSourceAfterPostRenameSyncFailure(t *testing.T) {
+	root := t.TempDir()
+	legacy := []byte("status: complete\n")
+	if err := os.WriteFile(filepath.Join(root, "apply-progress.md"), legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "tasks.md"), []byte("- [x] 1.1 task\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := legacyRequest(t, "legacy-sync")
+	store := OpenSpec{Root: root, SyncDir: func(path string) error {
+		if path == root {
+			return errInterrupted
+		}
+		return nil
+	}}
+	if _, _, err := store.UpgradeLegacy(r); !errors.Is(err, errInterrupted) {
+		t.Fatalf("upgrade error = %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, "apply-progress.md")); !bytes.Equal(got, legacy) {
+		t.Fatalf("legacy source changed: %q", got)
+	}
+	result, upgraded, err := (OpenSpec{Root: root}).UpgradeLegacy(r)
+	if err != nil || !upgraded || result.Generation != 1 {
+		t.Fatalf("retry upgrade = %#v, %t, %v", result, upgraded, err)
+	}
+}
+
 func TestOpenSpecLegacyUpgradeInterruptedCommitPreservesSource(t *testing.T) {
 	root := t.TempDir()
 	legacy := []byte("status: complete\n")
@@ -400,6 +472,10 @@ func TestOpenSpecLegacyUpgradeInterruptedCommitPreservesSource(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(filepath.Join(root, "apply-progress.md")); !bytes.Equal(got, legacy) {
 		t.Fatalf("legacy source changed: %q", got)
+	}
+	result, upgraded, err := (OpenSpec{Root: root}).UpgradeLegacy(r)
+	if err != nil || !upgraded || result.Generation != 1 {
+		t.Fatalf("retry upgrade = %#v, %t, %v", result, upgraded, err)
 	}
 }
 

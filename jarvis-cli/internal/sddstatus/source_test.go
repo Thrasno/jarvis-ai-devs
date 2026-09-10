@@ -53,11 +53,15 @@ func TestOpenSpecSourceClassifiesApplyProgressWithExplicitAndLegacyMarkers(t *te
 		want     sddstatus.ArtifactState
 	}{
 		{name: "explicit partial marker", progress: "status: partial\n- [x] T1\n", tasks: "- [x] T1\n", want: sddstatus.ArtifactPartial},
-		{name: "explicit complete marker", progress: "status: complete\n", tasks: "- [x] T1\n- [ ] T2\n", want: sddstatus.ArtifactDone},
+		{name: "explicit complete marker with incomplete tasks fails closed", progress: "status: complete\n", tasks: "- [x] 1.1 first\n- [ ] 1.2 second\n", want: sddstatus.ArtifactPartial},
+		{name: "explicit complete marker with duplicate task is ambiguous", progress: "status: complete\n", tasks: "- [x] 1.1 first\n- [x] 1.1 duplicate\n", want: sddstatus.ArtifactPartial},
 		{name: "malformed marker fails closed", progress: "status:complete\n", tasks: "- [x] T1\n", want: sddstatus.ArtifactPartial},
+		{name: "malformed task marker fails closed", progress: "status: complete\n", tasks: "- [x] 1.1 task\n- [z] 1.2 malformed\n", want: sddstatus.ArtifactPartial},
+		{name: "one-field task row fails closed", progress: "status: complete\n", tasks: "- [x] 1.1 task\n- [x] garbage\n", want: sddstatus.ArtifactPartial},
+		{name: "nondigit multiword task ID fails closed", progress: "status: complete\n", tasks: "- [x] 1.1 task\n- [x] garbage words\n", want: sddstatus.ArtifactPartial},
 		{name: "conflicting markers fail closed", progress: "status: complete\nstatus: partial\n", tasks: "- [x] T1\n", want: sddstatus.ArtifactPartial},
-		{name: "legacy progress needs deterministic task completion", progress: "legacy progress\n", tasks: "- [x] T1\n- [x] T2\n", want: sddstatus.ArtifactDone},
-		{name: "legacy progress with incomplete tasks fails closed", progress: "legacy progress\n", tasks: "- [x] T1\n- [ ] T2\n", want: sddstatus.ArtifactPartial},
+		{name: "legacy progress needs deterministic task completion", progress: "legacy progress\n", tasks: "- [x] 1.1 task\n- [x] 1.2 task\n", want: sddstatus.ArtifactDone},
+		{name: "legacy progress with incomplete tasks fails closed", progress: "legacy progress\n", tasks: "- [x] 1.1 task\n- [ ] 1.2 task\n", want: sddstatus.ArtifactPartial},
 	}
 
 	for _, tt := range tests {
@@ -146,12 +150,12 @@ func TestHybridSourceReclassifiesApplyProgressAfterMergingContents(t *testing.T)
 		{
 			name:          "hive progress uses OpenSpec task evidence",
 			hiveArtifacts: `[{"artifact":"apply-progress","content":"legacy progress"}]`,
-			openSpecFiles: map[string]string{"tasks.md": "- [x] T1\n- [x] T2\n"},
+			openSpecFiles: map[string]string{"tasks.md": "- [x] 1.1 task\n- [x] 1.2 task\n"},
 			want:          sddstatus.ArtifactDone,
 		},
 		{
 			name:          "OpenSpec progress uses Hive task evidence",
-			hiveArtifacts: `[{"artifact":"tasks","content":"- [x] T1\n- [x] T2\n"}]`,
+			hiveArtifacts: `[{"artifact":"tasks","content":"- [x] 1.1 task\n- [x] 1.2 task\n"}]`,
 			openSpecFiles: map[string]string{"apply-progress.md": "legacy progress\n"},
 			want:          sddstatus.ArtifactDone,
 		},
