@@ -175,20 +175,44 @@ func TestApplyStartupSyncConfig(t *testing.T) {
 
 // ─── 6.1 Startup ───────────────────────────────────────────────────────────
 
-func TestDaemon_Starts_AndRegisters10Tools(t *testing.T) {
+func TestDaemon_Starts_AndRegistersRequiredTools(t *testing.T) {
 	session := spawnDaemon(t)
 	ctx := context.Background()
 
-	var toolNames []string
+	want := map[string]bool{
+		"mem_context":                true,
+		"mem_get_observation":        true,
+		"mem_save":                   true,
+		"mem_save_prompt":            true,
+		"mem_search":                 true,
+		"mem_session_end":            true,
+		"mem_session_start":          true,
+		"mem_session_summary":        true,
+		"mem_suggest_topic_key":      true,
+		"mem_sync":                   true,
+		"sdd_apply_progress_advance": true,
+		"sdd_apply_progress_get":     true,
+	}
+	got := make(map[string]bool, len(want))
 	for tool, err := range session.Tools(ctx, nil) {
 		if err != nil {
 			t.Fatalf("Tools() error: %v", err)
 		}
-		toolNames = append(toolNames, tool.Name)
+		got[tool.Name] = true
 	}
 
-	if len(toolNames) != 10 {
-		t.Errorf("expected 10 tools, got %d: %v", len(toolNames), toolNames)
+	if len(got) != len(want) {
+		t.Errorf("registered %d tools, want %d: %v", len(got), len(want), got)
+	}
+	for name := range want {
+		if !got[name] {
+			t.Errorf("required tool %q was not registered", name)
+		}
+	}
+	for name := range got {
+		if !want[name] {
+			t.Errorf("unexpected tool %q was registered", name)
+		}
 	}
 }
 
