@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
@@ -14,13 +15,10 @@ import (
 
 // OpenSpec exposes the Go-only atomic publication seam used by a later adapter.
 type OpenSpec struct {
-	Root         string
-	BeforeRename func() error       // Test-only interruption point after durable staging.
-	SyncDir      func(string) error // Test-only durability observer.
-}
-
-type receipt struct {
-	Payload string `json:"payload"`
+	Root                  string
+	BeforeRename          func() error       // Test-only interruption point after durable staging.
+	BeforeArchiveValidate func() error       // Test-only hook after archive lock acquisition.
+	SyncDir               func(string) error // Test-only durability observer.
 }
 
 func (s OpenSpec) Advance(request AdvanceRequest) (AdvanceResult, error) {
@@ -143,6 +141,66 @@ func (s OpenSpec) publish(data []byte) error {
 		return err
 	}
 	return s.syncDir(s.Root)
+}
+
+// Archive validates the authoritative snapshot before atomically moving the
+// complete change topology, including immutable evidence and request receipts.
+func (s OpenSpec) Archive(destination string) error {
+	unlock, err := s.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if s.BeforeArchiveValidate != nil {
+		if err := s.BeforeArchiveValidate(); err != nil {
+			return err
+		}
+	}
+	snapshot, data, err := s.current()
+	if err != nil || snapshot == nil {
+		return ErrMissingBatch
+	}
+	if snapshot.Status != applyprogress.StatusComplete {
+		return ErrConflict
+	}
+	if err := s.validateArchive(*snapshot, data); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		return err
+	}
+	if err := os.Rename(s.Root, destination); err != nil {
+		return err
+	}
+	return s.syncDir(filepath.Dir(destination))
+}
+
+func (s OpenSpec) validateArchive(snapshot applyprogress.Snapshot, data []byte) error {
+	taskData, err := os.ReadFile(filepath.Join(s.Root, "tasks.md"))
+	if err != nil {
+		return err
+	}
+	var tasks []applyprogress.Task
+	for _, line := range strings.Split(string(taskData), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "- [") {
+			continue
+		}
+		end := strings.Index(line, "]")
+		fields := strings.Fields(line[end+1:])
+		if end >= 0 && len(fields) > 1 {
+			tasks = append(tasks, applyprogress.Task{ID: fields[0], Text: strings.Join(fields[1:], " ")})
+		}
+	}
+	batches := make(map[string][]byte, len(snapshot.Batches))
+	for _, ref := range snapshot.Batches {
+		batch, err := os.ReadFile(filepath.Join(s.Root, "apply-evidence", ref.BatchID+".json"))
+		if err != nil {
+			return ErrMissingBatch
+		}
+		batches[ref.BatchID] = batch
+	}
+	return applyprogress.ValidateProgress(data, tasks, batches)
 }
 
 func (s OpenSpec) lock() (func(), error) {
