@@ -142,6 +142,26 @@ func (b *commandProgressBackend) Current(sddprogress.AdvanceRequest) (sddprogres
 	return b.current, nil
 }
 
+func TestConfiguredSddProgressAdvanceUpgradesLegacyInHybridMode(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "apply-progress.md"), []byte("status: complete\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "tasks.md"), []byte("- [x] 1.1 task\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hive := &commandProgressBackend{}
+	oldOpen, oldHive := newProgressOpenSpec, newProgressHive
+	t.Cleanup(func() { newProgressOpenSpec, newProgressHive = oldOpen, oldHive })
+	newProgressOpenSpec = defaultOpenSpec
+	newProgressHive = func() (progressAdvancer, error) { return hive, nil }
+	t.Setenv("JARVIS_SDD_STORE_MODE", "hybrid")
+	out, err := runSddProgressAdvance(configuredProgressStore(root), root, progressLegacyRequest(t))
+	if err != nil || out.Outcome != "committed" || hive.calls != 1 {
+		t.Fatalf("upgrade = %#v, %v; hive calls=%d", out, err, hive.calls)
+	}
+}
+
 func TestConfiguredSddProgressAdvanceUsesHybridReceiptRecovery(t *testing.T) {
 	interrupted := errors.New("interrupted hive")
 	root, request := t.TempDir(), progressRequest(t, "hybrid", "apb-00000000000000000000000000000001", 1, "")
