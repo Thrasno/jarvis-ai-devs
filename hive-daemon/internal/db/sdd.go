@@ -150,7 +150,7 @@ func (d *DB) ListSDDChanges(project string, artifacts []string, after string, li
 	return changes, rows.Err()
 }
 
-func sddCandidateQuery(project, prefix string, artifacts []string) (string, []any, error) {
+func sddCandidateQuery(project, prefix string, _ []string) (string, []any, error) {
 	selection, err := newSQLiteTopicSelection(TopicSelector{TopicPrefix: prefix})
 	if err != nil {
 		return "", nil, err

@@ -95,6 +95,43 @@ func TestValidateProgress(t *testing.T) {
 	}
 }
 
+func TestValidateEvidenceCoverage(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		edit func(*Snapshot, map[string]Batch)
+		want ValidationCode
+	}{
+		{"accepts matching completed evidence", nil, ""},
+		{"rejects coverage without matching completion", func(snapshot *Snapshot, _ map[string]Batch) {
+			snapshot.Coverage[0].EntryID = "green"
+		}, CodeInvalidCoverage},
+		{"rejects complete snapshot without coverage or batches", func(snapshot *Snapshot, batches map[string]Batch) {
+			snapshot.Coverage = []Coverage{}
+			snapshot.Batches = []BatchRef{}
+			clear(batches)
+		}, CodeInvalidCoverage},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			snapshot, _, rawBatches := validatedFixture(t)
+			batches := map[string]Batch{}
+			for id, raw := range rawBatches {
+				batches[id] = mustBatch(t, map[string][]byte{id: raw})
+			}
+			if tt.edit != nil {
+				tt.edit(&snapshot, batches)
+			}
+			err := ValidateEvidenceCoverage(snapshot, batches)
+			if tt.want == "" && err == nil {
+				return
+			}
+			var outcome *ValidationError
+			if !errors.As(err, &outcome) || outcome.Code != tt.want {
+				t.Fatalf("ValidateEvidenceCoverage() error = %#v, want code %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func validatedFixture(t *testing.T) (Snapshot, []Task, map[string][]byte) {
 	t.Helper()
 	tasks, manifest, err := TaskManifest([]Task{{ID: "1.1", Text: "RED"}, {ID: "1.2", Text: "GREEN"}})
