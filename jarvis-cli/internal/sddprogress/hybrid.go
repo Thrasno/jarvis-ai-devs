@@ -45,6 +45,14 @@ type currentBackend interface {
 	Current(AdvanceRequest) (AdvanceResult, error)
 }
 
+type snapshotBackend interface {
+	CurrentSnapshot(AdvanceRequest) (*applyprogress.Snapshot, error)
+}
+
+type openSpecSnapshotBackend interface {
+	Current() (*applyprogress.Snapshot, error)
+}
+
 type legacyBackend interface {
 	UpgradeLegacy(AdvanceRequest) (AdvanceResult, bool, error)
 }
@@ -73,6 +81,40 @@ type Hybrid struct {
 	OpenSpec  advanceBackend
 	Hive      advanceBackend
 	HiveFirst bool // Test seam for either interrupted publication direction.
+}
+
+// Current accepts only independently validated matching snapshots.
+func (h Hybrid) Current(request AdvanceRequest) (*applyprogress.Snapshot, error) {
+	open, ok := h.OpenSpec.(openSpecSnapshotBackend)
+	if !ok {
+		return nil, ErrBackendDiverged
+	}
+	hive, ok := h.Hive.(snapshotBackend)
+	if !ok {
+		return nil, ErrBackendDiverged
+	}
+	left, leftErr := open.Current()
+	right, rightErr := hive.CurrentSnapshot(request)
+	if leftErr != nil || rightErr != nil || (left == nil) != (right == nil) {
+		return nil, ErrBackendDiverged
+	}
+	if left == nil {
+		return nil, nil
+	}
+	if !sameSnapshot(*left, *right) {
+		return nil, ErrBackendDiverged
+	}
+	return left, nil
+}
+
+// HasReceipt identifies an exact partially committed request for missing-side recovery.
+func (h Hybrid) HasReceipt(request AdvanceRequest) bool {
+	receipt, found, err := h.receipt(request.RequestID)
+	if err != nil || !found || receipt.Payload != payloadDigestFor(request) {
+		return false
+	}
+	missing := func(outcome receiptOutcome) bool { return outcome == receiptPending || outcome == receiptFailed }
+	return (receipt.OpenSpec == receiptCommitted && missing(receipt.Hive)) || (receipt.Hive == receiptCommitted && missing(receipt.OpenSpec))
 }
 
 func (h Hybrid) UpgradeLegacy(request AdvanceRequest) (AdvanceResult, bool, error) {

@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -14,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress"
 )
 
@@ -464,6 +468,151 @@ func executeSddProgressCheckpoint(t *testing.T, cmd *cobra.Command, root string,
 		t.Fatalf("decode command output %q: %v", stdout.String(), decodeErr)
 	}
 	return output, err
+}
+
+type configuredCheckpointBackend struct {
+	current    *applyprogress.Snapshot
+	calls      []sddprogress.AdvanceRequest
+	seen       map[string]sddprogress.AdvanceRequest
+	advanceErr error
+}
+
+func (b *configuredCheckpointBackend) Current() (*applyprogress.Snapshot, error) {
+	return b.current, nil
+}
+func (b *configuredCheckpointBackend) CurrentSnapshot(sddprogress.AdvanceRequest) (*applyprogress.Snapshot, error) {
+	return b.current, nil
+}
+
+func (b *configuredCheckpointBackend) Advance(request sddprogress.AdvanceRequest) (sddprogress.AdvanceResult, error) {
+	b.calls = append(b.calls, request)
+	if prior, found := b.seen[request.RequestID]; found && !reflect.DeepEqual(prior, request) {
+		return sddprogress.AdvanceResult{}, sddprogress.ErrRequestConflict
+	}
+	if b.advanceErr != nil {
+		return sddprogress.AdvanceResult{}, b.advanceErr
+	}
+	if b.seen == nil {
+		b.seen = map[string]sddprogress.AdvanceRequest{}
+	}
+	b.seen[request.RequestID] = request
+	b.current = &request.Snapshot
+	return checkpointState(&request.Snapshot), nil
+}
+
+func TestConfiguredSddProgressCheckpointUsesHiveAndHybridStores(t *testing.T) {
+	for _, mode := range []string{"hive", "hybrid"} {
+		t.Run(mode, func(t *testing.T) {
+			root := t.TempDir()
+			open, hive := &configuredCheckpointBackend{}, &configuredCheckpointBackend{}
+			oldOpen, oldHive := newProgressOpenSpec, newProgressHive
+			t.Cleanup(func() { newProgressOpenSpec, newProgressHive = oldOpen, oldHive })
+			newProgressOpenSpec = func(string) progressAdvancer { return open }
+			newProgressHive = func() (progressAdvancer, error) { return hive, nil }
+			t.Setenv("JARVIS_SDD_STORE_MODE", mode)
+			request := checkpointRequest(t, "checkpoint-"+mode, "apb-00000000000000000000000000000008", nil, 0, "entry-1", []applyprogress.EvidenceEntry{checkpointEntry("entry-1", "1", "evidence")})
+
+			output, err := executeSddProgressCheckpoint(t, newSddProgressCommand(configuredProgressStore), root, request)
+			if err != nil || output.Outcome != "committed" || output.State != checkpointState(output.Snapshot) {
+				t.Fatalf("checkpoint = %#v, %v", output, err)
+			}
+			if len(hive.calls) != 1 || hive.calls[0].RequestID != request.RequestID || hive.calls[0].Batches[0].BatchID != request.BatchID {
+				t.Fatalf("hive request = %#v", hive.calls)
+			}
+			replay, err := executeSddProgressCheckpoint(t, newSddProgressCommand(configuredProgressStore), root, request)
+			if err != nil || replay.State != output.State {
+				t.Fatalf("replay = %#v, %v", replay, err)
+			}
+			changed := request
+			changed.Entries = append([]applyprogress.EvidenceEntry{}, request.Entries...)
+			changed.Entries[0].Summary = "changed evidence"
+			conflict, err := executeSddProgressCheckpoint(t, newSddProgressCommand(configuredProgressStore), root, changed)
+			if err != nil || conflict.Code != "request_id_conflict" {
+				t.Fatalf("changed replay = %#v, %v", conflict, err)
+			}
+			if mode == "hybrid" && (len(open.calls) != 1 || len(hive.calls) != 1) {
+				t.Fatalf("hybrid rewrote committed side: calls=%d/%d", len(open.calls), len(hive.calls))
+			}
+		})
+	}
+}
+
+func TestSddProgressCheckpointRecoversHybridReceiptBeforeDivergence(t *testing.T) {
+	for name, hiveFirst := range map[string]bool{"openspec then hive": false, "hive then openspec": true} {
+		t.Run(name, func(t *testing.T) {
+			root, interrupted := t.TempDir(), errors.New("interrupted")
+			open, hive := &configuredCheckpointBackend{}, &configuredCheckpointBackend{}
+			if hiveFirst {
+				open.advanceErr = interrupted
+			} else {
+				hive.advanceErr = interrupted
+			}
+			command := newSddProgressCommand(func(root string) progressAdvancer {
+				return sddprogress.Hybrid{Root: root, OpenSpec: open, Hive: hive, HiveFirst: hiveFirst}
+			})
+			request := checkpointRequest(t, "recovery-"+strings.ReplaceAll(name, " ", "-"), "apb-00000000000000000000000000000009", nil, 0, "entry-1", []applyprogress.EvidenceEntry{checkpointEntry("entry-1", "1", "evidence")})
+			if _, err := executeSddProgressCheckpoint(t, command, root, request); !errors.Is(err, sddprogress.ErrBackendDiverged) {
+				t.Fatalf("initial error = %v", err)
+			}
+			open.advanceErr, hive.advanceErr = nil, nil
+			output, err := executeSddProgressCheckpoint(t, command, root, request)
+			if err != nil || output.Outcome != "committed" {
+				t.Fatalf("replay = %#v, %v", output, err)
+			}
+			if hiveFirst && (len(hive.calls) != 1 || len(open.calls) != 2) {
+				t.Fatalf("hive-first calls = %d/%d", len(open.calls), len(hive.calls))
+			}
+			if !hiveFirst && (len(open.calls) != 1 || len(hive.calls) != 2) {
+				t.Fatalf("openspec-first calls = %d/%d", len(open.calls), len(hive.calls))
+			}
+		})
+	}
+}
+
+func TestSddProgressCheckpointBlocksDivergentCompletedHybridReceipt(t *testing.T) {
+	root := t.TempDir()
+	open, hive := &configuredCheckpointBackend{}, &configuredCheckpointBackend{}
+	command := newSddProgressCommand(func(root string) progressAdvancer {
+		return sddprogress.Hybrid{Root: root, OpenSpec: open, Hive: hive}
+	})
+	request := checkpointRequest(t, "completed-divergence", "apb-00000000000000000000000000000011", nil, 0, "entry-1", []applyprogress.EvidenceEntry{checkpointEntry("entry-1", "1", "evidence")})
+	if output, err := executeSddProgressCheckpoint(t, command, root, request); err != nil || output.Outcome != "committed" {
+		t.Fatalf("commit = %#v, %v", output, err)
+	}
+	hive.current = nil
+	output, err := executeSddProgressCheckpoint(t, command, root, request)
+	if !errors.Is(err, sddprogress.ErrBackendDiverged) || output.Code != "backend_diverged" || len(open.calls) != 1 || len(hive.calls) != 1 {
+		t.Fatalf("divergence = %#v, %v; calls=%d/%d", output, err, len(open.calls), len(hive.calls))
+	}
+}
+
+func TestConfiguredSddProgressCheckpointTreatsHiveNotFoundAsInitial(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"outcome":"invalid","code":"validation"}`))
+			return
+		}
+		var request hiveclient.ApplyProgressAdvanceRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(hiveclient.ApplyProgressResult{Outcome: "committed", State: hiveclient.ApplyProgressState{Generation: request.Snapshot.Generation, Revision: request.Snapshot.Revision, Digest: request.Snapshot.Digest, Snapshot: request.Snapshot}})
+	}))
+	defer server.Close()
+	client, err := hiveclient.New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldHive := newProgressHive
+	t.Cleanup(func() { newProgressHive = oldHive })
+	newProgressHive = func() (progressAdvancer, error) { return hiveProgressAdvancer{client: client}, nil }
+	t.Setenv("JARVIS_SDD_STORE_MODE", "hive")
+	request := checkpointRequest(t, "hive-initial", "apb-00000000000000000000000000000010", nil, 0, "entry-1", []applyprogress.EvidenceEntry{checkpointEntry("entry-1", "1", "evidence")})
+	output, err := executeSddProgressCheckpoint(t, newSddProgressCommand(configuredProgressStore), t.TempDir(), request)
+	if err != nil || output.Outcome != "committed" || output.State.Generation != 1 {
+		t.Fatalf("initial hive checkpoint = %#v, %v", output, err)
+	}
 }
 
 func progressRequest(t *testing.T, requestID, batchID string, generation uint64, previous string) sddprogress.AdvanceRequest {

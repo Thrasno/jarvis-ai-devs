@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
 )
 
 func TestResolveHybridFailsClosedOnDifferentMissingOrInvalidSides(t *testing.T) {
@@ -49,6 +51,15 @@ type retryBackend struct {
 	current      AdvanceResult
 }
 
+type checkpointHiveBackend struct {
+	retryBackend
+	snapshot *applyprogress.Snapshot
+}
+
+func (b *checkpointHiveBackend) CurrentSnapshot(AdvanceRequest) (*applyprogress.Snapshot, error) {
+	return b.snapshot, nil
+}
+
 func (b *retryBackend) Advance(AdvanceRequest) (AdvanceResult, error) {
 	b.calls++
 	return AdvanceResult{}, b.err
@@ -57,6 +68,27 @@ func (b *retryBackend) Advance(AdvanceRequest) (AdvanceResult, error) {
 func (b *retryBackend) Current(AdvanceRequest) (AdvanceResult, error) {
 	b.currentCalls++
 	return b.current, b.currentErr
+}
+
+func TestHybridCurrentAcceptsOnlyEqualResolvedSnapshots(t *testing.T) {
+	root := t.TempDir()
+	r := request(t, "current", "apb-00000000000000000000000000000001", 1, 1, "")
+	hive := &checkpointHiveBackend{}
+	h := Hybrid{Root: root, OpenSpec: OpenSpec{Root: root}, Hive: hive}
+	if current, err := h.Current(r); err != nil || current != nil {
+		t.Fatalf("initial current=%#v err=%v", current, err)
+	}
+	if _, err := (OpenSpec{Root: root}).Advance(r); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Current(r); !errors.Is(err, ErrBackendDiverged) {
+		t.Fatalf("missing Hive current error=%v", err)
+	}
+	hive.snapshot = &r.Snapshot
+	current, err := h.Current(r)
+	if err != nil || current == nil || current.Digest != r.Snapshot.Digest {
+		t.Fatalf("matched current=%#v err=%v", current, err)
+	}
 }
 
 func TestHybridLegacyUpgradeRestoresSourceAfterHiveFailure(t *testing.T) {
