@@ -336,6 +336,90 @@ func validArchiveRequest(t *testing.T, requestID string, status applyprogress.St
 	return r
 }
 
+func TestOpenSpecLegacyUpgradeCommitsOnlyAfterConversion(t *testing.T) {
+	root := t.TempDir()
+	legacy := []byte("status: complete\n")
+	if err := os.WriteFile(filepath.Join(root, "apply-progress.md"), legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "tasks.md"), []byte("- [x] 1.1 task\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := legacyRequest(t, "legacy")
+	result, upgraded, err := (OpenSpec{Root: root}).UpgradeLegacy(r)
+	if err != nil || !upgraded || result.Generation != 1 {
+		t.Fatalf("upgrade = %#v, %t, %v", result, upgraded, err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "apply-progress.md"))
+	if err != nil || !bytes.Contains(data, []byte(r.Snapshot.Digest)) {
+		t.Fatalf("published = %q, %v", data, err)
+	}
+}
+
+func TestOpenSpecLegacyUpgradeFailurePreservesSourceAndReadOnlyArchive(t *testing.T) {
+	root := t.TempDir()
+	legacy := []byte("status: complete\n")
+	if err := os.WriteFile(filepath.Join(root, "apply-progress.md"), legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "tasks.md"), []byte("- [x] 1.1 task\n- [x] 1.1 duplicate\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := legacyRequest(t, "legacy")
+	if _, _, err := (OpenSpec{Root: root}).UpgradeLegacy(r); !errors.Is(err, ErrLegacyMigration) {
+		t.Fatalf("upgrade error = %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, "apply-progress.md")); !bytes.Equal(got, legacy) {
+		t.Fatalf("legacy source changed: %q", got)
+	}
+	if err := (OpenSpec{Root: root}).Archive(filepath.Join(t.TempDir(), "archive")); err == nil {
+		t.Fatal("legacy archive succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(root, "apply-progress.lock")); !os.IsNotExist(err) {
+		t.Fatalf("read-only legacy archive wrote lock: %v", err)
+	}
+}
+
+func TestOpenSpecLegacyUpgradeInterruptedCommitPreservesSource(t *testing.T) {
+	root := t.TempDir()
+	legacy := []byte("status: complete\n")
+	if err := os.WriteFile(filepath.Join(root, "apply-progress.md"), legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "tasks.md"), []byte("- [x] 1.1 task\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := legacyRequest(t, "legacy")
+	_, _, err := (OpenSpec{Root: root, BeforeRename: func() error { return errInterrupted }}).UpgradeLegacy(r)
+	if !errors.Is(err, errInterrupted) {
+		t.Fatalf("upgrade error = %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, "apply-progress.md")); !bytes.Equal(got, legacy) {
+		t.Fatalf("legacy source changed: %q", got)
+	}
+}
+
+func legacyRequest(t *testing.T, requestID string) AdvanceRequest {
+	t.Helper()
+	converted, err := applyprogress.ConvertLegacy(applyprogress.LegacyProgress{Tasks: []applyprogress.Task{{Path: "1.1", Text: "task"}}, Completed: []string{"1.1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := validArchiveRequest(t, requestID, applyprogress.StatusComplete)
+	r.Batches[0].Entries[0].TaskIDs, r.Batches[0].Entries[0].CompletesTaskIDs = []string{converted.Tasks[0].ID}, []string{converted.Tasks[0].ID}
+	r.Batches[0], _, err = applyprogress.SealBatch(r.Batches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Snapshot.TaskManifestSHA256, r.Snapshot.Coverage = converted.TaskManifestSHA256, []applyprogress.Coverage{{TaskID: converted.Tasks[0].ID, BatchID: r.Batches[0].BatchID, EntryID: "entry"}}
+	r.Snapshot.Batches[0].SHA256 = r.Batches[0].SHA256
+	r.Snapshot, _, err = applyprogress.SealSnapshot(r.Snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
 func contains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

@@ -12,6 +12,7 @@ var (
 	ErrBatchCollision  = errors.New("apply-progress batch collision")
 	ErrMissingBatch    = errors.New("apply-progress missing referenced batch")
 	ErrRequestConflict = errors.New("apply-progress request ID payload conflict")
+	ErrLegacyMigration = errors.New("apply-progress legacy migration failed")
 )
 
 // AdvanceRequest contains canonical v2 documents for one guarded publication.

@@ -22,6 +22,10 @@ type OpenSpec struct {
 }
 
 func (s OpenSpec) Advance(request AdvanceRequest) (AdvanceResult, error) {
+	return s.advance(request, nil)
+}
+
+func (s OpenSpec) advance(request AdvanceRequest, legacy []byte) (AdvanceResult, error) {
 	if request.RequestID == "" || filepath.Base(request.RequestID) != request.RequestID {
 		return AdvanceResult{}, fmt.Errorf("invalid request ID")
 	}
@@ -42,9 +46,12 @@ func (s OpenSpec) Advance(request AdvanceRequest) (AdvanceResult, error) {
 	if err := s.checkReceipt(request.RequestID, payload); err != nil {
 		return AdvanceResult{}, err
 	}
-	current, _, err := s.current()
+	current, raw, err := s.current()
 	if err != nil {
-		return AdvanceResult{}, err
+		if legacy == nil || !bytes.Equal(raw, legacy) || isV2(raw) {
+			return AdvanceResult{}, fmt.Errorf("%w: %v", ErrLegacyMigration, err)
+		}
+		current = nil
 	}
 	if current != nil && current.Digest == snapshot.Digest {
 		return AdvanceResult{snapshot.Generation, snapshot.Revision, snapshot.Digest}, nil
@@ -102,7 +109,7 @@ func (s OpenSpec) current() (*applyprogress.Snapshot, []byte, error) {
 	}
 	snapshot, err := applyprogress.DecodeCanonicalSnapshot(data)
 	if err != nil {
-		return nil, nil, err
+		return nil, data, err
 	}
 	return &snapshot, data, nil
 }
@@ -143,9 +150,106 @@ func (s OpenSpec) publish(data []byte) error {
 	return s.syncDir(s.Root)
 }
 
+// UpgradeLegacy converts only an unchanged, unambiguous legacy source during a mutation.
+func (s OpenSpec) UpgradeLegacy(request AdvanceRequest) (AdvanceResult, bool, error) {
+	legacy, err := os.ReadFile(filepath.Join(s.Root, "apply-progress.md"))
+	if os.IsNotExist(err) || isV2(legacy) {
+		return AdvanceResult{}, false, nil
+	}
+	if err != nil {
+		return AdvanceResult{}, false, err
+	}
+	converted, status, err := legacyConversion(legacy, filepath.Join(s.Root, "tasks.md"))
+	if err != nil {
+		return AdvanceResult{}, true, fmt.Errorf("%w: %v", ErrLegacyMigration, err)
+	}
+	if request.ExpectedGeneration != 0 || request.ExpectedRevision != 0 || request.ExpectedDigest != "" || request.Snapshot.Generation != 1 || request.Snapshot.Revision != 1 || request.Snapshot.PreviousDigest != "" || request.Snapshot.TaskManifestSHA256 != converted.TaskManifestSHA256 || request.Snapshot.Status != status || !sameLegacyCoverage(converted, request.Snapshot) {
+		return AdvanceResult{}, true, fmt.Errorf("%w: initial request does not match legacy source", ErrLegacyMigration)
+	}
+	result, err := s.advance(request, legacy)
+	return result, true, err
+}
+
+func legacyConversion(progress []byte, tasksPath string) (applyprogress.LegacyConversion, applyprogress.Status, error) {
+	tasksData, err := os.ReadFile(tasksPath)
+	if err != nil {
+		return applyprogress.LegacyConversion{}, "", err
+	}
+	legacy := applyprogress.LegacyProgress{}
+	for _, line := range strings.Split(string(tasksData), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "- [") || len(line) < 6 || (line[3] != 'x' && line[3] != ' ') {
+			continue
+		}
+		fields := strings.Fields(line[5:])
+		if len(fields) < 2 || fields[0][0] < '0' || fields[0][0] > '9' {
+			continue
+		}
+		legacy.Tasks = append(legacy.Tasks, applyprogress.Task{Path: fields[0], Text: strings.Join(fields[1:], " ")})
+		if line[3] == 'x' {
+			legacy.Completed = append(legacy.Completed, fields[0])
+		}
+	}
+	complete, partial := false, false
+	for _, line := range strings.Split(string(progress), "\n") {
+		switch strings.TrimSpace(line) {
+		case "status: complete":
+			complete = true
+		case "status: partial":
+			partial = true
+		default:
+			if strings.HasPrefix(strings.TrimSpace(line), "status:") {
+				return applyprogress.LegacyConversion{}, "", ErrLegacyMigration
+			}
+		}
+	}
+	if complete && partial || len(legacy.Tasks) == 0 {
+		return applyprogress.LegacyConversion{}, "", ErrLegacyMigration
+	}
+	converted, err := applyprogress.ConvertLegacy(legacy)
+	if err != nil {
+		return applyprogress.LegacyConversion{}, "", err
+	}
+	status := applyprogress.StatusPartial
+	if complete || (!partial && len(converted.Completed) == len(converted.Tasks)) {
+		status = applyprogress.StatusComplete
+	}
+	return converted, status, nil
+}
+
+func sameLegacyCoverage(legacy applyprogress.LegacyConversion, snapshot applyprogress.Snapshot) bool {
+	completed := map[string]bool{}
+	for _, id := range legacy.Completed {
+		completed[id] = true
+	}
+	var want []string
+	for _, task := range legacy.Tasks {
+		if completed[task.ID] {
+			want = append(want, task.ID)
+		}
+	}
+	if len(want) != len(snapshot.Coverage) {
+		return false
+	}
+	for i, id := range want {
+		if snapshot.Coverage[i].TaskID != id {
+			return false
+		}
+	}
+	return true
+}
+
+func isV2(data []byte) bool {
+	return bytes.HasPrefix(data, []byte(`{"schema":"jarvis.sdd-apply-progress/v2"`))
+}
+
 // Archive validates the authoritative snapshot before atomically moving the
 // complete change topology, including immutable evidence and request receipts.
 func (s OpenSpec) Archive(destination string) error {
+	data, err := os.ReadFile(filepath.Join(s.Root, "apply-progress.md"))
+	if err != nil || !isV2(data) {
+		return ErrLegacyMigration
+	}
 	unlock, err := s.lock()
 	if err != nil {
 		return err
