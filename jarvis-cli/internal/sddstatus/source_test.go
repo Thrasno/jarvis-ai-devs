@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
 )
@@ -187,6 +188,138 @@ func TestHiveSourceListChangesConsumesAllKeysetPages(t *testing.T) {
 	}
 	if requests != 2 {
 		t.Fatalf("requests = %d, want 2", requests)
+	}
+}
+
+func TestHiveSourceBlocksManifestMismatchedV2Progress(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sdd/changes/epic-06/artifacts":
+			_, _ = w.Write([]byte(`{"artifacts":[{"artifact":"tasks","content":"- [ ] 1.1 task"},{"artifact":"apply-progress","content":"{\"schema\":\"jarvis.sdd-apply-progress/v2\"}"}]}`))
+		case "/sdd/changes/epic-06/apply-progress":
+			_, _ = w.Write([]byte(`{"outcome":"committed","code":"ok","state":{"snapshot":{"status":"partial","task_manifest_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}`))
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	artifacts, _, err := newHiveSource(t, server.URL).FetchArtifacts(context.Background(), "epic-06")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := artifacts[sddstatus.ArtifactApplyProgress]; got != sddstatus.ArtifactBlockedManifestMismatch {
+		t.Fatalf("apply-progress = %q, want manifest mismatch", got)
+	}
+}
+
+func TestHiveSourceClassifiesValidV2PartialAndCompleteSnapshots(t *testing.T) {
+	const tasks = "- [ ] 1.1 task\n"
+	_, manifest, err := applyprogress.TaskManifest([]applyprogress.Task{{ID: "1.1", Text: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name   string
+		status string
+		want   sddstatus.ArtifactState
+	}{
+		{name: "partial", status: "partial", want: sddstatus.ArtifactPartial},
+		{name: "complete", status: "complete", want: sddstatus.ArtifactDone},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/sdd/changes/epic-06/artifacts":
+					_, _ = w.Write([]byte(`{"artifacts":[{"artifact":"tasks","content":"- [ ] 1.1 task\n"},{"artifact":"apply-progress","content":"{\"schema\":\"jarvis.sdd-apply-progress/v2\"}"}]}`))
+				case "/sdd/changes/epic-06/apply-progress":
+					_, _ = w.Write([]byte(`{"outcome":"committed","code":"ok","state":{"snapshot":{"status":"` + tt.status + `","task_manifest_sha256":"` + manifest + `"}}}`))
+				}
+			}))
+			t.Cleanup(server.Close)
+			artifacts, _, err := newHiveSource(t, server.URL).FetchArtifacts(context.Background(), "epic-06")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := artifacts[sddstatus.ArtifactApplyProgress]; got != tt.want {
+				t.Fatalf("apply-progress = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHiveSourcePreservesTypedApplyProgressOutcomes(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		outcome string
+		want    sddstatus.ArtifactState
+	}{
+		{name: "continuation", outcome: "continuation_required", want: sddstatus.ArtifactBlockedContinuation},
+		{name: "conflict", outcome: "conflict", want: sddstatus.ArtifactBlockedConflict},
+		{name: "invalid", outcome: "invalid", want: sddstatus.ArtifactBlockedInvalid},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/sdd/changes/epic-06/artifacts":
+					_, _ = w.Write([]byte(`{"artifacts":[{"artifact":"proposal","content":"proposal"},{"artifact":"spec","content":"spec"},{"artifact":"design","content":"design"},{"artifact":"tasks","content":"- [ ] 1.1 task"},{"artifact":"apply-progress","content":"{\"schema\":\"jarvis.sdd-apply-progress/v2\"}"}]}`))
+				case "/sdd/changes/epic-06/apply-progress":
+					w.WriteHeader(http.StatusConflict)
+					_, _ = w.Write([]byte(`{"outcome":"` + tt.outcome + `","code":"` + tt.outcome + `","recovery":"reconcile"}`))
+				default:
+					t.Fatalf("unexpected path %q", r.URL.Path)
+				}
+			}))
+			t.Cleanup(server.Close)
+
+			artifacts, _, err := newHiveSource(t, server.URL).FetchArtifacts(context.Background(), "epic-06")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := artifacts[sddstatus.ArtifactApplyProgress]; got != tt.want {
+				t.Fatalf("apply-progress = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHybridSourcePreservesBlockedApplyProgress(t *testing.T) {
+	for _, tt := range []struct {
+		name, outcome string
+		want          sddstatus.ArtifactState
+	}{
+		{"continuation", "continuation_required", sddstatus.ArtifactBlockedContinuation}, {"conflict", "conflict", sddstatus.ArtifactBlockedConflict}, {"invalid", "invalid", sddstatus.ArtifactBlockedInvalid}, {"manifest mismatch", "committed", sddstatus.ArtifactBlockedManifestMismatch},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/sdd/changes/epic-06/artifacts" {
+					_, _ = w.Write([]byte(`{"artifacts":[{"artifact":"tasks","content":"- [ ] 1.1 task"},{"artifact":"apply-progress","content":"{\"schema\":\"jarvis.sdd-apply-progress/v2\"}"}]}`))
+					return
+				}
+				if tt.outcome != "committed" {
+					w.WriteHeader(http.StatusConflict)
+					_, _ = w.Write([]byte(`{"outcome":"` + tt.outcome + `"}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"outcome":"committed","state":{"snapshot":{"status":"partial","task_manifest_sha256":"bad"}}}`))
+			}))
+			t.Cleanup(server.Close)
+			root := t.TempDir()
+			dir := filepath.Join(root, "openspec", "changes", "epic-06")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "apply-progress.md"), []byte("status: complete\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			got, _, err := sddstatus.NewHybridSource(newHiveSource(t, server.URL), sddstatus.NewOpenSpecSource(root)).FetchArtifacts(context.Background(), "epic-06")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got[sddstatus.ArtifactApplyProgress] != tt.want {
+				t.Fatalf("apply-progress = %q, want %q", got[sddstatus.ArtifactApplyProgress], tt.want)
+			}
+		})
 	}
 }
 

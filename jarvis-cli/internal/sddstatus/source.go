@@ -2,12 +2,14 @@ package sddstatus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 )
 
@@ -44,10 +46,70 @@ func (h *HiveSource) FetchArtifacts(ctx context.Context, changeName string) (map
 			contents[row.Artifact] = row.Content
 		}
 	}
-	if _, ok := artifacts[ArtifactApplyProgress]; ok {
-		artifacts[ArtifactApplyProgress] = applyProgressState(contents[ArtifactApplyProgress], contents[ArtifactTasks])
+	if content, ok := contents[ArtifactApplyProgress]; ok {
+		if strings.HasPrefix(content, `{"schema":"jarvis.sdd-apply-progress/v2"`) {
+			progress, err := h.client.GetApplyProgress(ctx, h.project, changeName)
+			if err == nil {
+				artifacts[ArtifactApplyProgress] = snapshotProgressState(progress.State.Snapshot, contents[ArtifactTasks])
+			} else {
+				var typed *hiveclient.ApplyProgressError
+				if !errors.As(err, &typed) {
+					return nil, nil, err
+				}
+				artifacts[ArtifactApplyProgress] = typedApplyProgressState(typed.Result.Outcome)
+			}
+		} else {
+			artifacts[ArtifactApplyProgress] = applyProgressState(content, contents[ArtifactTasks])
+		}
 	}
 	return artifacts, contents, nil
+}
+
+func snapshotProgressState(snapshot applyprogress.Snapshot, tasksContent string) ArtifactState {
+	if tasks, ok := applyProgressTasks(tasksContent); ok {
+		_, manifest, err := applyprogress.TaskManifest(tasks)
+		if err != nil || snapshot.TaskManifestSHA256 != manifest {
+			return ArtifactBlockedManifestMismatch
+		}
+	}
+	if snapshot.Status == applyprogress.StatusComplete {
+		return ArtifactDone
+	}
+	return ArtifactPartial
+}
+
+func applyProgressTasks(content string) ([]applyprogress.Task, bool) {
+	var tasks []applyprogress.Task
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "- [") {
+			continue
+		}
+		end := strings.Index(line, "]")
+		if end < 0 {
+			continue
+		}
+		fields := strings.Fields(line[end+1:])
+		if len(fields) < 2 || fields[0][0] < '0' || fields[0][0] > '9' {
+			continue
+		}
+		tasks = append(tasks, applyprogress.Task{ID: fields[0], Text: strings.Join(fields[1:], " ")})
+	}
+	return tasks, len(tasks) > 0
+}
+
+func typedApplyProgressState(outcome string) ArtifactState {
+	switch outcome {
+	case "continuation_required":
+		return ArtifactBlockedContinuation
+	case "conflict":
+		return ArtifactBlockedConflict
+	default:
+		if outcome != "" {
+			return ArtifactBlockedInvalid
+		}
+		return ArtifactMissing
+	}
 }
 
 func (h *HiveSource) ListChanges(ctx context.Context) ([]string, error) {
@@ -223,7 +285,7 @@ func (h *HybridSource) FetchArtifacts(ctx context.Context, changeName string) (m
 
 	// Reclassify after contents from both sources are merged: legacy progress in
 	// either direction may depend on task evidence supplied by the other source.
-	if _, ok := merged[ArtifactApplyProgress]; ok {
+	if state, ok := merged[ArtifactApplyProgress]; ok && !strings.HasPrefix(string(state), "blocked:") {
 		merged[ArtifactApplyProgress] = applyProgressState(mergedContents[ArtifactApplyProgress], mergedContents[ArtifactTasks])
 	}
 
