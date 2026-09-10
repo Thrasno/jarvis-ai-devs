@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,11 +12,17 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 )
 
 type progressAdvancer interface {
 	Advance(sddprogress.AdvanceRequest) (sddprogress.AdvanceResult, error)
+}
+
+type legacyProgressUpgrader interface {
+	UpgradeLegacy(sddprogress.AdvanceRequest) (sddprogress.AdvanceResult, bool, error)
 }
 
 type progressAdvanceOutput struct {
@@ -27,7 +34,70 @@ type progressAdvanceOutput struct {
 
 func defaultOpenSpec(root string) progressAdvancer { return sddprogress.OpenSpec{Root: root} }
 
-func init() { sddCmd.AddCommand(newSddProgressCommand(defaultOpenSpec)) }
+var newProgressOpenSpec = defaultOpenSpec
+var newProgressHive = func() (progressAdvancer, error) {
+	client, err := hiveclient.NewFromEnv()
+	return hiveProgressAdvancer{client: client}, err
+}
+
+type hiveProgressAdvancer struct{ client *hiveclient.Client }
+
+func (h hiveProgressAdvancer) Current(request sddprogress.AdvanceRequest) (sddprogress.AdvanceResult, error) {
+	result, err := h.client.GetApplyProgress(context.Background(), request.Snapshot.Project, request.Snapshot.Change)
+	return sddprogress.AdvanceResult{Generation: result.State.Generation, Revision: result.State.Revision, Digest: result.State.Digest}, err
+}
+
+func (h hiveProgressAdvancer) Advance(request sddprogress.AdvanceRequest) (sddprogress.AdvanceResult, error) {
+	result, err := h.client.AdvanceApplyProgress(context.Background(), hiveclient.ApplyProgressAdvanceRequest{
+		Project: request.Snapshot.Project, Change: request.Snapshot.Change, RequestID: request.RequestID,
+		ExpectedGeneration: request.ExpectedGeneration, ExpectedRevision: request.ExpectedRevision, ExpectedDigest: request.ExpectedDigest,
+		Snapshot: request.Snapshot, Batches: request.Batches,
+	})
+	state := sddprogress.AdvanceResult{Generation: result.State.Generation, Revision: result.State.Revision, Digest: result.State.Digest}
+	if result.Code == "stale" {
+		return state, sddprogress.ErrConflict
+	}
+	if result.Code == "request_id_conflict" {
+		return state, sddprogress.ErrRequestConflict
+	}
+	if err != nil {
+		return state, err
+	}
+	if result.Outcome != "committed" {
+		return state, sddprogress.ErrBackendDiverged
+	}
+	return state, nil
+}
+
+type failedProgressAdvancer struct{ err error }
+
+func (f failedProgressAdvancer) Advance(sddprogress.AdvanceRequest) (sddprogress.AdvanceResult, error) {
+	return sddprogress.AdvanceResult{}, f.err
+}
+
+func configuredProgressStore(root string) progressAdvancer {
+	contract, err := sddruntime.ResolveRuntimeStoreContract(sddruntime.StoreModeOpenSpec)
+	if err != nil {
+		return failedProgressAdvancer{err}
+	}
+	open := newProgressOpenSpec(root)
+	if contract.Mode == sddruntime.StoreModeOpenSpec {
+		return open
+	}
+	if contract.Mode == sddruntime.StoreModeNone {
+		return failedProgressAdvancer{errors.New("SDD progress store is disabled")}
+	}
+	hive, err := newProgressHive()
+	if err != nil {
+		return failedProgressAdvancer{err}
+	}
+	if contract.Mode == sddruntime.StoreModeHive {
+		return hive
+	}
+	return sddprogress.Hybrid{Root: root, OpenSpec: open, Hive: hive}
+}
+
+func init() { sddCmd.AddCommand(newSddProgressCommand(configuredProgressStore)) }
 
 func newSddProgressCommand(open func(string) progressAdvancer) *cobra.Command {
 	var root, requestPath string
@@ -69,19 +139,34 @@ func newSddProgressCommand(open func(string) progressAdvancer) *cobra.Command {
 }
 
 func runSddProgressAdvance(store progressAdvancer, root string, request sddprogress.AdvanceRequest) (progressAdvanceOutput, error) {
+	if upgrader, ok := store.(legacyProgressUpgrader); ok {
+		result, upgraded, err := upgrader.UpgradeLegacy(request)
+		if upgraded {
+			if err != nil {
+				return progressAdvanceOutput{Outcome: "invalid", Code: "legacy_migration_failed", Recovery: "preserve and reconcile the legacy source before retrying"}, err
+			}
+			return progressAdvanceOutput{Outcome: "committed", Code: "committed", State: result}, nil
+		}
+	}
 	result, err := store.Advance(request)
 	if err == nil {
 		return progressAdvanceOutput{Outcome: "committed", Code: "committed", State: result}, nil
 	}
-	state, stateErr := currentProgressState(root)
-	if stateErr != nil {
-		return progressAdvanceOutput{Outcome: "recovery", Code: "read_current_failed", Recovery: "read the authoritative snapshot before retrying"}, err
+	state := result
+	if state.Digest == "" {
+		var stateErr error
+		state, stateErr = currentProgressState(root)
+		if stateErr != nil {
+			return progressAdvanceOutput{Outcome: "recovery", Code: "read_current_failed", Recovery: "read the authoritative snapshot before retrying"}, err
+		}
 	}
 	switch {
-	case errors.Is(err, sddprogress.ErrConflict):
-		return progressAdvanceOutput{Outcome: "conflict", Code: "stale", State: state, Recovery: "retry with the current generation, revision, and digest"}, nil
 	case errors.Is(err, sddprogress.ErrRequestConflict):
 		return progressAdvanceOutput{Outcome: "conflict", Code: "request_id_conflict", State: state, Recovery: "use a new request ID for changed payload"}, nil
+	case errors.Is(err, sddprogress.ErrConflict):
+		return progressAdvanceOutput{Outcome: "conflict", Code: "stale", State: state, Recovery: "retry with the current generation, revision, and digest"}, nil
+	case errors.Is(err, sddprogress.ErrBackendDiverged):
+		return progressAdvanceOutput{Outcome: "blocked", Code: "backend_diverged", State: state, Recovery: "retry the identical request only after the missing backend is available"}, err
 	default:
 		return progressAdvanceOutput{Outcome: "recovery", Code: "publication_interrupted", State: state, Recovery: "retry the identical request ID and payload"}, err
 	}
