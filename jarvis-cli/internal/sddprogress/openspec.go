@@ -26,6 +26,18 @@ func (s OpenSpec) Advance(request AdvanceRequest) (AdvanceResult, error) {
 	return s.advance(request, nil)
 }
 
+// Current resolves the validated authoritative OpenSpec snapshot, if any.
+func (s OpenSpec) Current() (*applyprogress.Snapshot, error) {
+	snapshot, _, err := s.current()
+	if err != nil || snapshot == nil {
+		return snapshot, err
+	}
+	if err := s.ensureReferencedBatches(*snapshot); err != nil {
+		return nil, err
+	}
+	return snapshot, nil
+}
+
 func (s OpenSpec) advance(request AdvanceRequest, legacy []byte) (AdvanceResult, error) {
 	if request.RequestID == "" || filepath.Base(request.RequestID) != request.RequestID {
 		return AdvanceResult{}, fmt.Errorf("invalid request ID")
@@ -44,7 +56,8 @@ func (s OpenSpec) advance(request AdvanceRequest, legacy []byte) (AdvanceResult,
 		return AdvanceResult{}, err
 	}
 	payload := payloadDigest(snapshotData, request)
-	if err := s.checkReceipt(request.RequestID, payload); err != nil {
+	receipt, err := s.checkReceipt(request.RequestID, payload)
+	if err != nil {
 		return AdvanceResult{}, err
 	}
 	current, raw, err := s.current()
@@ -55,6 +68,9 @@ func (s OpenSpec) advance(request AdvanceRequest, legacy []byte) (AdvanceResult,
 		current = nil
 	}
 	if current != nil && current.Digest == snapshot.Digest {
+		if !receipt {
+			return AdvanceResult{}, ErrRequestConflict
+		}
 		return AdvanceResult{snapshot.Generation, snapshot.Revision, snapshot.Digest}, nil
 	}
 	if err := validateAdvance(current, request, snapshot); err != nil {
@@ -120,15 +136,15 @@ func (s OpenSpec) current() (*applyprogress.Snapshot, []byte, error) {
 	return &snapshot, data, nil
 }
 
-func (s OpenSpec) checkReceipt(id, payload string) error {
+func (s OpenSpec) checkReceipt(id, payload string) (bool, error) {
 	data, err := os.ReadFile(filepath.Join(s.Root, ".apply-progress-receipts", id+".json"))
 	if os.IsNotExist(err) {
-		return nil
+		return false, nil
 	}
 	if err != nil || string(data) != `{"payload":"`+payload+`"}` {
-		return ErrRequestConflict
+		return false, ErrRequestConflict
 	}
-	return nil
+	return true, nil
 }
 
 func (s OpenSpec) RestoreLegacy(data []byte) error {
