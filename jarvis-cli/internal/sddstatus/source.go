@@ -6,12 +6,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 )
+
+// ArtifactBlockedBackendDiverged means independently read v2 stores disagree.
+const ArtifactBlockedBackendDiverged ArtifactState = "blocked:backend_diverged"
 
 // ArtifactSource fetches SDD artifact states from a backing store.
 type ArtifactSource interface {
@@ -178,11 +182,42 @@ func (o *OpenSpecSource) FetchArtifacts(_ context.Context, changeName string) (m
 			contents[artifact] = content
 		}
 	}
-	if _, ok := artifacts[ArtifactApplyProgress]; ok {
-		artifacts[ArtifactApplyProgress] = applyProgressState(contents[ArtifactApplyProgress], contents[ArtifactTasks])
+	if data, ok := contents[ArtifactApplyProgress]; ok {
+		if isV2Progress(data) {
+			artifacts[ArtifactApplyProgress] = openSpecV2ProgressState(dir, []byte(data), contents[ArtifactTasks])
+		} else {
+			artifacts[ArtifactApplyProgress] = applyProgressState(data, contents[ArtifactTasks])
+		}
 	}
 
 	return artifacts, contents, nil
+}
+
+func openSpecV2ProgressState(dir string, data []byte, tasksContent string) ArtifactState {
+	snapshot, err := applyprogress.DecodeCanonicalSnapshot(data)
+	if err != nil {
+		return ArtifactBlockedInvalid
+	}
+	tasks, ok := applyProgressTasks(tasksContent)
+	if !ok {
+		return ArtifactBlockedInvalid
+	}
+	batches := make(map[string][]byte, len(snapshot.Batches))
+	for _, ref := range snapshot.Batches {
+		batch, err := os.ReadFile(filepath.Join(dir, "apply-evidence", ref.BatchID+".json"))
+		if err != nil {
+			return ArtifactBlockedInvalid
+		}
+		batches[ref.BatchID] = batch
+	}
+	if err := applyprogress.ValidateProgress(data, tasks, batches); err != nil {
+		var validation *applyprogress.ValidationError
+		if errors.As(err, &validation) && validation.Code == applyprogress.CodeTaskManifestMismatch {
+			return ArtifactBlockedManifestMismatch
+		}
+		return ArtifactBlockedInvalid
+	}
+	return snapshotProgressState(snapshot, tasksContent)
 }
 
 // applyProgressState accepts only exact, line-oriented status markers. A legacy
@@ -283,13 +318,31 @@ func (h *HybridSource) FetchArtifacts(ctx context.Context, changeName string) (m
 		fmt.Fprintf(os.Stderr, "warning: hive source unavailable: %v\n", hiveErr)
 	}
 
-	// Reclassify after contents from both sources are merged: legacy progress in
-	// either direction may depend on task evidence supplied by the other source.
-	if state, ok := merged[ArtifactApplyProgress]; ok && !strings.HasPrefix(string(state), "blocked:") {
+	// Legacy progress can use task evidence from either side. V2 must instead be
+	// independently valid on both sides and semantically identical.
+	if isV2Progress(osContents[ArtifactApplyProgress]) || isV2Progress(hiveContents[ArtifactApplyProgress]) {
+		if osErr != nil || hiveErr != nil || osArtifacts[ArtifactApplyProgress] == "" || hiveArtifacts[ArtifactApplyProgress] == "" || isBlockedApplyProgress(osArtifacts[ArtifactApplyProgress]) || isBlockedApplyProgress(hiveArtifacts[ArtifactApplyProgress]) || !sameV2Progress(osContents[ArtifactApplyProgress], hiveContents[ArtifactApplyProgress]) {
+			merged[ArtifactApplyProgress] = ArtifactBlockedBackendDiverged
+			delete(mergedContents, ArtifactApplyProgress)
+		}
+	} else if state, ok := merged[ArtifactApplyProgress]; ok && !strings.HasPrefix(string(state), "blocked:") {
 		merged[ArtifactApplyProgress] = applyProgressState(mergedContents[ArtifactApplyProgress], mergedContents[ArtifactTasks])
 	}
 
 	return merged, mergedContents, nil
+}
+
+func isV2Progress(data string) bool {
+	return strings.HasPrefix(data, `{"schema":"jarvis.sdd-apply-progress/v2"`)
+}
+
+func sameV2Progress(left, right string) bool {
+	one, err := applyprogress.DecodeCanonicalSnapshot([]byte(left))
+	if err != nil {
+		return false
+	}
+	two, err := applyprogress.DecodeCanonicalSnapshot([]byte(right))
+	return err == nil && one.Generation == two.Generation && one.Revision == two.Revision && one.TaskManifestSHA256 == two.TaskManifestSHA256 && one.Digest == two.Digest && slices.Equal(one.Batches, two.Batches) && slices.Equal(one.Coverage, two.Coverage)
 }
 
 func (h *HybridSource) ListChanges(ctx context.Context) ([]string, error) {

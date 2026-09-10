@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
 )
 
@@ -451,6 +453,91 @@ func TestPrintStatusHuman_BlockedWithNoNextRecommended(t *testing.T) {
 
 // TestPrintStatusHuman_AllDone_ShowsComplete verifies the "all phases complete ✓"
 // message is still shown correctly when there are no blocked reasons.
+func TestSddArchiveInvokesProductionArchiver(t *testing.T) {
+	var gotRoot, gotDestination string
+	command := newSddArchiveCommand(func(root string) sddArchiver {
+		gotRoot = root
+		return archiveFunc(func(destination string) error { gotDestination = destination; return nil })
+	}, archiveReadyStatus)
+	command.SetArgs([]string{"--root", "change", "--destination", "archive/change"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if gotRoot != "change" || gotDestination != "archive/change" {
+		t.Fatalf("archive call = root %q destination %q", gotRoot, gotDestination)
+	}
+}
+
+func TestSddArchiveCommandMovesValidatedTopology(t *testing.T) {
+	root := t.TempDir()
+	request := progressRequest(t, "archive", "apb-00000000000000000000000000000001", 1, "")
+	request.Batches[0].Entries[0].TaskIDs = []string{"1.1"}
+	request.Batches[0].Entries[0].CompletesTaskIDs = []string{"1.1"}
+	var err error
+	request.Batches[0], _, err = applyprogress.SealBatch(request.Batches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, manifest, err := applyprogress.TaskManifest([]applyprogress.Task{{ID: "1.1", Text: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Snapshot.Status = applyprogress.StatusComplete
+	request.Snapshot.TaskManifestSHA256 = manifest
+	request.Snapshot.Coverage = []applyprogress.Coverage{{TaskID: "1.1", BatchID: request.Batches[0].BatchID, EntryID: "entry"}}
+	request.Snapshot.Batches[0].SHA256 = request.Batches[0].SHA256
+	request.Snapshot, _, err = applyprogress.SealSnapshot(request.Snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (sddprogress.OpenSpec{Root: root}).Advance(request); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "tasks.md"), []byte("- [ ] 1.1 task\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "issue-653")
+	command := newSddArchiveCommand(func(root string) sddArchiver { return sddprogress.OpenSpec{Root: root} }, archiveReadyStatus)
+	command.SetArgs([]string{"--root", root, "--destination", archive})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(archive, "apply-progress.md")); err != nil {
+		t.Fatalf("archived snapshot: %v", err)
+	}
+}
+
+func TestRunSddArchiveFailsClosedOnLifecycleState(t *testing.T) {
+	for _, tt := range []struct {
+		name, store string
+		progress    sddstatus.ArtifactState
+		dependency  sddstatus.DependencyState
+		wantErr     bool
+	}{
+		{"partial", "openspec", sddstatus.ArtifactPartial, sddstatus.DepBlocked, true},
+		{"diverged", "hybrid", sddstatus.ArtifactBlockedBackendDiverged, sddstatus.DepBlocked, true},
+		{"hive mode", "hive", sddstatus.ArtifactDone, sddstatus.DepReady, true},
+		{"complete", "openspec", sddstatus.ArtifactDone, sddstatus.DepReady, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			status := &sddstatus.ChangeStatus{ArtifactStore: tt.store, Artifacts: map[string]sddstatus.ArtifactState{sddstatus.ArtifactApplyProgress: tt.progress}, Dependencies: map[string]sddstatus.DependencyState{sddstatus.PhaseArchive: tt.dependency}}
+			err := runSddArchive(archiveFunc(func(string) error { calls++; return nil }), status, "archive/change")
+			if (err != nil) != tt.wantErr || calls != map[bool]int{true: 0, false: 1}[tt.wantErr] {
+				t.Fatalf("runSddArchive() error=%v calls=%d", err, calls)
+			}
+		})
+	}
+}
+
+func archiveReadyStatus(string, string) (*sddstatus.ChangeStatus, error) {
+	return &sddstatus.ChangeStatus{ArtifactStore: "openspec", Artifacts: map[string]sddstatus.ArtifactState{sddstatus.ArtifactApplyProgress: sddstatus.ArtifactDone}, Dependencies: map[string]sddstatus.DependencyState{sddstatus.PhaseArchive: sddstatus.DepReady}}, nil
+}
+
+type archiveFunc func(string) error
+
+func (f archiveFunc) Archive(destination string) error { return f(destination) }
+
 func TestPrintStatusHuman_AllDone_ShowsComplete(t *testing.T) {
 	s := &sddstatus.ChangeStatus{
 		Schema:          sddstatus.StatusSchema,

@@ -88,6 +88,39 @@ func TestOpenSpecSourceClassifiesApplyProgressWithExplicitAndLegacyMarkers(t *te
 	}
 }
 
+func TestOpenSpecSourcePreservesV2ManifestMismatch(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "openspec", "changes", "epic-06")
+	if err := os.MkdirAll(filepath.Join(dir, "apply-evidence"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	batch, batchData, err := applyprogress.SealBatch(applyprogress.Batch{Schema: applyprogress.EvidenceSchema, Project: "jarvis-dev", Change: "epic-06", BatchID: "apb-00000000000000000000000000000001", Entries: []applyprogress.EvidenceEntry{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, manifest, err := applyprogress.TaskManifest([]applyprogress.Task{{ID: "1.1", Text: "stale task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, snapshotData, err := applyprogress.SealSnapshot(applyprogress.Snapshot{Schema: applyprogress.SnapshotSchema, Project: "jarvis-dev", Change: "epic-06", Generation: 1, Revision: 1, TaskManifestSHA256: manifest, Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{{BatchID: batch.BatchID, SHA256: batch.SHA256}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = snapshot
+	for path, data := range map[string][]byte{filepath.Join(dir, "apply-progress.md"): snapshotData, filepath.Join(dir, "apply-evidence", batch.BatchID+".json"): batchData, filepath.Join(dir, "tasks.md"): []byte("- [ ] 1.1 current task\n")} {
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	artifacts, _, err := sddstatus.NewOpenSpecSource(root).FetchArtifacts(context.Background(), "epic-06")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := artifacts[sddstatus.ArtifactApplyProgress]; got != sddstatus.ArtifactBlockedManifestMismatch {
+		t.Fatalf("apply-progress = %q, want manifest mismatch", got)
+	}
+}
+
 func TestHiveSourceClassifiesExplicitPartialApplyProgress(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"artifacts":[{"artifact":"apply-progress","content":"status: partial\n- [x] T1\n"}]}`))
@@ -288,7 +321,7 @@ func TestHybridSourcePreservesBlockedApplyProgress(t *testing.T) {
 		name, outcome string
 		want          sddstatus.ArtifactState
 	}{
-		{"continuation", "continuation_required", sddstatus.ArtifactBlockedContinuation}, {"conflict", "conflict", sddstatus.ArtifactBlockedConflict}, {"invalid", "invalid", sddstatus.ArtifactBlockedInvalid}, {"manifest mismatch", "committed", sddstatus.ArtifactBlockedManifestMismatch},
+		{"continuation", "continuation_required", sddstatus.ArtifactBlockedBackendDiverged}, {"conflict", "conflict", sddstatus.ArtifactBlockedBackendDiverged}, {"invalid", "invalid", sddstatus.ArtifactBlockedBackendDiverged}, {"manifest mismatch", "committed", sddstatus.ArtifactBlockedBackendDiverged},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -312,14 +345,37 @@ func TestHybridSourcePreservesBlockedApplyProgress(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "apply-progress.md"), []byte("status: complete\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			got, _, err := sddstatus.NewHybridSource(newHiveSource(t, server.URL), sddstatus.NewOpenSpecSource(root)).FetchArtifacts(context.Background(), "epic-06")
+			got, contents, err := sddstatus.NewHybridSource(newHiveSource(t, server.URL), sddstatus.NewOpenSpecSource(root)).FetchArtifacts(context.Background(), "epic-06")
 			if err != nil {
 				t.Fatal(err)
+			}
+			if _, ok := contents[sddstatus.ArtifactApplyProgress]; ok {
+				t.Fatal("divergence retained selected apply-progress content")
 			}
 			if got[sddstatus.ArtifactApplyProgress] != tt.want {
 				t.Fatalf("apply-progress = %q, want %q", got[sddstatus.ArtifactApplyProgress], tt.want)
 			}
 		})
+	}
+}
+
+func TestComputeStatus_BlocksLifecycleForBackendDivergence(t *testing.T) {
+	arts := map[string]sddstatus.ArtifactState{
+		sddstatus.ArtifactProposal:      sddstatus.ArtifactDone,
+		sddstatus.ArtifactSpec:          sddstatus.ArtifactDone,
+		sddstatus.ArtifactDesign:        sddstatus.ArtifactDone,
+		sddstatus.ArtifactTasks:         sddstatus.ArtifactDone,
+		sddstatus.ArtifactApplyProgress: sddstatus.ArtifactBlockedBackendDiverged,
+		sddstatus.ArtifactVerifyReport:  sddstatus.ArtifactDone,
+	}
+	status := sddstatus.ComputeStatus("epic-06", "hybrid", sddstatus.Input{
+		Artifacts: arts, ActionMode: sddstatus.ActionModeWorkspaceEdit, AllowedEditRoots: []string{"/workspace"},
+		Contents: map[string]string{sddstatus.ArtifactVerifyReport: "All checks passed."},
+	})
+	for _, phase := range []string{sddstatus.PhaseApply, sddstatus.PhaseVerify, sddstatus.PhaseArchive} {
+		if status.Dependencies[phase] != sddstatus.DepBlocked {
+			t.Fatalf("dependency[%s] = %q, want blocked", phase, status.Dependencies[phase])
+		}
 	}
 }
 

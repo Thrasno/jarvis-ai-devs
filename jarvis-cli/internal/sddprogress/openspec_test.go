@@ -201,6 +201,145 @@ func TestOpenSpecAdvanceRejectsInvalidPublicationTopology(t *testing.T) {
 	}
 }
 
+func TestOpenSpecArchiveMovesSnapshotEvidenceAndReceiptsTogether(t *testing.T) {
+	root := t.TempDir()
+	store := OpenSpec{Root: root}
+	request := validArchiveRequest(t, "archive-request", applyprogress.StatusComplete)
+	if _, err := store.Advance(request); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "tasks.md"), []byte("- [ ] 1.1 task\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	archiveRoot := filepath.Join(t.TempDir(), "issue-653")
+	if err := store.Archive(archiveRoot); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		filepath.Join(archiveRoot, "apply-progress.md"),
+		filepath.Join(archiveRoot, "apply-evidence", request.Batches[0].BatchID+".json"),
+		filepath.Join(archiveRoot, ".apply-progress-receipts", request.RequestID+".json"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("archived topology %q: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "apply-progress.md")); !os.IsNotExist(err) {
+		t.Fatalf("active snapshot stat error = %v, want moved", err)
+	}
+}
+
+func TestOpenSpecArchiveAcceptsCurrentTaskManifest(t *testing.T) {
+	root := t.TempDir()
+	request := validArchiveRequest(t, "current-manifest", applyprogress.StatusComplete)
+	if _, err := (OpenSpec{Root: root}).Advance(request); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "tasks.md"), []byte("- [ ] 1.1 task\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := (OpenSpec{Root: root}).Archive(filepath.Join(t.TempDir(), "issue-653")); err != nil {
+		t.Fatalf("Archive() with current manifest: %v", err)
+	}
+}
+
+func TestOpenSpecArchiveRejectsPartialReplacementAfterLock(t *testing.T) {
+	root := t.TempDir()
+	request := validArchiveRequest(t, "replacement", applyprogress.StatusComplete)
+	if _, err := (OpenSpec{Root: root}).Advance(request); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "tasks.md"), []byte("- [ ] 1.1 task\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	partial := request.Snapshot
+	partial.Status = applyprogress.StatusPartial
+	_, data, err := applyprogress.SealSnapshot(partial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := OpenSpec{Root: root, BeforeArchiveValidate: func() error {
+		return os.WriteFile(filepath.Join(root, "apply-progress.md"), data, 0o600)
+	}}
+	if err := store.Archive(filepath.Join(t.TempDir(), "issue-653")); err == nil {
+		t.Fatal("Archive() accepted partial replacement after lock")
+	}
+	if _, err := os.Stat(filepath.Join(root, "apply-progress.md")); err != nil {
+		t.Fatalf("replacement moved despite rejection: %v", err)
+	}
+}
+
+func TestOpenSpecArchiveRejectsPartialSnapshotUnderLock(t *testing.T) {
+	root := t.TempDir()
+	request := validArchiveRequest(t, "partial", applyprogress.StatusPartial)
+	if _, err := (OpenSpec{Root: root}).Advance(request); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "tasks.md"), []byte("- [ ] 1.1 task\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := (OpenSpec{Root: root}).Archive(filepath.Join(t.TempDir(), "issue-653")); err == nil {
+		t.Fatal("Archive() succeeded for partial snapshot")
+	}
+	if _, err := os.Stat(filepath.Join(root, "apply-progress.md")); err != nil {
+		t.Fatalf("partial snapshot moved: %v", err)
+	}
+}
+
+func TestOpenSpecArchiveRejectsMissingTasks(t *testing.T) {
+	root := t.TempDir()
+	request := request(t, "missing-tasks", "apb-00000000000000000000000000000001", 1, 1, "")
+	if _, err := (OpenSpec{Root: root}).Advance(request); err != nil {
+		t.Fatal(err)
+	}
+	if err := (OpenSpec{Root: root}).Archive(filepath.Join(t.TempDir(), "issue-653")); err == nil {
+		t.Fatal("Archive() succeeded without current tasks")
+	}
+}
+
+func TestOpenSpecArchiveRejectsStaleTaskManifest(t *testing.T) {
+	root := t.TempDir()
+	store := OpenSpec{Root: root}
+	request := request(t, "stale-manifest", "apb-00000000000000000000000000000001", 1, 1, "")
+	if _, err := store.Advance(request); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "tasks.md"), []byte("- [ ] 1.1 changed task\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Archive(filepath.Join(t.TempDir(), "issue-653")); err == nil {
+		t.Fatal("Archive() succeeded with a stale task manifest")
+	}
+	if _, err := os.Stat(filepath.Join(root, "apply-progress.md")); err != nil {
+		t.Fatalf("archive moved stale progress: %v", err)
+	}
+}
+
+func validArchiveRequest(t *testing.T, requestID string, status applyprogress.Status) AdvanceRequest {
+	t.Helper()
+	r := request(t, requestID, "apb-00000000000000000000000000000001", 1, 1, "")
+	_, manifest, err := applyprogress.TaskManifest([]applyprogress.Task{{ID: "1.1", Text: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status == applyprogress.StatusComplete {
+		r.Batches[0].Entries[0].TaskIDs = []string{"1.1"}
+		r.Batches[0].Entries[0].CompletesTaskIDs = []string{"1.1"}
+		r.Batches[0], _, err = applyprogress.SealBatch(r.Batches[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Snapshot.Coverage = []applyprogress.Coverage{{TaskID: "1.1", BatchID: r.Batches[0].BatchID, EntryID: "entry"}}
+	}
+	r.Snapshot.Status, r.Snapshot.TaskManifestSHA256 = status, manifest
+	r.Snapshot.Batches[0].SHA256 = r.Batches[0].SHA256
+	r.Snapshot, _, err = applyprogress.SealSnapshot(r.Snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
 func contains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

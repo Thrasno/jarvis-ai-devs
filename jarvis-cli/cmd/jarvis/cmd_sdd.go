@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
 )
@@ -68,7 +70,47 @@ func init() {
 	sddStatusCmd.Flags().String("project", "", "hive project name (overrides origin repository or working-directory basename derivation)")
 	sddContinueCmd.Flags().Bool("json", false, "emit JSON output")
 	sddContinueCmd.Flags().String("project", "", "hive project name (overrides origin repository or working-directory basename derivation)")
-	sddCmd.AddCommand(sddStatusCmd, sddContinueCmd)
+	sddCmd.AddCommand(sddStatusCmd, sddContinueCmd, newSddArchiveCommand(func(root string) sddArchiver { return sddprogress.OpenSpec{Root: root} }, archiveStatus))
+}
+
+type sddArchiver interface{ Archive(string) error }
+type archiveStatusResolver func(root, project string) (*sddstatus.ChangeStatus, error)
+
+func newSddArchiveCommand(open func(string) sddArchiver, statusFor archiveStatusResolver) *cobra.Command {
+	var root, destination, project string
+	command := &cobra.Command{Use: "archive", Short: "Archive validated OpenSpec progress", Args: cobra.NoArgs, SilenceUsage: true, SilenceErrors: true, RunE: func(_ *cobra.Command, _ []string) error {
+		status, err := statusFor(root, project)
+		if err != nil {
+			return err
+		}
+		return runSddArchive(open(root), status, destination)
+	}}
+	command.Flags().StringVar(&root, "root", "", "OpenSpec change root")
+	command.Flags().StringVar(&destination, "destination", "", "archive destination")
+	command.Flags().StringVar(&project, "project", "", "hive project name")
+	_ = command.MarkFlagRequired("root")
+	_ = command.MarkFlagRequired("destination")
+	return command
+}
+
+func runSddArchive(archive sddArchiver, status *sddstatus.ChangeStatus, destination string) error {
+	if status.ArtifactStore != "openspec" && status.ArtifactStore != "hybrid" || status.Artifacts[sddstatus.ArtifactApplyProgress] != sddstatus.ArtifactDone || status.Dependencies[sddstatus.PhaseArchive] != sddstatus.DepReady {
+		return errors.New("sdd archive blocked until authoritative progress is complete")
+	}
+	return archive.Archive(destination)
+}
+
+func archiveStatus(root, project string) (*sddstatus.ChangeStatus, error) {
+	workspace := filepath.Dir(filepath.Dir(filepath.Dir(root)))
+	project, err := resolveSddProject(project, workspace)
+	if err != nil {
+		return nil, err
+	}
+	source, store, err := resolveSourceAt(project, workspace)
+	if err != nil {
+		return nil, err
+	}
+	return buildStatus(filepath.Base(root), source, store, []string{workspace})
 }
 
 func sddWorkingDirectory(_ string) (string, error) {
