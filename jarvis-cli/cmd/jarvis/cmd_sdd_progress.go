@@ -69,6 +69,18 @@ type progressCheckpointStore interface {
 	Current() (*applyprogress.Snapshot, error)
 }
 
+type hiveCheckpointStore interface {
+	CurrentCheckpoint(string, string) (*applyprogress.Snapshot, error)
+}
+
+type hybridCheckpointStore interface {
+	Current(sddprogress.AdvanceRequest) (*applyprogress.Snapshot, error)
+}
+
+type checkpointReceiptStore interface {
+	HasReceipt(sddprogress.AdvanceRequest) bool
+}
+
 func defaultOpenSpec(root string) progressAdvancer { return sddprogress.OpenSpec{Root: root} }
 
 var newProgressOpenSpec = defaultOpenSpec
@@ -82,6 +94,22 @@ type hiveProgressAdvancer struct{ client *hiveclient.Client }
 func (h hiveProgressAdvancer) Current(request sddprogress.AdvanceRequest) (sddprogress.AdvanceResult, error) {
 	result, err := h.client.GetApplyProgress(context.Background(), request.Snapshot.Project, request.Snapshot.Change)
 	return sddprogress.AdvanceResult{Generation: result.State.Generation, Revision: result.State.Revision, Digest: result.State.Digest}, err
+}
+
+func (h hiveProgressAdvancer) CurrentCheckpoint(project, change string) (*applyprogress.Snapshot, error) {
+	result, err := h.client.GetApplyProgress(context.Background(), project, change)
+	var apiErr *hiveclient.ApplyProgressError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == 422 && apiErr.Result.Code == "validation" {
+		return nil, nil
+	}
+	if err != nil || result.State.Snapshot.Digest == "" {
+		return nil, err
+	}
+	return &result.State.Snapshot, nil
+}
+
+func (h hiveProgressAdvancer) CurrentSnapshot(request sddprogress.AdvanceRequest) (*applyprogress.Snapshot, error) {
+	return h.CurrentCheckpoint(request.Snapshot.Project, request.Snapshot.Change)
 }
 
 func (h hiveProgressAdvancer) Advance(request sddprogress.AdvanceRequest) (sddprogress.AdvanceResult, error) {
@@ -186,11 +214,7 @@ func newSddProgressCommand(open func(string) progressAdvancer) *cobra.Command {
 			if decoder.More() {
 				return errors.New("decode checkpoint request: trailing JSON value")
 			}
-			store, ok := open(root).(progressCheckpointStore)
-			if !ok {
-				return errors.New("checkpoint requires OpenSpec mode")
-			}
-			output, err := runSddProgressCheckpoint(store, request)
+			output, err := runSddProgressCheckpoint(open(root), request)
 			if encodeErr := json.NewEncoder(cmd.OutOrStdout()).Encode(output); encodeErr != nil && err == nil {
 				return encodeErr
 			}
@@ -241,20 +265,24 @@ func runSddProgressAdvance(store progressAdvancer, root string, request sddprogr
 	}
 }
 
-func runSddProgressCheckpoint(store progressCheckpointStore, request checkpointInput) (checkpointOutput, error) {
-	current, err := store.Current()
+func runSddProgressCheckpoint(store progressAdvancer, request checkpointInput) (checkpointOutput, error) {
+	plan, err := applyprogress.PlanCheckpoint(applyprogress.PlanInput{Project: request.Project, Change: request.Change, Base: request.Base, Tasks: request.Tasks, Entries: request.Entries, EntryIndex: request.EntryIndex, EntryID: request.EntryID, BatchID: request.BatchID})
 	if err != nil {
+		return checkpointOutput{Outcome: "invalid", Code: "invalid_request"}, err
+	}
+	advance := sddprogress.AdvanceRequest{RequestID: request.RequestID, ExpectedGeneration: request.ExpectedGeneration, ExpectedRevision: request.ExpectedRevision, ExpectedDigest: request.ExpectedDigest, Batches: []applyprogress.Batch{plan.Batch}, Snapshot: plan.Snapshot}
+	current, err := checkpointCurrent(store, request)
+	if err != nil && (func() bool { receipt, ok := store.(checkpointReceiptStore); return ok && receipt.HasReceipt(advance) })() {
+		current, err = nil, nil
+	}
+	if err != nil {
+		if errors.Is(err, sddprogress.ErrBackendDiverged) {
+			return checkpointOutput{Outcome: "blocked", Code: "backend_diverged", Recovery: "retry the identical request only after the missing backend is available"}, err
+		}
 		return checkpointOutput{Outcome: "recovery", Code: "read_current_failed", Recovery: "read the authoritative snapshot before retrying"}, err
 	}
 	state, expected := checkpointState(current), sddprogress.AdvanceResult{Generation: request.ExpectedGeneration, Revision: request.ExpectedRevision, Digest: request.ExpectedDigest}
-	plan, err := applyprogress.PlanCheckpoint(applyprogress.PlanInput{Project: request.Project, Change: request.Change, Base: request.Base, Tasks: request.Tasks, Entries: request.Entries, EntryIndex: request.EntryIndex, EntryID: request.EntryID, BatchID: request.BatchID})
-	if err != nil {
-		return checkpointOutput{Outcome: "invalid", Code: "invalid_request", State: state}, err
-	}
-	baseMatches, retry := sameCheckpointSnapshot(request.Base, current), sameCheckpointSnapshot(&plan.Snapshot, current)
-	if state != expected && !retry {
-		return checkpointOutput{Outcome: "conflict", Code: "stale", State: state, Recovery: "re-resolve and replan with new request and batch IDs"}, nil
-	}
+	baseMatches := sameCheckpointSnapshot(request.Base, current)
 	if state == expected && !baseMatches {
 		return checkpointOutput{Outcome: "invalid", Code: "base_mismatch", State: state}, errors.New("checkpoint base does not match current state")
 	}
@@ -264,13 +292,16 @@ func runSddProgressCheckpoint(store progressCheckpointStore, request checkpointI
 	case applyprogress.PlanSnapshotCapacityExhausted:
 		return checkpointOutput{Outcome: string(plan.Outcome), Code: string(plan.Outcome), State: state, Recovery: "reconcile or evolve the snapshot before retrying"}, nil
 	}
-	result, err := store.Advance(sddprogress.AdvanceRequest{RequestID: request.RequestID, ExpectedGeneration: request.ExpectedGeneration, ExpectedRevision: request.ExpectedRevision, ExpectedDigest: request.ExpectedDigest, Batches: []applyprogress.Batch{plan.Batch}, Snapshot: plan.Snapshot})
+	result, err := store.Advance(advance)
 	if err != nil {
 		if errors.Is(err, sddprogress.ErrRequestConflict) {
 			return checkpointOutput{Outcome: "conflict", Code: "request_id_conflict", State: state, Recovery: "use a new request ID for changed payload"}, nil
 		}
 		if errors.Is(err, sddprogress.ErrConflict) {
 			return checkpointOutput{Outcome: "conflict", Code: "stale", State: state, Recovery: "re-resolve and replan with new request and batch IDs"}, nil
+		}
+		if errors.Is(err, sddprogress.ErrBackendDiverged) {
+			return checkpointOutput{Outcome: "blocked", Code: "backend_diverged", State: state, Recovery: "retry the identical request only after the missing backend is available"}, err
 		}
 		return checkpointOutput{Outcome: "recovery", Code: "publication_interrupted", State: state, Recovery: "retry the identical request ID and payload"}, err
 	}
@@ -279,6 +310,19 @@ func runSddProgressCheckpoint(store progressCheckpointStore, request checkpointI
 		output.NextEntryIndex, output.NextEntryID = plan.NextEntryIndex, plan.NextEntryID
 	}
 	return output, nil
+}
+
+func checkpointCurrent(store progressAdvancer, request checkpointInput) (*applyprogress.Snapshot, error) {
+	if store, ok := store.(progressCheckpointStore); ok {
+		return store.Current()
+	}
+	if store, ok := store.(hiveCheckpointStore); ok {
+		return store.CurrentCheckpoint(request.Project, request.Change)
+	}
+	if store, ok := store.(hybridCheckpointStore); ok {
+		return store.Current(sddprogress.AdvanceRequest{Snapshot: applyprogress.Snapshot{Project: request.Project, Change: request.Change}})
+	}
+	return nil, errors.New("checkpoint store cannot resolve current state")
 }
 
 func checkpointState(snapshot *applyprogress.Snapshot) sddprogress.AdvanceResult {
