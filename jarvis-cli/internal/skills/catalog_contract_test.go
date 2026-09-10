@@ -818,8 +818,8 @@ func TestCatalogContract_SDDApplySourceUsesJarvisAdaptedStatusGuards(t *testing.
 		"Generated artifacts are output, never sources of truth",
 		"mcp__hive__mem_save",
 		"Artifact store mode (`hive | openspec | hybrid | none`)",
-		"When prior `apply-progress = partial` exists, merge/reconcile it with current task state",
-		"do not jump to `sdd-verify` until apply progress and task checkboxes agree.",
+		"Reject the obsolete wording “When prior `apply-progress = partial` exists, merge/reconcile it with current task state”",
+		"do not jump to `sdd-verify` until apply progress and task checkboxes agree",
 		"include `status: partial` on its own line",
 		"legacy `complete` boolean means a verify-report artifact exists",
 	}
@@ -843,6 +843,86 @@ func TestCatalogContract_SDDApplySourceUsesJarvisAdaptedStatusGuards(t *testing.
 		if strings.Contains(content, snippet) {
 			t.Fatalf("expected sdd-apply source not to contain %q", snippet)
 		}
+	}
+}
+
+func TestCatalogContract_BoundedApplyProgressGuidanceUsesGuardedImmutableProtocol(t *testing.T) {
+	testCases := []struct {
+		path      string
+		required  []string
+		forbidden []string
+	}{
+		{
+			path: "embed/skills/sdd-apply/SKILL.md",
+			required: []string{
+				"immutable evidence batches",
+				"40,000 Unicode runes",
+				"`jarvis sdd progress advance`",
+				"guarded snapshot advance",
+				"Retry the same request ID",
+				"continuation_required",
+				"evidence_item_too_large",
+				"snapshot_capacity_exhausted",
+				"Do not use `mcp__hive__mem_save` to write, replace, or recover apply-progress.",
+				"legacy source authoritative",
+			},
+			forbidden: []string{
+				"When saving your apply-progress in Step 6, MERGE",
+				"The final artifact should show the cumulative state of ALL assigned tasks across ALL batches",
+				"Save progress as `sdd/{change-name}/apply-progress` with `capture_prompt:false`.",
+				"persist progress to Hive (`mcp__hive__mem_save` with topic_key grouping",
+			},
+		},
+		{
+			path: "embed/skills/sdd-archive/SKILL.md",
+			required: []string{
+				"exact referenced immutable evidence batches",
+				"`jarvis.sdd-apply-progress/v2`",
+				"continuation, conflict, capacity, migration, or `backend_diverged`",
+				"fail closed",
+			},
+		},
+		{
+			path: "embed/orchestrator/sdd-orchestrator.md",
+			required: []string{
+				"## Bounded Apply-Progress Continuation (MANDATORY)",
+				"immutable evidence batches",
+				"guarded snapshot advance",
+				"same request ID",
+				"continuation_required",
+				"Do not instruct an executor to merge or rewrite cumulative apply-progress observations.",
+				"dependencies[phase] == `ready`",
+				"actionContext.mode == `workspace-edit`",
+			},
+			forbidden: []string{
+				"dependencies[phase] ==`ready``",
+				"actionContext.mode ==`workspace-edit``",
+				"merge your new progress with the existing progress",
+				"save the combined result. Do NOT overwrite — MERGE.",
+				"read-merge-write",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.path, func(t *testing.T) {
+			var content string
+			if tc.path == "embed/orchestrator/sdd-orchestrator.md" {
+				content = readLocalOrEmbeddedAsset(t, tc.path)
+			} else {
+				content = readEmbeddedSkillAsset(t, tc.path)
+			}
+			for _, snippet := range tc.required {
+				if !strings.Contains(content, snippet) {
+					t.Fatalf("expected %s to contain bounded apply-progress guidance %q", tc.path, snippet)
+				}
+			}
+			for _, snippet := range tc.forbidden {
+				if strings.Contains(content, snippet) {
+					t.Fatalf("expected %s not to retain cumulative apply-progress guidance %q", tc.path, snippet)
+				}
+			}
+		})
 	}
 }
 

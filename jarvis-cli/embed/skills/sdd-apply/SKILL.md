@@ -38,6 +38,7 @@ You are an implementation executor. You receive specific tasks and implement the
 ## What You Receive
 
 From the orchestrator:
+
 - Change name
 - The specific task(s) to implement (for example, "Phase 1, tasks 1.1-1.3")
 - Artifact store mode (`hive | openspec | hybrid | none`)
@@ -48,9 +49,9 @@ From the orchestrator:
 
 > Follow **Section B** (retrieval) and **Section C** (persistence) from `skills/_shared/sdd-phase-common.md`, using Jarvis/Hive terminology.
 
-- **hive**: Read `sdd/{change-name}/proposal`, `sdd/{change-name}/spec`, `sdd/{change-name}/design`, and `sdd/{change-name}/tasks` (all required). Mark tasks complete by saving the updated tasks artifact with `mcp__hive__mem_save(topic_key: "sdd/{change-name}/tasks", capture_prompt: false, content: "...")` — re-saving an SDD artifact under the same topic_key creates another candidate artifact; if Hive search returns multiple candidates and no explicit observation ID or artifact reference is available, treat retrieval as ambiguous and ask before proceeding. Save progress as `sdd/{change-name}/apply-progress` with `capture_prompt:false`.
-- **openspec**: Read and follow `skills/_shared/openspec-convention.md`. Update `tasks.md` with `[x]` marks.
-- **hybrid**: Follow BOTH conventions — persist progress to Hive (`mcp__hive__mem_save` with topic_key grouping and `capture_prompt:false`) AND update `tasks.md` with `[x]` marks on filesystem.
+- **hive**: Read the required artifacts and resolve progress through the dedicated guarded progress API. Search results with multiple candidates are ambiguous; use the status-provided snapshot reference rather than selecting a newest result. `mcp__hive__mem_save` remains for non-progress SDD artifacts only; it is not an apply-progress writer.
+- **openspec**: Read and follow `skills/_shared/openspec-convention.md`. Update `tasks.md` with `[x]` marks and use the dedicated progress command for the bounded snapshot/batch topology.
+- **hybrid**: Use the dedicated progress command to publish the same immutable evidence batches and guarded snapshot advance to both sides. Update filesystem task checkboxes; do not use a general memory save to bridge divergent progress.
 - **none**: Return progress only. Do not update project artifacts.
 
 ## Status and Workspace Guard
@@ -74,11 +75,13 @@ Before reading implementation files or writing code, consume the structured stat
 ## What to Do
 
 ### Step 1: Load Skills
+
 Follow **Section A** from `skills/_shared/sdd-phase-common.md`.
 
 ### Step 2: Read Context
 
 Before writing ANY code:
+
 1. Consume the structured status and confirm the `sdd-apply` dependency is ready for the assigned work.
 2. Enforce `actionContext.mode` and `allowedEditRoots`; stop on read-only planning mode, missing roots, or unsafe paths.
 3. Read every applicable artifact path/topic from `contextFiles` and `artifactPaths`.
@@ -104,6 +107,7 @@ Then you MUST confirm the orchestrator/user provided a resolved delivery path:
 3. **`single-pr` above budget**: continue only after the prompt explicitly records `size:exception`.
 
 Also check for `Chain strategy` in the tasks artifact. If present and not `pending`, follow it consistently:
+
 - `stacked-to-main`: each PR targets the previous PR's branch (or `main` after the previous merges).
 - `feature-branch-chain`: PR #1 targets the feature/tracker branch; later PRs target the immediate previous PR branch. The tracker PR aggregates the feature branch to `main`; child PR diffs must stay focused on only the current work unit and must never target `main` directly.
 
@@ -111,17 +115,9 @@ If neither delivery decision nor chain strategy is present, STOP before writing 
 
 #### Step 2b: Read Previous Apply-Progress (if exists)
 
-Before starting work, check for existing apply-progress:
+Before starting work, resolve the canonical v2 snapshot and its exact referenced immutable evidence batches through `jarvis sdd progress` or the status-provided progress reader. Read the current generation, revision, digest, receipt, coverage, and next unpersisted entry; never infer completion from a cumulative observation or a checkbox alone.
 
-1. `mcp__hive__mem_search(query: "sdd/{change-name}/apply-progress", project: "{project}")`
-2. If found: `mcp__hive__mem_get_observation(id)` → read the full content
-3. Parse which tasks are already marked complete, partial, or blocked
-4. Skip tasks that are truly complete and start from the first assigned incomplete or partial task
-5. When saving your apply-progress in Step 6, MERGE: include all previously completed tasks PLUS your newly completed tasks in a single combined artifact
-
-**CRITICAL**: If the orchestrator told you previous progress exists, you MUST read it. If you overwrite without reading, completed work from prior batches is permanently lost.
-
-When prior `apply-progress = partial` exists, merge/reconcile it with current task state, continue apply from the unfinished work, and do not jump to `sdd-verify` until apply progress and task checkboxes agree.
+Reject the obsolete wording “When prior `apply-progress = partial` exists, merge/reconcile it with current task state”; continue only from the canonical bounded state. Do not merge or rewrite historical evidence. Reconcile current task state against validated coverage, then do not jump to `sdd-verify` until apply progress and task checkboxes agree. The guarded snapshot is the authoritative progress state.
 
 ### Step 3: Read Testing Capabilities and Resolve Mode
 
@@ -149,10 +145,11 @@ Resolve mode:
 #### Hard Gate (Strict TDD Only)
 
 If Strict TDD Mode is active (either from orchestrator injection or self-discovery):
+
 - You MUST produce a **TDD Cycle Evidence** table in your apply-progress artifact
 - Each task row MUST have: RED (test written first) → GREEN (implementation passes) → REFACTOR columns
 - If you complete a task WITHOUT writing tests first, mark it as FAILED in the evidence table
-- If partial apply progress already has evidence, preserve and merge that evidence with the new cycle evidence
+- Record new TDD evidence in the new immutable batch; do not merge or rewrite prior apply-progress evidence
 - The verify phase WILL reject your work if the TDD Evidence table is missing or incomplete
 
 **There is no silent fallback.** If you resolved Strict TDD as active, you follow it or you report failure. You do NOT quietly switch to Standard Mode.
@@ -189,21 +186,16 @@ Update the persisted tasks artifact — change `- [ ]` to `- [x]` for completed 
 
 **This step is MANDATORY — do NOT skip it.**
 
-Follow **Section C** from `skills/_shared/sdd-phase-common.md`.
-- artifact: `apply-progress`
-- topic_key: `sdd/{change-name}/apply-progress`
-- type: `architecture`
-- Also update the tasks artifact with `[x]` marks via `mcp__hive__mem_save` with `topic_key: "sdd/{change-name}/tasks"` (hive), file edit (openspec), or both (hybrid)
+Use `jarvis sdd progress advance` for every progress checkpoint. Append only complete evidence entries into immutable evidence batches, then submit a guarded snapshot advance with the expected generation, revision, digest, and a collision-resistant request ID. The final serialized snapshot and every batch MUST be at most 40,000 Unicode runes. Do not use `mcp__hive__mem_save` to write, replace, or recover apply-progress.
 
-#### Merge Protocol
+- On success, record the committed state and durable receipt, then mark the matching persisted task checkbox `[x]`.
+- On `continuation_required`, the checkpoint succeeded: retain the receipt, resume at the supplied next unpersisted entry, and do not truncate, summarize, or rewrite an entry.
+- On `evidence_item_too_large` or `snapshot_capacity_exhausted`, STOP without advancing completion and return the typed recovery direction.
+- On a transport loss or missing-side hybrid recovery, Retry the same request ID and exact payload. Replay only the receipt-recorded missing side; never rewrite a committed side.
+- On conflict, migration failure, invalid evidence, or `backend_diverged`, STOP and return the typed current state/recovery. Do not choose a backend winner or create a replacement snapshot.
+- For a legacy artifact, only the next authorized mutation may invoke guarded migration. Keep the legacy source authoritative until the v2 snapshot and referenced batches commit; failure leaves it readable and retryable.
 
-When saving apply-progress:
-1. If you read previous progress in Step 2b, your artifact MUST include ALL previously completed tasks and evidence PLUS your new completions
-2. If previous progress was partial, explicitly record what was reconciled, what remains, and why apply should continue or finish
-3. The final artifact should show the cumulative state of ALL assigned tasks across ALL batches
-4. Format: keep the same structure but ensure no completed task is lost from prior batches
-5. When work remains, include `status: partial` on its own line. This is the conservative machine-readable marker that preserves partial apply progress through Hive and OpenSpec; do not rely on free-form prose to signal partial state.
-6. When all apply work is reconciled, remove the `status: partial` marker or record `status: complete` before routing to verification.
+For legacy marker compatibility only, include `status: partial` on its own line when work remains and record `status: complete` only after validated complete coverage. The v2 snapshot and its referenced batches—not free-form cumulative prose—are authoritative.
 
 ### Step 7: Return Summary
 

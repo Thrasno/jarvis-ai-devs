@@ -48,7 +48,7 @@ Generated technical artifacts default to English unless the user explicitly requ
 Core principle: **does this inflate my context without need?** If yes → delegate. If no → do it inline.
 
 | Action | Inline | Delegate |
-|--------|--------|----------|
+| -------- | -------- | ---------- |
 | Read to decide/verify (1-3 files) | ✅ | — |
 | Read to explore/understand (4+ files) | — | ✅ |
 | Read as preparation for writing | — | ✅ together with the write |
@@ -60,6 +60,7 @@ Core principle: **does this inflate my context without need?** If yes → delega
 delegate (async) is the default for delegated work. Use task (sync) only when you need the result before your next action.
 
 Anti-patterns — these ALWAYS inflate context without need:
+
 - Reading 4+ files to "understand" the codebase inline → delegate an exploration
 - Writing a feature across multiple files inline → delegate
 - Running tests or builds inline → delegate
@@ -81,13 +82,14 @@ jarvis sdd continue <change> --json        # next recommended phase or blocked r
 Native `jarvis.sdd-status` JSON is authoritative over prompt inference and human prose. Route only by `nextRecommended` and `dependencies`; never infer routing from prose, markdown summaries, or phase-result wording.
 
 The JSON contract fields used for routing:
+
 - `nextRecommended`: stable phase token (`sdd-explore` … `sdd-archive`) or `none` / empty string when all done.
 - `blockedReasons`: phase/action-specific blocker list. BlockedReasons stop only the blocked phase or action; they do not override a safe `nextRecommended` for a different ready phase.
 - `dependencies[phase]`: `blocked | ready | all_done` per phase.
 
 Routing rule: launch the `nextRecommended` phase only when that phase dependency is `ready`. If `blockedReasons` apply to the recommended phase or to terminal work (`verify`/`archive` completion), report the relevant `blockedReasons` and stop only for the blocked phase or terminal action. Do not infer that downstream verify/archive blockers prevent a safe upstream `sdd-apply` when native status recommends `sdd-apply` and the apply dependency is ready.
 
-Before launching `sdd-apply`, `sdd-verify`, or `sdd-archive`, the orchestrator MUST verify native authority from the current status: the `schema` field equals `jarvis.sdd-status`, `dependencies[phase] == `ready``, `actionContext.mode == `workspace-edit``, and `actionContext.allowedEditRoots` is non-empty. Treat the phase-specific `blockedReasons` as authoritative and stop that phase. Manual recovery cannot invent workspace-edit authority: if native status is unavailable or does not prove all four fields, recovery is read-only and the orchestrator MUST NOT launch a mutating phase.
+Before launching `sdd-apply`, `sdd-verify`, or `sdd-archive`, the orchestrator MUST verify native authority from the current status: the `schema` field equals `jarvis.sdd-status`, dependencies[phase] == `ready`, actionContext.mode == `workspace-edit`, and `actionContext.allowedEditRoots` is non-empty. Treat the phase-specific `blockedReasons` as authoritative and stop that phase. Manual recovery cannot invent workspace-edit authority: if native status is unavailable or does not prove all four fields, recovery is read-only and the orchestrator MUST NOT launch a mutating phase.
 
 ### SDD Entry Routing
 
@@ -107,6 +109,7 @@ Before executing any mutating, planning, init, apply, verify, or archive SDD com
 This applies to `/sdd-init`, `/sdd-new`, `/sdd-ff`, `/sdd-continue`, `/sdd-explore`, `/sdd-apply`, `/sdd-verify`, `/sdd-archive`, and natural-language equivalents such as "use SDD to add dark mode" or "do it with SDD". `/sdd-status` is read-only recovery and must not be blocked by missing session preflight.
 
 Required preflight choices:
+
 1. **Execution mode**: `interactive` or `auto`.
 2. **Artifact store**: `hive`, `openspec`, `hybrid`, or `none`.
 3. **Chained PR strategy / delivery strategy**: `ask-on-risk`, `auto-chain`, `single-pr`, or `exception-ok`.
@@ -150,8 +153,8 @@ D. Review
 
 After asking this, STOP and wait for the user's answer.
 
-
 Map answers to canonical values:
+
 - Pace: A1/Interactive -> `interactive`; A2/Automatic -> `auto`.
 - Artifacts: B1/Hive -> `hive`; B2/OpenSpec -> `openspec`; B3/Hybrid -> `hybrid`; B4/None -> `none`.
 - PRs: C1/Ask me -> `ask-on-risk`; C2/Auto-chain -> `auto-chain`; C3/Single PR -> `single-pr`; C4/Exception-OK -> `exception-ok`.
@@ -159,6 +162,7 @@ Map answers to canonical values:
 - Recommended shortcut: `use recommended` / `usar recomendado` -> A1, B1, C1, D1.
 
 Hard gate rules:
+
 - Read-only status may run without session preflight; `/sdd-status` reports available state and recovery hints without mutating artifacts, running init, delegating phases, or editing files.
 - Mutating, planning, apply, verify, and archive SDD commands require session preflight unless all four preflight choices were already provided in the current conversation.
 - The SDD Session Preflight hard gate takes precedence over direct-command bypass wording. Outside this SDD hard gate, direct command warnings remain advisory.
@@ -168,6 +172,7 @@ Hard gate rules:
 - If the user explicitly provided all four choices in the current conversation, summarize them as the session preflight block and continue.
 
 After preflight is complete, resolve and cache:
+
 - project name and working directory;
 - execution mode (`interactive` or `auto`);
 - artifact store mode (`hive`, `openspec`, `hybrid`, or `none`);
@@ -190,6 +195,7 @@ When the native CLI is unavailable, fall back to reading the tasks artifact dire
 ### Delivery Strategy
 
 Forward the resolved delivery strategy to apply and verify agents:
+
 - `single-pr` only when the work is within budget or the prompt explicitly records `size:exception`;
 - `auto-chain` when the change is split into reviewable work units automatically after the forecast;
 - `ask-on-risk` when the orchestrator must ask before exceeding the review budget;
@@ -223,14 +229,16 @@ Artifact store is collected by `SDD Session Preflight`. Missing artifact-store c
 ### Commands
 
 Skills (appear in autocomplete):
+
 - `/sdd-init` → initialize SDD context; detects stack, bootstraps persistence
 - `/sdd-explore <topic>` → investigate an idea; reads codebase, compares approaches; no files created
 - `/sdd-apply [change]` → implement tasks in batches; checks off items as it goes
 - `/sdd-verify [change]` → validate implementation against specs; reports CRITICAL / WARNING / SUGGESTION
-- `/sdd-archive [change]` → close a change and persist final state in the active artifact store 
+- `/sdd-archive [change]` → close a change and persist final state in the active artifact store
 - `/sdd-onboard` → guided end-to-end walkthrough of SDD using your real codebase
 
 Meta-commands and direct orchestrator handling (type directly — orchestrator handles them, won't appear in autocomplete):
+
 - `/sdd-status [change]` → read-only status handled directly by the orchestrator; use native `jarvis sdd status` (`jarvis sdd status <change> --json`) when available, otherwise report status from available artifacts without preflight, init, delegation, or file edits
 - `/sdd-new <change>` → start a new change by delegating exploration + proposal to sub-agents
 - `/sdd-continue [change]` → run the next dependency-ready phase via sub-agent(s)
@@ -252,6 +260,7 @@ After `SDD Session Preflight` is complete and before executing any mutating, pla
    - If the requested command is not `/sdd-init`, THEN proceed with the requested command.
 
 This ensures:
+
 - Testing capabilities are always detected and cached
 - Strict TDD Mode is activated when the project supports it
 - The project context (stack, conventions) is available for all phases
@@ -268,6 +277,7 @@ Execution mode is collected by `SDD Session Preflight`. Missing execution-mode c
 Cache the mode choice for the session — don't ask again unless the user explicitly requests a mode change.
 
 In **Interactive** mode, between phases:
+
 1. Show a concise summary of what the phase produced
 2. List what the next phase will do
 3. Ask: "¿Continuamos? / Continue?" — accept YES/continue, NO/stop, or specific feedback to adjust
@@ -288,16 +298,19 @@ For this agent (sub-agent delegation): **Automatic** means phases run back-to-ba
 Automatic mode runs phases back-to-back, but it MUST NOT lower quality gates. After EACH delegated phase returns in `auto` mode, the orchestrator runs a gatekeeper check on that phase result BEFORE launching the next phase. Automatic mode never overrides the SDD Session Preflight hard gate, the Native SDD Dispatcher Guard, the Review Workload Guard, or any Mandatory Delegation Trigger.
 
 Gatekeeper validation per phase result:
+
 1. **Result Contract conformance**: the phase returned all required fields (`status`, `executive_summary`, `artifacts`, `next_recommended`, `risks`, `skill_resolution`). Missing or malformed fields fail the gate.
 2. **File-path integrity**: any file paths referenced in the result exist or are plausible repo paths; reject hallucinated or fabricated paths.
 3. **`next_recommended` coherence**: the recommended next phase is consistent with the Dependency Graph and the change's current dependency state. A `next_recommended` that skips an unmet dependency fails the gate. When the `jarvis` CLI is available, prefer native `jarvis sdd status <change> --json` `nextRecommended` over the phase-reported value.
 4. **No-drift**: the phase did not silently abandon scope, change the artifact store, or regress a cached preflight choice.
 
 Review depth (hybrid):
+
 - Low-risk phases (`sdd-explore`, `sdd-spec`, `sdd-tasks`, `sdd-archive`, `sdd-onboard`): inline gatekeeper check by the orchestrator on the compact phase result.
 - High-risk phases (`sdd-design`, `sdd-apply`): delegate a fresh-context reviewer (independent judgment) in addition to the inline checks.
 
 Outcome handling:
+
 - **PASS** → continue automatically to the next phase.
 - **FAIL (first time)** → re-run the SAME phase once with the gatekeeper findings forwarded to the sub-agent as corrective context.
 - **FAIL (second time)** → STOP the automatic chain and escalate to the user with the failing phase, the gatekeeper findings, and recommended manual options. Do not continue the chain past an escalation.
@@ -318,6 +331,7 @@ Artifact store is collected by `SDD Session Preflight`. Do not silently infer or
 Cache the artifact store choice for the session. Pass it as `artifact_store.mode` to every sub-agent launch.
 
 ### Dependency Graph
+
 ```
 proposal -> specs --> tasks -> apply -> verify -> archive
              ^
@@ -326,6 +340,7 @@ proposal -> specs --> tasks -> apply -> verify -> archive
 ```
 
 ### Result Contract
+
 Each phase returns: `status`, `executive_summary`, `artifacts`, `next_recommended`, `risks`, `skill_resolution`.
 
 <!-- gentle-ai:sdd-model-assignments -->
@@ -348,12 +363,14 @@ ALL sub-agent launch prompts that involve reading, writing, or reviewing code MU
 The orchestrator resolves skills from the registry ONCE (at session start or first delegation), caches exact `SKILL.md` paths, and injects matching paths into each sub-agent's prompt. Also reads the Model Assignments table once per session, caches `phase → model assignment`, includes that assignment in every Agent tool call via `model`.
 
 Orchestrator skill resolution (do once per session):
+
 1. `mem_search(query: "skill-registry", project: "{project}")` → `mem_get_observation(id)` for full registry content
 2. Fallback: read `.jarvis/skill-registry.md` if Hive is not available; `.atl/skill-registry.md` is a legacy read fallback only
 3. Cache the skill index rows, including trigger/description and exact `SKILL.md` paths. Jarvis built-in skills generated by `jarvis init` use project-local loadable paths like `.jarvis/skills/<skill>/SKILL.md`.
 4. If no registry exists, warn user and proceed without project-specific standards
 
 For each sub-agent launch:
+
 1. Match relevant skills by **code context** (file extensions/paths the sub-agent will touch) AND **task context** (what actions it will perform — review, PR creation, testing, etc.)
 2. Copy matching exact `SKILL.md` paths into the sub-agent prompt as `## Skills to load before work`
 3. Inject BEFORE the sub-agent's task-specific instructions
@@ -363,6 +380,7 @@ For each sub-agent launch:
 ### Skill Resolution Feedback
 
 After every delegation that returns a result, check the `skill_resolution` field:
+
 - `paths-injected` → all good, exact skill paths were passed correctly
 - `fallback-registry`, `fallback-path`, or `none` → skill cache was lost (likely compaction). Re-read the registry immediately and inject exact `SKILL.md` paths in all subsequent delegations.
 
@@ -384,7 +402,7 @@ Sub-agents get a fresh context with NO memory. The orchestrator controls context
 Each phase has explicit read/write rules:
 
 | Phase | Reads | Writes |
-|-------|-------|--------|
+| ------- | ------- | -------- |
 | `sdd-explore` | nothing | `explore` |
 | `sdd-propose` | exploration (optional) | `proposal` |
 | `sdd-spec` | proposal (required) | `spec` |
@@ -408,20 +426,22 @@ When launching `sdd-apply` or `sdd-verify` sub-agents, the orchestrator MUST:
 
 The orchestrator resolves TDD status ONCE per session (at first apply/verify launch) and caches it.
 
-#### Apply-Progress Continuity (MANDATORY)
+#### Bounded Apply-Progress Continuation (MANDATORY)
 
-When launching `sdd-apply` for a continuation batch (not the first batch):
+When launching `sdd-apply` for a continuation batch, pass the canonical snapshot reference, expected generation/revision/digest, durable receipt state, and the next unpersisted entry. The executor MUST resolve the snapshot and its ordered immutable evidence batches through the dedicated progress reader before writing.
 
-1. Search for existing apply-progress: `mem_search(query: "sdd/{change-name}/apply-progress", project: "{project}")`
-2. If found, add to the sub-agent prompt: `"PREVIOUS APPLY-PROGRESS EXISTS at topic_key 'sdd/{change-name}/apply-progress'. You MUST read it first via mem_search + mem_get_observation, merge your new progress with the existing progress, and save the combined result. Do NOT overwrite — MERGE."`
-3. If not found (first batch), no special instruction needed.
+1. Instruct the executor to append complete entries only, keep each serialized batch and snapshot at or below 40,000 Unicode runes, and request a guarded snapshot advance through `jarvis sdd progress advance`.
+2. On `continuation_required`, the checkpoint is committed: preserve its receipt and continue from the returned entry boundary.
+3. On transport loss or missing-side hybrid publication, replay the exact payload with the same request ID; repair only the receipt-recorded missing side.
+4. On conflict, invalid/capacity outcome, migration failure, or `backend_diverged`, STOP and forward the typed recovery/current state. Do not pick a backend winner, synthesize a replacement snapshot, or route downstream.
+5. For legacy progress, authorize migration only on the next mutating apply and preserve the legacy source until guarded v2 publication succeeds.
 
-This prevents progress loss across batches. The sub-agent is responsible for read-merge-write, but the orchestrator MUST tell it that previous progress exists.
+Do not instruct an executor to merge or rewrite cumulative apply-progress observations. General `mem_save` is not an apply-progress replacement and must not be presented as a recovery path. This preserves durable evidence without losing prior batches.
 
 #### Hive Topic Key Format
 
 | Artifact | Topic Key |
-|----------|-----------|
+| ---------- | ----------- |
 | Project context | `sdd-init/{project}` |
 | Exploration | `sdd/{change-name}/explore` |
 | Proposal | `sdd/{change-name}/proposal` |
@@ -434,6 +454,7 @@ This prevents progress loss across batches. The sub-agent is responsible for rea
 | DAG state | `sdd/{change-name}/state` |
 
 Sub-agents retrieve full content via two steps:
+
 1. `mem_search(query: "{topic_key}", project: "{project}")` → get observation ID
 2. `mem_get_observation(id: {id})` → full content (REQUIRED — search results are truncated)
 

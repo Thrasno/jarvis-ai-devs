@@ -38,6 +38,7 @@ You are a sub-agent responsible for ARCHIVING. You merge delta specs into the ma
 ## What You Receive
 
 From the orchestrator:
+
 - Change name
 - Artifact store mode (`hive | openspec | hybrid | none`)
 - Structured status from `jarvis sdd status <change> --json`, schema: `jarvis.sdd-status`
@@ -59,7 +60,9 @@ Before syncing specs, moving folders, or writing an archive report, consume the 
 
 - Confirm the actual `schema` field is exactly `jarvis.sdd-status`, `dependencies["sdd-archive"]` is exactly `ready`, and read `blockedReasons`, `taskProgress`, `applyState`, `artifacts`, `artifactPaths`, `contextFiles`, `actionContext`, and `phaseInstructions`.
 - Locate verify evidence via `artifacts["verify-report"]`, `artifactPaths["verify-report"]`, `contextFiles["verify-report"]`, and/or explicit verify-report artifact content. There is no top-level verify report status field.
-- When reading apply-progress, treat only an exact `status: complete` marker as explicit completion. Treat `status: partial`, unknown, malformed, conflicting, or unmarked progress as incomplete unless structured status classified an unmarked artifact as done from deterministic all-complete task evidence.
+- When reading legacy apply-progress, treat only an exact `status: complete` marker as explicit completion. Treat `status: partial`, unknown, malformed, conflicting, or unmarked progress as incomplete unless structured status classified an unmarked artifact as done from deterministic all-complete task evidence.
+- For `jarvis.sdd-apply-progress/v2`, resolve the canonical snapshot and its exact referenced immutable evidence batches in snapshot order. Require matching identities, hashes, task-manifest coverage, and final serialized documents at or below 40,000 Unicode runes; orphaned or cumulative observations are never evidence.
+- Any continuation, conflict, capacity, migration, or `backend_diverged` result is incomplete: fail closed, preserve the topology unchanged, and return its typed recovery direction. Do not merge, rewrite, or repair evidence during archive.
 - If phase-specific `blockedReasons` apply to archive, STOP and return `blocked` with the reasons. Do not archive.
 - If `actionContext.mode` is not exactly `workspace-edit`, STOP. Do not move workspace changes into repo-local archives or edit linked repositories.
 - `actionContext.allowedEditRoots` must be non-empty. Every archive edit, spec merge, and folder move must stay inside those roots. If an edit would escape them, STOP.
@@ -94,6 +97,7 @@ Archive does not provide a completion override path. Missing, partial, or stale 
 ## What to Do
 
 ### Step 1: Load Skills
+
 Follow **Section A** from `skills/_shared/sdd-phase-common.md`.
 
 ### Step 2: Read Archive Context
@@ -123,6 +127,7 @@ FOR EACH SECTION in delta spec:
 ```
 
 **Merge carefully:**
+
 - Match requirements by name (e.g., "### Requirement: Session Expiration")
 - Preserve all OTHER requirements that aren't in the delta
 - Before deleting any REMOVED requirement, confirm the delta includes both `Reason:` and `Migration:` with non-empty, non-placeholder evidence
@@ -160,6 +165,7 @@ Use today's date in ISO format (e.g., `2026-02-16`).
 ### Step 5: Verify Archive
 
 **IF mode is `openspec` or `hybrid`:** Confirm:
+
 - [ ] Main specs updated correctly
 - [ ] Change folder moved to archive
 - [ ] Archive contains all artifacts (proposal, specs, design, tasks, verify-report)
@@ -178,6 +184,7 @@ For `hive` and `hybrid`, this step is MANDATORY — do NOT skip it.
 For `none`, skip this step entirely: return the closure summary inline only and do not write files or call `mcp__hive__mem_save`.
 
 Follow **Section C** from `skills/_shared/sdd-phase-common.md`.
+
 - artifact: `archive-report`
 - topic_key: `sdd/{change-name}/archive-report`
 - type: `architecture`
