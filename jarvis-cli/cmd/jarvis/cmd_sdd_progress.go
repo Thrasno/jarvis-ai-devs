@@ -45,6 +45,7 @@ type checkpointInput struct {
 	Entries            []applyprogress.EvidenceEntry `json:"entries"`
 	EntryIndex         int                           `json:"entry_index"`
 	EntryID            string                        `json:"entry_id"`
+	StreamSHA256       string                        `json:"stream_sha256,omitempty"`
 }
 
 type checkpointReceipt struct {
@@ -59,6 +60,7 @@ type checkpointOutput struct {
 	Receipt        *checkpointReceipt        `json:"receipt,omitempty"`
 	NextEntryIndex int                       `json:"next_entry_index,omitempty"`
 	NextEntryID    string                    `json:"next_entry_id,omitempty"`
+	StreamSHA256   string                    `json:"stream_sha256,omitempty"`
 	EntryIndex     int                       `json:"entry_index,omitempty"`
 	EntryID        string                    `json:"entry_id,omitempty"`
 	Recovery       string                    `json:"recovery,omitempty"`
@@ -266,7 +268,7 @@ func runSddProgressAdvance(store progressAdvancer, root string, request sddprogr
 }
 
 func runSddProgressCheckpoint(store progressAdvancer, request checkpointInput) (checkpointOutput, error) {
-	plan, err := applyprogress.PlanCheckpoint(applyprogress.PlanInput{Project: request.Project, Change: request.Change, Base: request.Base, Tasks: request.Tasks, Entries: request.Entries, EntryIndex: request.EntryIndex, EntryID: request.EntryID, BatchID: request.BatchID})
+	plan, err := applyprogress.PlanCheckpoint(applyprogress.PlanInput{Project: request.Project, Change: request.Change, Base: request.Base, Tasks: request.Tasks, Entries: request.Entries, EntryIndex: request.EntryIndex, EntryID: request.EntryID, BatchID: request.BatchID, StreamSHA256: request.StreamSHA256})
 	if err != nil {
 		return checkpointOutput{Outcome: "invalid", Code: "invalid_request"}, err
 	}
@@ -288,9 +290,9 @@ func runSddProgressCheckpoint(store progressAdvancer, request checkpointInput) (
 	}
 	switch plan.Outcome {
 	case applyprogress.PlanEvidenceItemTooLarge:
-		return checkpointOutput{Outcome: string(plan.Outcome), Code: string(plan.Outcome), State: state, EntryIndex: request.EntryIndex, EntryID: request.EntryID}, nil
+		return checkpointOutput{Outcome: string(plan.Outcome), Code: string(plan.Outcome), State: state, EntryIndex: request.EntryIndex, EntryID: request.EntryID, StreamSHA256: plan.StreamSHA256}, nil
 	case applyprogress.PlanSnapshotCapacityExhausted:
-		return checkpointOutput{Outcome: string(plan.Outcome), Code: string(plan.Outcome), State: state, Recovery: "reconcile or evolve the snapshot before retrying"}, nil
+		return checkpointOutput{Outcome: string(plan.Outcome), Code: string(plan.Outcome), State: state, Recovery: "reconcile or evolve the snapshot before retrying", StreamSHA256: plan.StreamSHA256}, nil
 	}
 	result, err := store.Advance(advance)
 	if err != nil {
@@ -305,7 +307,7 @@ func runSddProgressCheckpoint(store progressAdvancer, request checkpointInput) (
 		}
 		return checkpointOutput{Outcome: "recovery", Code: "publication_interrupted", State: state, Recovery: "retry the identical request ID and payload"}, err
 	}
-	output := checkpointOutput{Outcome: string(plan.Outcome), Code: string(plan.Outcome), State: result, Snapshot: &plan.Snapshot, Receipt: &checkpointReceipt{RequestID: request.RequestID}}
+	output := checkpointOutput{Outcome: string(plan.Outcome), Code: string(plan.Outcome), State: result, Snapshot: &plan.Snapshot, Receipt: &checkpointReceipt{RequestID: request.RequestID}, StreamSHA256: plan.StreamSHA256}
 	if plan.Outcome == applyprogress.PlanContinuationRequired {
 		output.NextEntryIndex, output.NextEntryID = plan.NextEntryIndex, plan.NextEntryID
 	}

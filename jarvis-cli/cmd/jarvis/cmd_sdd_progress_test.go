@@ -278,11 +278,15 @@ func TestSddProgressCheckpointCommitsInitialStream(t *testing.T) {
 }
 
 type checkpointBackend struct {
-	current *applyprogress.Snapshot
-	calls   int
+	current      *applyprogress.Snapshot
+	calls        int
+	currentCalls int
 }
 
-func (b *checkpointBackend) Current() (*applyprogress.Snapshot, error) { return b.current, nil }
+func (b *checkpointBackend) Current() (*applyprogress.Snapshot, error) {
+	b.currentCalls++
+	return b.current, nil
+}
 func (b *checkpointBackend) Advance(sddprogress.AdvanceRequest) (sddprogress.AdvanceResult, error) {
 	b.calls++
 	return sddprogress.AdvanceResult{}, errors.New("unexpected advance")
@@ -307,6 +311,41 @@ func TestSddProgressCheckpointCapacityDoesNotAdvance(t *testing.T) {
 	}
 }
 
+func TestSddProgressCheckpointRejectsChangedContinuationBeforeBackend(t *testing.T) {
+	tasks := []applyprogress.Task{{ID: "1", Text: "one"}, {ID: "2", Text: "two"}, {ID: "3", Text: "three"}}
+	entries := []applyprogress.EvidenceEntry{
+		checkpointEntry("e1", "1", strings.Repeat("é", 21000)),
+		checkpointEntry("e2", "2", strings.Repeat("é", 21000)),
+		checkpointEntry("e3", "3", "last"),
+	}
+	first, err := applyprogress.PlanCheckpoint(applyprogress.PlanInput{Project: "jarvis-dev", Change: "issue-653", Tasks: tasks, Entries: entries, EntryID: "e1", BatchID: "apb-00000000000000000000000000000030"})
+	if err != nil || first.Outcome != applyprogress.PlanContinuationRequired {
+		t.Fatalf("initial plan = %#v, %v", first, err)
+	}
+	request := checkpointInput{Project: "jarvis-dev", Change: "issue-653", Tasks: tasks, Base: &first.Snapshot, ExpectedGeneration: first.Snapshot.Generation, ExpectedRevision: first.Snapshot.Revision, ExpectedDigest: first.Snapshot.Digest, RequestID: "checkpoint-resume", BatchID: "apb-00000000000000000000000000000031", Entries: entries, EntryIndex: first.NextEntryIndex, EntryID: first.NextEntryID, StreamSHA256: first.StreamSHA256}
+	for _, name := range []string{"reordered", "modified", "truncated", "extended"} {
+		t.Run(name, func(t *testing.T) {
+			changed := append([]applyprogress.EvidenceEntry(nil), entries...)
+			switch name {
+			case "reordered":
+				changed[0], changed[2] = changed[2], changed[0]
+			case "modified":
+				changed[0].Summary = "changed"
+			case "truncated":
+				changed = changed[:2]
+			case "extended":
+				changed = append(changed, applyprogress.EvidenceEntry{EntryID: "e4", TaskIDs: []string{}, CompletesTaskIDs: []string{}, Kind: applyprogress.EvidenceGreen, Summary: "extra", Command: "go test", Outcome: applyprogress.OutcomePass, Files: []string{}})
+			}
+			request.Entries = changed
+			backend := &checkpointBackend{current: &first.Snapshot}
+			output, err := runSddProgressCheckpoint(backend, request)
+			if !errors.Is(err, applyprogress.ErrInvalidValue) || output.Outcome != "invalid" || backend.currentCalls != 0 || backend.calls != 0 {
+				t.Fatalf("changed continuation = %#v, %v; backend resolve/advance calls=%d/%d", output, err, backend.currentCalls, backend.calls)
+			}
+		})
+	}
+}
+
 func TestSddProgressCheckpointDurablyContinues162725Runes(t *testing.T) {
 	root := t.TempDir()
 	tasks, entries := make([]applyprogress.Task, 5), make([]applyprogress.EvidenceEntry, 5)
@@ -315,8 +354,9 @@ func TestSddProgressCheckpointDurablyContinues162725Runes(t *testing.T) {
 		tasks[i], entries[i] = applyprogress.Task{ID: id, Text: id}, checkpointEntry("entry-"+id, id, strings.Repeat("é", 32545))
 	}
 	var base *applyprogress.Snapshot
+	var streamSHA256 string
 	for cursor := 0; cursor < len(entries); {
-		request := checkpointInput{Project: "jarvis-dev", Change: "issue-653", Tasks: tasks, Base: base, ExpectedGeneration: checkpointState(base).Generation, ExpectedRevision: checkpointState(base).Revision, ExpectedDigest: checkpointState(base).Digest, RequestID: fmt.Sprintf("checkpoint-%d", cursor), BatchID: fmt.Sprintf("apb-%032x", cursor+10), Entries: entries, EntryIndex: cursor, EntryID: entries[cursor].EntryID}
+		request := checkpointInput{Project: "jarvis-dev", Change: "issue-653", Tasks: tasks, Base: base, ExpectedGeneration: checkpointState(base).Generation, ExpectedRevision: checkpointState(base).Revision, ExpectedDigest: checkpointState(base).Digest, RequestID: fmt.Sprintf("checkpoint-%d", cursor), BatchID: fmt.Sprintf("apb-%032x", cursor+10), Entries: entries, EntryIndex: cursor, EntryID: entries[cursor].EntryID, StreamSHA256: streamSHA256}
 		output, err := executeSddProgressCheckpoint(t, newSddProgressCommand(defaultOpenSpec), root, request)
 		if err != nil || output.Snapshot == nil || output.Receipt == nil || output.Receipt.RequestID != request.RequestID || output.State != checkpointState(output.Snapshot) {
 			t.Fatalf("checkpoint %d = %#v, %v", cursor, output, err)
@@ -333,10 +373,10 @@ func TestSddProgressCheckpointDurablyContinues162725Runes(t *testing.T) {
 			}
 		}
 		if output.Outcome == "continuation_required" {
-			if output.NextEntryIndex <= cursor || output.NextEntryID != entries[output.NextEntryIndex].EntryID {
+			if output.NextEntryIndex <= cursor || output.NextEntryID != entries[output.NextEntryIndex].EntryID || len(output.StreamSHA256) != 64 {
 				t.Fatalf("continuation = %#v", output)
 			}
-			base, cursor = output.Snapshot, output.NextEntryIndex
+			base, cursor, streamSHA256 = output.Snapshot, output.NextEntryIndex, output.StreamSHA256
 			continue
 		}
 		if output.Outcome != "committed" || cursor != len(entries)-1 {
@@ -554,11 +594,11 @@ func TestSddProgressCheckpointContinuationParityAcrossStores(t *testing.T) {
 			}
 			first := checkpointInput{Project: "jarvis-dev", Change: "issue-653", Tasks: tasks, RequestID: "parity-first-" + mode, BatchID: "apb-00000000000000000000000000000012", Entries: entries, EntryID: "entry-1"}
 			output, err := executeSddProgressCheckpoint(t, newSddProgressCommand(configuredProgressStore), root, first)
-			if err != nil || output.Outcome != "continuation_required" || output.NextEntryIndex != 1 || output.NextEntryID != "entry-2" {
+			if err != nil || output.Outcome != "continuation_required" || output.NextEntryIndex != 1 || output.NextEntryID != "entry-2" || len(output.StreamSHA256) != 64 {
 				t.Fatalf("first checkpoint = %#v, %v", output, err)
 			}
 			second := first
-			second.Base, second.ExpectedGeneration, second.ExpectedRevision, second.ExpectedDigest = output.Snapshot, output.State.Generation, output.State.Revision, output.State.Digest
+			second.Base, second.ExpectedGeneration, second.ExpectedRevision, second.ExpectedDigest, second.StreamSHA256 = output.Snapshot, output.State.Generation, output.State.Revision, output.State.Digest, output.StreamSHA256
 			second.RequestID, second.BatchID, second.EntryIndex, second.EntryID = "parity-second-"+mode, "apb-00000000000000000000000000000013", output.NextEntryIndex, output.NextEntryID
 			output, err = executeSddProgressCheckpoint(t, newSddProgressCommand(configuredProgressStore), root, second)
 			if err != nil || output.Outcome != "committed" || output.Snapshot == nil || output.Snapshot.Generation != 2 {

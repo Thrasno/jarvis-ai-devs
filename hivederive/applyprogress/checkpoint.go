@@ -23,6 +23,7 @@ type PlanInput struct {
 	Entries          []EvidenceEntry
 	EntryIndex       int
 	EntryID, BatchID string
+	StreamSHA256     string
 }
 
 type PlanResult struct {
@@ -33,10 +34,15 @@ type PlanResult struct {
 	SnapshotJSON             []byte
 	EndIndex, NextEntryIndex int
 	NextEntryID              string
+	StreamSHA256             string
 }
 
 // PlanCheckpoint returns the maximal whole-entry prefix that fits one batch and successor snapshot.
 func PlanCheckpoint(input PlanInput) (PlanResult, error) {
+	streamSHA256, err := StreamSHA256(input.Entries)
+	if err != nil || (input.EntryIndex > 0 && input.StreamSHA256 == "") || (input.StreamSHA256 != "" && input.StreamSHA256 != streamSHA256) {
+		return PlanResult{}, ErrInvalidValue
+	}
 	tasks, manifest, err := TaskManifest(input.Tasks)
 	if err != nil || !validID(input.Project) || !validID(input.Change) || !batchIDPattern.MatchString(input.BatchID) || input.EntryIndex < 0 || input.EntryIndex >= len(input.Entries) || input.EntryID != input.Entries[input.EntryIndex].EntryID {
 		return PlanResult{}, ErrInvalidValue
@@ -53,12 +59,12 @@ func PlanCheckpoint(input PlanInput) (PlanResult, error) {
 	if err != nil {
 		return PlanResult{}, err
 	}
-	last := PlanResult{}
+	last := PlanResult{StreamSHA256: streamSHA256}
 	for end := input.EntryIndex + 1; end <= len(input.Entries); end++ {
 		batch, batchJSON, err := SealBatch(Batch{Schema: EvidenceSchema, Project: input.Project, Change: input.Change, BatchID: input.BatchID, Entries: input.Entries[input.EntryIndex:end]})
 		if err != nil {
 			if isCapacity(err) && end == input.EntryIndex+1 {
-				return PlanResult{Outcome: PlanEvidenceItemTooLarge}, nil
+				return PlanResult{Outcome: PlanEvidenceItemTooLarge, StreamSHA256: streamSHA256}, nil
 			}
 			if isCapacity(err) {
 				break
@@ -76,14 +82,14 @@ func PlanCheckpoint(input PlanInput) (PlanResult, error) {
 		snapshot, snapshotJSON, err := SealSnapshot(snapshot)
 		if err != nil {
 			if isCapacity(err) && end == input.EntryIndex+1 {
-				return PlanResult{Outcome: PlanSnapshotCapacityExhausted}, nil
+				return PlanResult{Outcome: PlanSnapshotCapacityExhausted, StreamSHA256: streamSHA256}, nil
 			}
 			if isCapacity(err) {
 				break
 			}
 			return PlanResult{}, err
 		}
-		last = PlanResult{Batch: batch, BatchJSON: batchJSON, Snapshot: snapshot, SnapshotJSON: snapshotJSON, EndIndex: end}
+		last = PlanResult{Batch: batch, BatchJSON: batchJSON, Snapshot: snapshot, SnapshotJSON: snapshotJSON, EndIndex: end, StreamSHA256: streamSHA256}
 		if end == len(input.Entries) {
 			last.Outcome = PlanCommitted
 			return last, nil
@@ -92,6 +98,15 @@ func PlanCheckpoint(input PlanInput) (PlanResult, error) {
 	last.Outcome, last.NextEntryIndex = PlanContinuationRequired, last.EndIndex
 	last.NextEntryID = input.Entries[last.EndIndex].EntryID
 	return last, nil
+}
+
+// StreamSHA256 returns the canonical SHA-256 binding for the full ordered entry stream.
+func StreamSHA256(entries []EvidenceEntry) (string, error) {
+	data, err := canonicalJSON(entries)
+	if err != nil {
+		return "", err
+	}
+	return digest(data), nil
 }
 
 func planBase(input PlanInput, manifest string, known map[string]bool) (Snapshot, map[string]Coverage, error) {

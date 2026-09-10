@@ -27,6 +27,52 @@ func TestPlanCheckpointPrefix(t *testing.T) {
 	}
 }
 
+func TestPlanCheckpointBindsOrderedStreamDigest(t *testing.T) {
+	tasks := []Task{{ID: "1", Text: "one"}, {ID: "2", Text: "two"}, {ID: "3", Text: "three"}}
+	entries := []EvidenceEntry{
+		planEntry("e1", "1", strings.Repeat("é", 21000)),
+		planEntry("e2", "2", strings.Repeat("é", 21000)),
+		planEntry("e3", "3", "last"),
+	}
+	first, err := PlanCheckpoint(PlanInput{Project: "jarvis", Change: "change", Tasks: tasks, Entries: entries, EntryID: "e1", BatchID: planBatchID(30)})
+	if err != nil || first.Outcome != PlanContinuationRequired {
+		t.Fatalf("initial checkpoint = %#v, %v", first, err)
+	}
+	const wantDigest = "238ac30b188ce33b3a933a007c5bc0c797c28adb2c584ac50191bcc270babed4"
+	if first.StreamSHA256 != wantDigest {
+		t.Fatalf("stream digest = %q, want deterministic %q", first.StreamSHA256, wantDigest)
+	}
+
+	resume := PlanInput{Project: "jarvis", Change: "change", Base: &first.Snapshot, Tasks: tasks, Entries: entries, EntryIndex: first.NextEntryIndex, EntryID: first.NextEntryID, BatchID: planBatchID(31), StreamSHA256: first.StreamSHA256}
+	if _, err := PlanCheckpoint(resume); err != nil {
+		t.Fatalf("unchanged continuation = %v", err)
+	}
+	missingDigest := resume
+	missingDigest.StreamSHA256 = ""
+	if _, err := PlanCheckpoint(missingDigest); !errors.Is(err, ErrInvalidValue) {
+		t.Fatalf("missing continuation digest error = %v, want invalid value", err)
+	}
+	for _, name := range []string{"reordered", "modified", "truncated", "extended"} {
+		t.Run(name, func(t *testing.T) {
+			changed := append([]EvidenceEntry(nil), entries...)
+			switch name {
+			case "reordered":
+				changed[0], changed[2] = changed[2], changed[0]
+			case "modified":
+				changed[0].Summary = "changed"
+			case "truncated":
+				changed = changed[:2]
+			case "extended":
+				changed = append(changed, EvidenceEntry{EntryID: "e4", TaskIDs: []string{}, CompletesTaskIDs: []string{}, Kind: EvidenceGreen, Summary: "extra", Command: "go test", Outcome: OutcomePass, Files: []string{}})
+			}
+			resume.Entries = changed
+			if _, err := PlanCheckpoint(resume); !errors.Is(err, ErrInvalidValue) {
+				t.Fatalf("changed continuation error = %v, want invalid value", err)
+			}
+		})
+	}
+}
+
 func TestPlanCheckpointExactCapacityAndTerminalOutcomes(t *testing.T) {
 	for _, target := range []int{MaxDocumentRunes, MaxDocumentRunes + 1} {
 		t.Run("batch rune boundary", func(t *testing.T) {
@@ -102,9 +148,10 @@ func TestPlanCheckpointRetains162725RunesInOrder(t *testing.T) {
 		tasks[i], entries[i] = Task{ID: id, Text: id}, planEntry("e"+id, id, strings.Repeat("é", 32545))
 	}
 	var base *Snapshot
+	streamSHA256 := ""
 	cursor, batches := 0, []Batch{}
 	for cursor < len(entries) {
-		result, err := PlanCheckpoint(PlanInput{Project: "jarvis", Change: "change", Base: base, Tasks: tasks, Entries: entries, EntryIndex: cursor, EntryID: entries[cursor].EntryID, BatchID: planBatchID(cursor + 10)})
+		result, err := PlanCheckpoint(PlanInput{Project: "jarvis", Change: "change", Base: base, Tasks: tasks, Entries: entries, EntryIndex: cursor, EntryID: entries[cursor].EntryID, BatchID: planBatchID(cursor + 10), StreamSHA256: streamSHA256})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -115,9 +162,9 @@ func TestPlanCheckpointRetains162725RunesInOrder(t *testing.T) {
 		if result.Snapshot.Generation != uint64(len(batches)+1) || result.Snapshot.Revision != uint64(len(batches)+1) {
 			t.Fatalf("successor coordinates = %d/%d", result.Snapshot.Generation, result.Snapshot.Revision)
 		}
-		batches, base, cursor = append(batches, result.Batch), &result.Snapshot, result.EndIndex
-		if cursor < len(entries) && (result.NextEntryIndex != cursor || result.NextEntryID != entries[cursor].EntryID) {
-			t.Fatalf("continuation cursor = %d/%q, want %d/%q", result.NextEntryIndex, result.NextEntryID, cursor, entries[cursor].EntryID)
+		batches, base, cursor, streamSHA256 = append(batches, result.Batch), &result.Snapshot, result.EndIndex, result.StreamSHA256
+		if cursor < len(entries) && (result.NextEntryIndex != cursor || result.NextEntryID != entries[cursor].EntryID || len(streamSHA256) != 64) {
+			t.Fatalf("continuation cursor = %d/%q/%q, want %d/%q and stream digest", result.NextEntryIndex, result.NextEntryID, streamSHA256, cursor, entries[cursor].EntryID)
 		}
 	}
 	got := make([]EvidenceEntry, 0, len(entries))
