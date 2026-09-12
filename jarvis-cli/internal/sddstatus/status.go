@@ -1,9 +1,12 @@
 package sddstatus
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
 )
 
 const StatusSchema = "jarvis.sdd-status"
@@ -12,13 +15,14 @@ const StatusSchema = "jarvis.sdd-status"
 type ArtifactState string
 
 const (
-	ArtifactMissing                 ArtifactState = "missing"
-	ArtifactPartial                 ArtifactState = "partial"
-	ArtifactDone                    ArtifactState = "done"
-	ArtifactBlockedContinuation     ArtifactState = "blocked:continuation_required"
-	ArtifactBlockedConflict         ArtifactState = "blocked:conflict"
-	ArtifactBlockedManifestMismatch ArtifactState = "blocked:task_manifest_mismatch"
-	ArtifactBlockedInvalid          ArtifactState = "blocked:invalid"
+	ArtifactMissing                       ArtifactState = "missing"
+	ArtifactPartial                       ArtifactState = "partial"
+	ArtifactDone                          ArtifactState = "done"
+	ArtifactBlockedContinuation           ArtifactState = "blocked:continuation_required"
+	ArtifactBlockedConflict               ArtifactState = "blocked:conflict"
+	ArtifactBlockedManifestMismatch       ArtifactState = "blocked:task_manifest_mismatch"
+	ArtifactBlockedInvalid                ArtifactState = "blocked:invalid"
+	ArtifactBlockedPublicationInterrupted ArtifactState = "blocked:publication_interrupted"
 )
 
 type ActionMode string
@@ -99,32 +103,7 @@ var PhaseRequiredDeps = map[string][]string{
 	PhaseArchive: {ArtifactSpec, ArtifactDesign, ArtifactTasks, ArtifactApplyProgress, ArtifactVerifyReport},
 }
 
-// verifyBlockPatterns are regex patterns that indicate a failing or unclear verify report.
-// Archive is blocked if any pattern matches the verify-report content after negated forms are stripped.
-// The "failed" pattern requires a non-zero leading digit so "0 failed" does not match.
-// "blockers?" and "failures?" use word boundaries; zero-count forms are handled by verifyNegatedForms.
-var verifyBlockPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)\bcritical\b`),
-	regexp.MustCompile(`(?i)\bblockers?\b`),
-	regexp.MustCompile(`(?i)\bfailures?\b`),
-	regexp.MustCompile(`(?i)[1-9]\d*\s+failed\b`),
-	regexp.MustCompile(`(?i)\bpending\b`),
-	regexp.MustCompile(`(?i)\buntested\b`),
-}
-
-// verifyNegatedForms matches phrases that indicate a passing state despite containing
-// blocking keywords. Two forms are handled:
-//   - Zero/none quantified terms: "0 failures", "no blockers", "no pending items", "zero untested"
-//   - Hyphenated negations: "non-critical"
-//
-// These are stripped from the verify-report content before verifyBlockPatterns are applied,
-// preventing false-positive archive blocks on common summary phrases.
-var verifyNegatedForms = regexp.MustCompile(`(?i)(?:\b(?:0|no|zero)\s+(?:failures?|blockers?|pending|untested)\b|\bnon-critical\b)`)
-
 var (
-	rxCheckedBox   = regexp.MustCompile(`(?i)\[x\]`)
-	rxUncheckedBox = regexp.MustCompile(`\[ \]`)
-
 	// rxApplyDecisionRequired matches "Decision needed before apply: Yes" with word boundary
 	// to avoid prefix collisions like "Yesterday". Case-insensitive for robustness.
 	rxApplyDecisionRequired = regexp.MustCompile(`(?i)Decision needed before apply:\s*Yes\b`)
@@ -142,18 +121,42 @@ type ApplyDecision struct {
 	Resolved bool `json:"resolved"`
 }
 
-// TaskProgress holds parsed task completion counts from a tasks artifact.
+// TaskProgressState records whether task content was absent, valid, or invalid.
+type TaskProgressState string
+
+const (
+	TaskProgressAbsent  TaskProgressState = "absent"
+	TaskProgressValid   TaskProgressState = "valid"
+	TaskProgressInvalid TaskProgressState = "invalid"
+)
+
+// TaskProgress holds parsed task completion counts from an observed tasks artifact.
+// A nil TaskProgress means no authoritative task rows were observed, including when
+// tasks content is absent from a partial observation.
 type TaskProgress struct {
-	Total     int  `json:"total"`
-	Completed int  `json:"completed"`
-	AllDone   bool `json:"allDone"`
+	State     TaskProgressState `json:"state"`
+	Total     int               `json:"total"`
+	Completed int               `json:"completed"`
+	AllDone   bool              `json:"allDone"`
+}
+
+// Capacity is a deterministic projection of the persisted canonical head.
+// ProjectedRunes equals CurrentRunes because status never retains a rejected
+// successor projection.
+type Capacity struct {
+	CurrentRunes   int                            `json:"current_runes"`
+	ProjectedRunes int                            `json:"projected_runes"`
+	CeilingRunes   int                            `json:"ceiling_runes"`
+	Warning        *applyprogress.CapacityWarning `json:"warning,omitempty"`
 }
 
 // ApplyState describes the state of iterative apply execution.
 type ApplyState struct {
 	HasProgress bool `json:"hasProgress"`
-	// Complete is true when a verify-report exists, implying apply was far enough along to verify.
-	Complete bool `json:"complete"`
+	// Complete is true only when canonical apply-progress is complete and every
+	// authoritative task checkbox is checked. Verification is a separate dependency.
+	Complete bool      `json:"complete"`
+	Capacity *Capacity `json:"capacity,omitempty"`
 }
 
 // ActionContext describes how phase agents may use the current workspace.
@@ -250,11 +253,16 @@ func ComputeStatus(changeName, artifactStore string, in Input) *ChangeStatus {
 		Mode:             actionMode,
 		AllowedEditRoots: copyStringSlice(allowedEditRoots),
 	}
-	taskProgress := parseTaskProgress(in.Contents[ArtifactTasks])
-	applyDecision := parseApplyDecision(in.Contents[ArtifactTasks])
-	applyState := buildApplyState(in.Artifacts)
-	dependencies := computeDependencies(in.Artifacts, taskProgress, applyDecision, in.Contents[ArtifactVerifyReport], actionContext)
-	nextRecommended, blockedReasons := computeNextAndBlockers(in.Artifacts, dependencies, taskProgress, applyDecision, in.Contents[ArtifactVerifyReport], actionContext)
+	artifacts := copyArtifactStateMap(in.Artifacts)
+	tasksContent, tasksObserved := in.Contents[ArtifactTasks]
+	taskProgress := parseTaskProgress(tasksContent, tasksObserved)
+	if taskProgress != nil && taskProgress.State == TaskProgressInvalid {
+		artifacts[ArtifactTasks] = ArtifactBlockedInvalid
+	}
+	applyDecision := parseApplyDecision(tasksContent)
+	applyState := buildApplyState(artifacts, taskProgress, in.Contents[ArtifactApplyProgress])
+	dependencies := computeDependencies(artifacts, taskProgress, applyDecision, in.Contents[ArtifactVerifyReport], actionContext)
+	nextRecommended, blockedReasons := computeNextAndBlockers(artifacts, dependencies, taskProgress, applyDecision, in.Contents[ArtifactVerifyReport], actionContext)
 
 	return &ChangeStatus{
 		Schema:            StatusSchema,
@@ -264,7 +272,7 @@ func ComputeStatus(changeName, artifactStore string, in Input) *ChangeStatus {
 		ChangeRoot:        changeRoot,
 		ArtifactPaths:     artifactPaths,
 		ContextFiles:      contextFiles,
-		Artifacts:         normalizeArtifacts(in.Artifacts),
+		Artifacts:         normalizeArtifacts(artifacts),
 		Dependencies:      dependencies,
 		ActionContext:     actionContext,
 		AllowedEditRoots:  allowedEditRoots,
@@ -325,6 +333,14 @@ func copyStringMap(in map[string]string) map[string]string {
 	return out
 }
 
+func copyArtifactStateMap(in map[string]ArtifactState) map[string]ArtifactState {
+	out := make(map[string]ArtifactState, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
 func copyStringSlice(in []string) []string {
 	if len(in) == 0 {
 		return nil
@@ -357,21 +373,18 @@ func normalizeArtifacts(raw map[string]ArtifactState) map[string]ArtifactState {
 	return out
 }
 
-func parseTaskProgress(content string) *TaskProgress {
-	if content == "" {
+func parseTaskProgress(content string, observed bool) *TaskProgress {
+	if !observed {
 		return nil
 	}
-	checked := len(rxCheckedBox.FindAllString(content, -1))
-	unchecked := len(rxUncheckedBox.FindAllString(content, -1))
-	total := checked + unchecked
-	if total == 0 {
+	parsed, err := applyprogress.ParseTasksMarkdown(content)
+	if err != nil {
+		return &TaskProgress{State: TaskProgressInvalid}
+	}
+	if len(parsed.Tasks) == 0 {
 		return nil
 	}
-	return &TaskProgress{
-		Total:     total,
-		Completed: checked,
-		AllDone:   unchecked == 0,
-	}
+	return &TaskProgress{State: TaskProgressValid, Total: len(parsed.Tasks), Completed: parsed.Completed, AllDone: parsed.AllDone}
 }
 
 // parseApplyDecision inspects the tasks artifact content to determine whether an
@@ -404,15 +417,32 @@ func parseApplyDecision(tasksContent string) *ApplyDecision {
 	return &ApplyDecision{Required: true, Resolved: resolved}
 }
 
-func buildApplyState(artifacts map[string]ArtifactState) *ApplyState {
+func buildApplyState(artifacts map[string]ArtifactState, taskProgress *TaskProgress, progressContent string) *ApplyState {
 	state := artifacts[ArtifactApplyProgress]
 	if state == ArtifactMissing || state == "" {
 		return nil
 	}
 	return &ApplyState{
 		HasProgress: true,
-		Complete:    artifacts[ArtifactVerifyReport] != ArtifactMissing && artifacts[ArtifactVerifyReport] != "",
+		Complete:    state == ArtifactDone && taskProgress != nil && taskProgress.AllDone,
+		Capacity:    persistedSnapshotCapacity(progressContent),
 	}
+}
+
+// persistedSnapshotCapacity uses only a canonical persisted snapshot. Invalid,
+// legacy, absent, or rejected candidate data is intentionally not projected into
+// status.
+func persistedSnapshotCapacity(content string) *Capacity {
+	snapshot, err := applyprogress.DecodeCanonicalSnapshot([]byte(content))
+	if err != nil {
+		return nil
+	}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return nil
+	}
+	runes := len([]rune(string(data)))
+	return &Capacity{CurrentRunes: runes, ProjectedRunes: runes, CeilingRunes: applyprogress.MaxDocumentRunes, Warning: applyprogress.SnapshotCapacityWarning(data)}
 }
 
 func computeDependencies(artifacts map[string]ArtifactState, tp *TaskProgress, ad *ApplyDecision, verifyContent string, actionContext ActionContext) map[string]DependencyState {
@@ -424,11 +454,23 @@ func computeDependencies(artifacts map[string]ArtifactState, tp *TaskProgress, a
 }
 
 func computePhaseDep(phase string, artifacts map[string]ArtifactState, tp *TaskProgress, ad *ApplyDecision, verifyContent string, actionContext ActionContext) DependencyState {
+	if artifacts[ArtifactTasks] == ArtifactBlockedInvalid && (phase == PhaseApply || phase == PhaseVerify || phase == PhaseArchive) {
+		return DepBlocked
+	}
 	if isBlockedApplyProgress(artifacts[ArtifactApplyProgress]) && (phase == PhaseApply || phase == PhaseVerify || phase == PhaseArchive) {
+		return DepBlocked
+	}
+	if artifacts[ArtifactApplyProgress] == ArtifactDone && (phase == PhaseApply || phase == PhaseVerify || phase == PhaseArchive) && tp != nil && !tp.AllDone {
 		return DepBlocked
 	}
 	// A stale archive report must not bypass incomplete parsed task progress.
 	if phase == PhaseArchive && tp != nil && !tp.AllDone {
+		return DepBlocked
+	}
+
+	// Archive completion is trustworthy only when the current verify report has
+	// affirmative passing evidence. A stale archive-report must never bypass it.
+	if phase == PhaseArchive && !isVerifyPassing(verifyContent) {
 		return DepBlocked
 	}
 
@@ -489,21 +531,10 @@ func computePhaseDep(phase string, artifacts map[string]ArtifactState, tp *TaskP
 	return DepReady
 }
 
-// isVerifyPassing returns true when the verify report content does not contain
-// any keyword that indicates a failing or unclear state.
-// Negated zero-count forms ("0 failures", "no blockers") are stripped first so that
-// common CI summary phrases do not cause false-positive archive blocks.
+// isVerifyPassing accepts only the canonical active verification fields. It
+// intentionally ignores historical or narrative prose outside those fields.
 func isVerifyPassing(content string) bool {
-	if content == "" {
-		return false
-	}
-	cleaned := verifyNegatedForms.ReplaceAllString(content, "")
-	for _, rx := range verifyBlockPatterns {
-		if rx.MatchString(cleaned) {
-			return false
-		}
-	}
-	return true
+	return applyprogress.InspectVerifyReport(content).Ready
 }
 
 func computeNextAndBlockers(artifacts map[string]ArtifactState, deps map[string]DependencyState, tp *TaskProgress, ad *ApplyDecision, verifyContent string, actionContext ActionContext) (next string, reasons []string) {
@@ -518,6 +549,10 @@ func computeNextAndBlockers(artifacts map[string]ArtifactState, deps map[string]
 				next = phase
 			}
 		case DepBlocked:
+			if artifacts[ArtifactTasks] == ArtifactBlockedInvalid && (phase == PhaseApply || phase == PhaseVerify || phase == PhaseArchive) {
+				blocked = append(blocked, "phase "+phase+" blocked — tasks artifact is invalid; regenerate it with strict v2 task IDs")
+				continue
+			}
 			missingDeps := missingDepsFor(phase, artifacts)
 			for _, d := range missingDeps {
 				blocked = append(blocked, "phase "+phase+" requires artifact "+d)
@@ -574,7 +609,9 @@ func phaseSpecificBlocker(phase string, artifacts map[string]ArtifactState, tp *
 		}
 		if !isVerifyPassing(verifyContent) {
 			if verifyContent == "" {
-				blockers = append(blockers, "phase sdd-archive blocked — verify report is empty (re-run sdd-verify to generate content)")
+				blockers = append(blockers, "phase sdd-archive blocked — verify report is empty (regenerate_with_sdd_verify)")
+			} else if readiness := applyprogress.InspectVerifyReport(verifyContent); readiness.Code != "" {
+				blockers = append(blockers, "phase sdd-archive blocked — "+readiness.Code)
 			} else {
 				blockers = append(blockers, "phase sdd-archive blocked — verify report must pass before archiving")
 			}

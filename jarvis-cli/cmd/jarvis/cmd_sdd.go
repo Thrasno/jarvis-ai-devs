@@ -81,12 +81,15 @@ type archiveStatusResolver func(root, project string) (*sddstatus.ChangeStatus, 
 
 func newSddArchiveCommand(open func(string) sddArchiver, statusFor archiveStatusResolver) *cobra.Command {
 	var root, destination, project string
-	command := &cobra.Command{Use: "archive", Short: "Archive validated OpenSpec progress", Args: cobra.NoArgs, SilenceUsage: true, SilenceErrors: true, RunE: func(_ *cobra.Command, _ []string) error {
+	command := &cobra.Command{Use: "archive", Short: "Archive validated OpenSpec progress", Long: "Archive validated OpenSpec progress. Run `jarvis sdd archive --root <change-root> --destination <archive-destination>`; this command accepts no positional arguments. It exits non-zero and moves nothing when lifecycle validation blocks archive.", Args: cobra.NoArgs, SilenceUsage: true, SilenceErrors: true, RunE: func(_ *cobra.Command, _ []string) error {
 		status, err := statusFor(root, project)
 		if err != nil {
 			return err
 		}
-		if err := validateSddArchiveStatus(status); err != nil {
+		if status.ChangeRoot == "" {
+			status.ChangeRoot = root
+		}
+		if err := validateSddArchiveStatus(status, destination); err != nil {
 			return err
 		}
 		return open(root).ArchiveWithLifecycleValidation(destination, func() error {
@@ -94,7 +97,10 @@ func newSddArchiveCommand(open func(string) sddArchiver, statusFor archiveStatus
 			if err != nil {
 				return err
 			}
-			return validateSddArchiveStatus(current)
+			if current.ChangeRoot == "" {
+				current.ChangeRoot = root
+			}
+			return validateSddArchiveStatus(current, destination)
 		})
 	}}
 	command.Flags().StringVar(&root, "root", "", "OpenSpec change root")
@@ -106,17 +112,48 @@ func newSddArchiveCommand(open func(string) sddArchiver, statusFor archiveStatus
 }
 
 func runSddArchive(archive sddArchiver, status *sddstatus.ChangeStatus, destination string) error {
-	if status.ArtifactStore != "openspec" && status.ArtifactStore != "hybrid" || status.Artifacts[sddstatus.ArtifactApplyProgress] != sddstatus.ArtifactDone || status.Dependencies[sddstatus.PhaseArchive] != sddstatus.DepReady {
-		return errors.New("sdd archive blocked until authoritative progress is complete")
+	if err := validateSddArchiveStatus(status, destination); err != nil {
+		return err
 	}
 	return archive.Archive(destination)
 }
 
-func validateSddArchiveStatus(status *sddstatus.ChangeStatus) error {
-	if status.ArtifactStore != "openspec" && status.ArtifactStore != "hybrid" || status.Artifacts[sddstatus.ArtifactApplyProgress] != sddstatus.ArtifactDone || status.Dependencies[sddstatus.PhaseArchive] != sddstatus.DepReady {
+func validateSddArchiveStatus(status *sddstatus.ChangeStatus, destination string) error {
+	if (status.ArtifactStore != "openspec" && status.ArtifactStore != "hybrid") || status.Artifacts[sddstatus.ArtifactApplyProgress] != sddstatus.ArtifactDone || (status.Dependencies[sddstatus.PhaseArchive] != sddstatus.DepReady && status.Dependencies[sddstatus.PhaseArchive] != sddstatus.DepAllDone) {
 		return errors.New("sdd archive blocked until authoritative progress is complete")
 	}
+	if !archivePathsAllowed(status.ActionContext.AllowedEditRoots, status.ChangeRoot, destination) {
+		return errors.New("sdd archive blocked: source and destination must be inside ActionContext.AllowedEditRoots")
+	}
 	return nil
+}
+
+func archivePathsAllowed(roots []string, source, destination string) bool {
+	if source == "" || destination == "" || len(roots) == 0 {
+		return false
+	}
+	for _, candidate := range []string{source, destination} {
+		path, err := filepath.Abs(filepath.Clean(candidate))
+		if err != nil {
+			return false
+		}
+		allowed := false
+		for _, root := range roots {
+			root, err := filepath.Abs(filepath.Clean(root))
+			if err != nil {
+				continue
+			}
+			rel, err := filepath.Rel(root, path)
+			if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return false
+		}
+	}
+	return true
 }
 
 func archiveStatus(root, project string) (*sddstatus.ChangeStatus, error) {
@@ -136,7 +173,12 @@ func archiveStatus(root, project string) (*sddstatus.ChangeStatus, error) {
 	if err != nil {
 		return nil, err
 	}
-	return buildStatus(filepath.Base(canonicalRoot), source, store, []string{workspace})
+	status, err := buildStatus(filepath.Base(canonicalRoot), source, store, []string{workspace})
+	if err != nil {
+		return nil, err
+	}
+	status.ChangeRoot = canonicalRoot
+	return status, nil
 }
 
 func sddWorkingDirectory(_ string) (string, error) {
@@ -151,15 +193,6 @@ func resolveSddProject(projectFlag, workingDir string) (string, error) {
 		return project, nil
 	}
 	return hivederive.Derive(workingDir)
-}
-
-func detectGitRoot() (string, bool) {
-	workingDir, err := os.Getwd()
-	if err != nil {
-		return "", false
-	}
-	root, err := gitWorktreeRoot(workingDir)
-	return root, err == nil
 }
 
 // resolveSource returns an ArtifactSource and the active store mode label.
@@ -249,14 +282,6 @@ func buildStatus(changeName string, src sddstatus.ArtifactSource, storeMode stri
 	}
 
 	return sddstatus.ComputeStatus(changeName, storeMode, input), nil
-}
-
-func currentWorkspaceEditRoots(projectName string) []string {
-	workingDir, err := os.Getwd()
-	if err != nil {
-		return nil
-	}
-	return validatedEditRootsForProject(projectName, workingDir)
 }
 
 func validatedEditRootsForProject(_ string, workingDir string) []string {

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
 )
 
@@ -242,6 +243,18 @@ func TestComputeStatus_PlanningComplete_VerifyBlockedWithoutApplyProgress(t *tes
 	}
 }
 
+func TestComputeStatus_ApplyCompleteAndVerifyReadyRequireCompletedCheckboxes(t *testing.T) {
+	arts := allPlanningDone()
+	arts[sddstatus.ArtifactApplyProgress] = sddstatus.ArtifactDone
+	status := sddstatus.ComputeStatus("my-feature", "hive", withWorkspaceEdit(sddstatus.Input{
+		Artifacts: arts,
+		Contents:  map[string]string{sddstatus.ArtifactTasks: "- [x] 1.1 done\n- [ ] 1.2 pending\n"},
+	}))
+	if status.Dependencies[sddstatus.PhaseApply] != sddstatus.DepBlocked || status.Dependencies[sddstatus.PhaseVerify] != sddstatus.DepBlocked {
+		t.Fatalf("dependencies = %#v, want apply and verify blocked by unchecked authoritative tasks", status.Dependencies)
+	}
+}
+
 func TestComputeStatus_VerifyReadyWithApplyProgress(t *testing.T) {
 	arts := allPlanningDone()
 	arts[sddstatus.ArtifactApplyProgress] = "done"
@@ -300,7 +313,7 @@ func TestComputeStatus_VerifyBlockedWithPartialApplyProgress(t *testing.T) {
 func TestComputeStatus_VerifyBlockedWithPartialApplyProgressEvenWhenAllTasksDone(t *testing.T) {
 	arts := allPlanningDone()
 	arts[sddstatus.ArtifactApplyProgress] = "partial"
-	const tasksContent = "- [x] T1\n- [x] T2\n"
+	const tasksContent = "- [x] 1\n- [x] 2\n"
 
 	s := sddstatus.ComputeStatus("my-feature", "hive", withWorkspaceEdit(sddstatus.Input{
 		Artifacts: arts,
@@ -323,7 +336,7 @@ func TestComputeStatus_VerifyBlockedWithPartialApplyProgressEvenWhenAllTasksDone
 
 func TestComputeStatus_VerifyReadyWhenAllTasksDone(t *testing.T) {
 	arts := allPlanningDone()
-	const tasksContent = "- [x] T1\n- [x] T2\n"
+	const tasksContent = "- [x] 1\n- [x] 2\n"
 
 	s := sddstatus.ComputeStatus("my-feature", "hive", withWorkspaceEdit(sddstatus.Input{
 		Artifacts: arts,
@@ -337,7 +350,7 @@ func TestComputeStatus_VerifyReadyWhenAllTasksDone(t *testing.T) {
 
 func TestComputeStatus_VerifyBlockedWhenTasksPartiallyDone(t *testing.T) {
 	arts := allPlanningDone()
-	const tasksContent = "- [x] T1\n- [ ] T2\n"
+	const tasksContent = "- [x] 1\n- [ ] 2\n"
 
 	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
 		Artifacts: arts,
@@ -388,12 +401,12 @@ func TestComputeStatus_ArchiveReadyWithCompleteTasksAndPassingVerify(t *testing.
 	arts[sddstatus.ArtifactApplyProgress] = "done"
 	arts[sddstatus.ArtifactVerifyReport] = "done"
 
-	const passingVerify = "## Verify Report\n\nAll checks passed. No issues found."
+	passingVerify := canonicalArchiveReadyVerify()
 
 	s := sddstatus.ComputeStatus("my-feature", "hive", withWorkspaceEdit(sddstatus.Input{
 		Artifacts: arts,
 		Contents: map[string]string{
-			sddstatus.ArtifactTasks:        "- [x] T1\n",
+			sddstatus.ArtifactTasks:        "- [x] 1\n",
 			sddstatus.ArtifactVerifyReport: passingVerify,
 		},
 	}))
@@ -415,7 +428,7 @@ func TestComputeStatus_ArchiveBlockersConjoinIncompleteTasksAndFailingVerify(t *
 	s := sddstatus.ComputeStatus("my-feature", "hive", withWorkspaceEdit(sddstatus.Input{
 		Artifacts: arts,
 		Contents: map[string]string{
-			sddstatus.ArtifactTasks:        "- [x] T1\n- [ ] T2\n",
+			sddstatus.ArtifactTasks:        "- [x] 1\n- [ ] 2\n",
 			sddstatus.ArtifactVerifyReport: "3 failures found.",
 		},
 	}))
@@ -428,7 +441,7 @@ func TestComputeStatus_ArchiveBlockersConjoinIncompleteTasksAndFailingVerify(t *
 	}
 	wantReasons := []string{
 		"phase sdd-archive blocked — task progress is incomplete (1/2 tasks complete)",
-		"phase sdd-archive blocked — verify report must pass before archiving",
+		"phase sdd-archive blocked — regenerate_with_sdd_verify",
 	}
 	if len(s.BlockedReasons) != len(wantReasons) {
 		t.Fatalf("blockedReasons = %#v, want %#v", s.BlockedReasons, wantReasons)
@@ -443,7 +456,7 @@ func TestComputeStatus_ArchiveBlockersConjoinIncompleteTasksAndFailingVerify(t *
 func TestComputeStatus_ApplyAllDoneWhenAllTasksComplete(t *testing.T) {
 	arts := allPlanningDone()
 	arts[sddstatus.ArtifactApplyProgress] = "done"
-	const tasksContent = "- [x] T1\n- [x] T2\n"
+	const tasksContent = "- [x] 1\n- [x] 2\n"
 
 	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
 		Artifacts: arts,
@@ -475,7 +488,7 @@ func TestComputeStatus_AllDone_NextIsNone(t *testing.T) {
 	arts[sddstatus.ArtifactVerifyReport] = "done"
 	arts[sddstatus.ArtifactArchiveReport] = "done"
 
-	const passingVerify = "## Verify Report\n\nAll checks passed."
+	passingVerify := canonicalArchiveReadyVerify()
 
 	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
 		Artifacts: arts,
@@ -492,7 +505,7 @@ func TestComputeStatus_AllDone_NextIsNone(t *testing.T) {
 
 func TestComputeStatus_TaskProgress_Parsed(t *testing.T) {
 	arts := allPlanningDone()
-	const tasksContent = "- [x] T1 done\n- [x] T2 done\n- [ ] T3 pending\n"
+	const tasksContent = "- [x] 1 done\n- [x] 2 done\n- [ ] 3 pending\n"
 
 	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
 		Artifacts: arts,
@@ -510,6 +523,131 @@ func TestComputeStatus_TaskProgress_Parsed(t *testing.T) {
 	}
 	if s.TaskProgress.AllDone {
 		t.Error("AllDone = true, want false")
+	}
+}
+
+func TestComputeStatus_TaskProgressObservationFailsClosedForMalformedV2(t *testing.T) {
+	readyArtifacts := func() map[string]sddstatus.ArtifactState {
+		arts := allPlanningDone()
+		arts[sddstatus.ArtifactApplyProgress] = sddstatus.ArtifactDone
+		arts[sddstatus.ArtifactVerifyReport] = sddstatus.ArtifactDone
+		return arts
+	}
+
+	tests := []struct {
+		name             string
+		contents         map[string]string
+		wantProgress     bool
+		wantTaskArtifact sddstatus.ArtifactState
+		wantNext         string
+	}{
+		{
+			name:             "absent from partial observation",
+			contents:         map[string]string{sddstatus.ArtifactVerifyReport: canonicalArchiveReadyVerify()},
+			wantProgress:     false,
+			wantTaskArtifact: sddstatus.ArtifactDone,
+			wantNext:         sddstatus.PhaseArchive,
+		},
+		{
+			name: "valid strict v2 task list",
+			contents: map[string]string{
+				sddstatus.ArtifactTasks:        "- [x] 1.1 implementation\n",
+				sddstatus.ArtifactVerifyReport: canonicalArchiveReadyVerify(),
+			},
+			wantProgress:     true,
+			wantTaskArtifact: sddstatus.ArtifactDone,
+			wantNext:         sddstatus.PhaseArchive,
+		},
+		{
+			name: "valid but incomplete strict v2 task list",
+			contents: map[string]string{
+				sddstatus.ArtifactTasks:        "- [x] 1.1 implementation\n- [ ] 1.2 remaining\n",
+				sddstatus.ArtifactVerifyReport: canonicalArchiveReadyVerify(),
+			},
+			wantProgress:     true,
+			wantTaskArtifact: sddstatus.ArtifactDone,
+			wantNext:         "",
+		},
+		{
+			name: "ambiguous checkbox",
+			contents: map[string]string{
+				sddstatus.ArtifactTasks:        "- [z] 1.1 malformed\n",
+				sddstatus.ArtifactVerifyReport: canonicalArchiveReadyVerify(),
+			},
+			wantProgress:     true,
+			wantTaskArtifact: sddstatus.ArtifactBlockedInvalid,
+			wantNext:         sddstatus.PhaseTasks,
+		},
+		{
+			name: "invalid ID",
+			contents: map[string]string{
+				sddstatus.ArtifactTasks:        "- [ ] TASK-1 invalid\n",
+				sddstatus.ArtifactVerifyReport: canonicalArchiveReadyVerify(),
+			},
+			wantProgress:     true,
+			wantTaskArtifact: sddstatus.ArtifactBlockedInvalid,
+			wantNext:         sddstatus.PhaseTasks,
+		},
+		{
+			name: "duplicate ID",
+			contents: map[string]string{
+				sddstatus.ArtifactTasks:        "- [x] 1.1 first\n- [ ] 1.1 duplicate\n",
+				sddstatus.ArtifactVerifyReport: canonicalArchiveReadyVerify(),
+			},
+			wantProgress:     true,
+			wantTaskArtifact: sddstatus.ArtifactBlockedInvalid,
+			wantNext:         sddstatus.PhaseTasks,
+		},
+		{
+			name: "prose checkbox without an allowed protocol ID",
+			contents: map[string]string{
+				sddstatus.ArtifactTasks:        "- [ ] Start implementation\n",
+				sddstatus.ArtifactVerifyReport: canonicalArchiveReadyVerify(),
+			},
+			wantProgress:     true,
+			wantTaskArtifact: sddstatus.ArtifactBlockedInvalid,
+			wantNext:         sddstatus.PhaseTasks,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status := sddstatus.ComputeStatus("my-feature", "hive", withWorkspaceEdit(sddstatus.Input{
+				Artifacts: readyArtifacts(),
+				Contents:  tt.contents,
+			}))
+
+			if (status.TaskProgress != nil) != tt.wantProgress {
+				t.Fatalf("TaskProgress = %#v, want present=%t", status.TaskProgress, tt.wantProgress)
+			}
+			wantState := sddstatus.TaskProgressValid
+			if !tt.wantProgress {
+				wantState = sddstatus.TaskProgressAbsent
+			} else if tt.wantTaskArtifact == sddstatus.ArtifactBlockedInvalid {
+				wantState = sddstatus.TaskProgressInvalid
+			}
+			if status.TaskProgress == nil {
+				if wantState != sddstatus.TaskProgressAbsent {
+					t.Fatalf("TaskProgress is absent, want state %q", wantState)
+				}
+			} else if status.TaskProgress.State != wantState {
+				t.Fatalf("TaskProgress.State = %q, want %q", status.TaskProgress.State, wantState)
+			}
+			if got := status.Artifacts[sddstatus.ArtifactTasks]; got != tt.wantTaskArtifact {
+				t.Fatalf("tasks artifact = %q, want %q", got, tt.wantTaskArtifact)
+			}
+			if got := status.NextRecommended; got != tt.wantNext {
+				t.Fatalf("nextRecommended = %q, want %q", got, tt.wantNext)
+			}
+			if tt.wantTaskArtifact != sddstatus.ArtifactBlockedInvalid {
+				return
+			}
+			for _, phase := range []string{sddstatus.PhaseApply, sddstatus.PhaseVerify, sddstatus.PhaseArchive} {
+				if got := status.Dependencies[phase]; got != sddstatus.DepBlocked {
+					t.Errorf("dependency[%s] = %q, want blocked for invalid tasks", phase, got)
+				}
+			}
+		})
 	}
 }
 
@@ -532,20 +670,46 @@ func TestComputeStatus_ApplyState_PresentWhenProgressExists(t *testing.T) {
 	}
 }
 
-func TestComputeStatus_ApplyStatePreservesLegacyCompleteMeaning(t *testing.T) {
+func TestComputeStatus_ApplyStateDoesNotInferCompletionFromVerifyReport(t *testing.T) {
 	arts := allPlanningDone()
 	arts[sddstatus.ArtifactApplyProgress] = sddstatus.ArtifactPartial
 	arts[sddstatus.ArtifactVerifyReport] = sddstatus.ArtifactDone
 
-	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{Artifacts: arts})
+	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{Artifacts: arts, Contents: map[string]string{sddstatus.ArtifactTasks: "- [ ] 1.1 implementation\n"}})
 	if s.ApplyState == nil {
 		t.Fatal("ApplyState is nil")
 	}
 	if !s.ApplyState.HasProgress {
 		t.Error("HasProgress = false, want true when apply-progress exists")
 	}
-	if !s.ApplyState.Complete {
-		t.Error("Complete = false, want true when verify-report exists even though apply-progress is partial")
+	if s.ApplyState.Complete {
+		t.Error("Complete = true, want false while apply-progress is partial")
+	}
+}
+
+func TestComputeStatus_ApplyStateCompleteRequiresProgressAndAuthoritativeTasks(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		progress   sddstatus.ArtifactState
+		tasks      string
+		verifyDone bool
+		want       bool
+	}{
+		{name: "partial with passing verify report", progress: sddstatus.ArtifactPartial, tasks: "- [x] 1.1 implementation\n", verifyDone: true, want: false},
+		{name: "complete progress with unchecked task", progress: sddstatus.ArtifactDone, tasks: "- [ ] 1.1 implementation\n", verifyDone: true, want: false},
+		{name: "complete progress and checked task without verify report", progress: sddstatus.ArtifactDone, tasks: "- [x] 1.1 implementation\n", verifyDone: false, want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			arts := allPlanningDone()
+			arts[sddstatus.ArtifactApplyProgress] = tt.progress
+			if tt.verifyDone {
+				arts[sddstatus.ArtifactVerifyReport] = sddstatus.ArtifactDone
+			}
+			status := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{Artifacts: arts, Contents: map[string]string{sddstatus.ArtifactTasks: tt.tasks}})
+			if status.ApplyState == nil || status.ApplyState.Complete != tt.want {
+				t.Fatalf("applyState = %#v, want complete=%t", status.ApplyState, tt.want)
+			}
+		})
 	}
 }
 
@@ -635,7 +799,7 @@ func TestVerifyBlockPatterns_ZeroFailedDoesNotBlock(t *testing.T) {
 	arts := allPlanningDone()
 	arts[sddstatus.ArtifactApplyProgress] = "done"
 	arts[sddstatus.ArtifactVerifyReport] = "done"
-	const passingVerify = "## Verify Report\n\n0 failed, all checks passed."
+	passingVerify := canonicalArchiveReadyVerify()
 	s := sddstatus.ComputeStatus("my-feature", "hive", withWorkspaceEdit(sddstatus.Input{
 		Artifacts: arts,
 		Contents:  map[string]string{sddstatus.ArtifactVerifyReport: passingVerify},
@@ -661,6 +825,31 @@ func TestVerifyBlockPatterns_PluralForms(t *testing.T) {
 		if s.Dependencies[sddstatus.PhaseArchive] != sddstatus.DepBlocked {
 			t.Errorf("archive dep = %q, want blocked for content %q", s.Dependencies[sddstatus.PhaseArchive], content)
 		}
+	}
+}
+
+func TestVerifyParsingKeepsCurrentFailuresAndRequiresExplicitPass(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		content string
+		want    sddstatus.DependencyState
+	}{
+		{name: "closed historical phrase shares current fail line", content: "Status: PASS\nHistorical finding closed; current FAIL remains.", want: sddstatus.DepBlocked},
+		{name: "non-critical alone is neutral", content: "## Verify Report\nnon-critical follow-up only.", want: sddstatus.DepBlocked},
+		{name: "canonical pass with non-critical follow-up", content: canonicalArchiveReadyVerify() + "\n## Follow-up\n\nnon-critical follow-up only.\n", want: sddstatus.DepReady},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			arts := allPlanningDone()
+			arts[sddstatus.ArtifactApplyProgress] = sddstatus.ArtifactDone
+			arts[sddstatus.ArtifactVerifyReport] = sddstatus.ArtifactDone
+			status := sddstatus.ComputeStatus("my-feature", "hive", withWorkspaceEdit(sddstatus.Input{
+				Artifacts: arts,
+				Contents:  map[string]string{sddstatus.ArtifactVerifyReport: tt.content},
+			}))
+			if got := status.Dependencies[sddstatus.PhaseArchive]; got != tt.want {
+				t.Fatalf("archive dependency = %q, want %q for %q", got, tt.want, tt.content)
+			}
+		})
 	}
 }
 
@@ -777,7 +966,7 @@ func TestApplyDecisionGate_ReadyWhenSizeException(t *testing.T) {
 // TestApplyDecisionGate_ReadyWhenNoDecisionFlag covers spec scenario
 // "apply ready when tasks have no decision flag" (B6).
 func TestApplyDecisionGate_ReadyWhenNoDecisionFlag(t *testing.T) {
-	content := "## Tasks\n\n- [ ] T1\n- [ ] T2\n"
+	content := "## Tasks\n\n- [ ] 1\n- [ ] 2\n"
 	s := sddstatus.ComputeStatus("my-feature", "hive",
 		allPlanningDoneWithTasksContent(content))
 
@@ -945,7 +1134,7 @@ func TestComputeStatus_WorkspaceAuthorityOnlyDoesNotInventPhaseSpecificBlockers(
 				arts[sddstatus.ArtifactVerifyReport] = sddstatus.ArtifactDone
 				return arts
 			}(),
-			contents: map[string]string{sddstatus.ArtifactVerifyReport: "All checks passed."},
+			contents: map[string]string{sddstatus.ArtifactVerifyReport: canonicalArchiveReadyVerify()},
 		},
 	}
 
@@ -1006,7 +1195,7 @@ func TestComputeStatus_WorkspaceAuthorityConjoinsGenuinePhaseSpecificBlockers(t 
 			contents: map[string]string{sddstatus.ArtifactVerifyReport: "2 failures found."},
 			want: []string{
 				"phase sdd-archive blocked — workspace-edit mode with non-empty allowed edit roots required",
-				"phase sdd-archive blocked — verify report must pass before archiving",
+				"phase sdd-archive blocked — regenerate_with_sdd_verify",
 			},
 		},
 	}
@@ -1035,7 +1224,169 @@ func phaseBlockedReasons(reasons []string, phase string) []string {
 	return phaseReasons
 }
 
-func TestVerifyBlockPatterns_NegatedNounFormsDoNotBlock(t *testing.T) {
+func TestComputeStatus_ArchiveReportNeverBypassesPositiveVerifyEvidence(t *testing.T) {
+	for name, verify := range map[string]string{
+		"explicit fail":                   "## Verify Report\n\nVerdict: FAIL\n",
+		"positive signal plus plain fail": "## Verify Report\n\nStatus: PASS\nFAIL\n",
+		"pending":                         "## Verify Report\n\nVerdict: PENDING\n",
+		"stale narrative":                 "## Verify Report\n\nHistorical verification completed last week.\n",
+		"absent":                          "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			arts := allPlanningDone()
+			arts[sddstatus.ArtifactApplyProgress] = sddstatus.ArtifactDone
+			arts[sddstatus.ArtifactVerifyReport] = sddstatus.ArtifactDone
+			arts[sddstatus.ArtifactArchiveReport] = sddstatus.ArtifactDone
+			status := sddstatus.ComputeStatus("my-feature", "openspec", withWorkspaceEdit(sddstatus.Input{
+				Artifacts: arts,
+				Contents:  map[string]string{sddstatus.ArtifactVerifyReport: verify},
+			}))
+			if got := status.Dependencies[sddstatus.PhaseArchive]; got != sddstatus.DepBlocked {
+				t.Fatalf("archive dependency = %q, want blocked without positive verify evidence", got)
+			}
+		})
+	}
+}
+
+func TestComputeStatus_ArchiveVerifyMarkdownVerdictAndBlockers(t *testing.T) {
+	artifactsWithVerify := func() map[string]sddstatus.ArtifactState {
+		arts := allPlanningDone()
+		arts[sddstatus.ArtifactApplyProgress] = sddstatus.ArtifactDone
+		arts[sddstatus.ArtifactVerifyReport] = sddstatus.ArtifactDone
+		return arts
+	}
+
+	tests := []struct {
+		name string
+		body string
+		want sddstatus.DependencyState
+	}{
+		{
+			name: "standard passing report with no blockers",
+			body: canonicalArchiveReadyVerify(),
+			want: sddstatus.DepReady,
+		},
+		{
+			name: "YAML pass is not the canonical archive report",
+			body: "verdict: pass\nblockers: 0\ncritical_findings: 0\n",
+			want: sddstatus.DepBlocked,
+		},
+		{
+			name: "pass without critical findings count and archive-ready marker",
+			body: "Verdict: PASS\nBlockers=None\n",
+			want: sddstatus.DepBlocked,
+		},
+		{
+			name: "canonical report permits closed prior blocker prose",
+			body: canonicalArchiveReadyVerify() + "\n## History\n\nPrior blocker: closed after rerun.\n",
+			want: sddstatus.DepReady,
+		},
+		{
+			name: "failed verdict",
+			body: "## Verdict\n\n**FAIL — test suite failed.**\n\n## Blockers\n\nNone\n",
+			want: sddstatus.DepBlocked,
+		},
+		{
+			name: "plain failed despite pass token",
+			body: "Status: PASS\nTests failed after the final rerun.\n",
+			want: sddstatus.DepBlocked,
+		},
+		{
+			name: "pending work despite passing verdict",
+			body: "## Verdict\n\n**PASS — archive ready.**\n\n## Follow-up\n\nPending integration check.\n\n## Blockers\n\nNone\n",
+			want: sddstatus.DepBlocked,
+		},
+		{
+			name: "nonzero YAML blockers despite passing verdict",
+			body: "verdict: pass\nblockers: 1\ncritical_findings: 0\n",
+			want: sddstatus.DepBlocked,
+		},
+		{
+			name: "nonzero YAML critical findings despite passing verdict",
+			body: "verdict: pass\nblockers: 0\ncritical_findings: 1\n",
+			want: sddstatus.DepBlocked,
+		},
+		{
+			name: "real blocker despite passing verdict",
+			body: "## Verdict\n\n**PASS — archive ready.**\n\n## Blockers\n\n- Windows smoke test is failing.\n",
+			want: sddstatus.DepBlocked,
+		},
+		{
+			name: "substantive blocker section despite none marker",
+			body: "## Verdict\n\n**PASS — archive ready.**\n\n## Blockers\n\nNone\n- Owner approval required.\n",
+			want: sddstatus.DepBlocked,
+		},
+		{
+			name: "untested path despite passing verdict",
+			body: "## Verdict\n\n**PASS — archive ready.**\n\n## Coverage\n\nThe Windows upgrade path remains untested.\n\n## Blockers\n\nNone\n",
+			want: sddstatus.DepBlocked,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status := sddstatus.ComputeStatus("my-feature", "openspec", withWorkspaceEdit(sddstatus.Input{
+				Artifacts: artifactsWithVerify(),
+				Contents: map[string]string{
+					sddstatus.ArtifactTasks:        "- [x] 1\n",
+					sddstatus.ArtifactVerifyReport: tt.body,
+				},
+			}))
+			if got := status.Dependencies[sddstatus.PhaseArchive]; got != tt.want {
+				t.Fatalf("archive dependency = %q, want %q for verify report:\n%s", got, tt.want, tt.body)
+			}
+		})
+	}
+}
+
+func TestComputeStatusProjectsCapacityFromPersistedSnapshotOnly(t *testing.T) {
+	_, data, err := applyprogress.SealSnapshot(applyprogress.Snapshot{
+		Schema: applyprogress.SnapshotSchema, Project: "project", Change: "change", Generation: 1, Revision: 1,
+		TaskManifestSHA256: strings.Repeat("a", 64), Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	arts := allPlanningDone()
+	arts[sddstatus.ArtifactApplyProgress] = sddstatus.ArtifactPartial
+	status := sddstatus.ComputeStatus("change", "openspec", sddstatus.Input{Artifacts: arts, Contents: map[string]string{sddstatus.ArtifactApplyProgress: string(data)}})
+	if status.ApplyState == nil || status.ApplyState.Capacity == nil {
+		t.Fatalf("apply capacity = %#v; want projection from persisted snapshot", status.ApplyState)
+	}
+	if status.ApplyState.Capacity.CurrentRunes != len([]rune(string(data))) || status.ApplyState.Capacity.CeilingRunes != applyprogress.MaxDocumentRunes || status.ApplyState.Capacity.ProjectedRunes != status.ApplyState.Capacity.CurrentRunes {
+		t.Fatalf("capacity = %#v; want canonical persisted snapshot projection", status.ApplyState.Capacity)
+	}
+	if status.ApplyState.Capacity.Warning != nil {
+		t.Fatalf("warning = %#v; want nil for small persisted snapshot", status.ApplyState.Capacity.Warning)
+	}
+}
+
+func canonicalArchiveReadyVerify() string {
+	return "## Verification Summary\n\nAll checks completed.\n\n## Verdict\n\n**PASS — archive ready.**\n\n## Critical Findings\n\n0\n\n## Blockers\n\nNone\n"
+}
+
+func TestComputeStatus_ArchiveRequiresRegenerationForNoncanonicalVerifyReport(t *testing.T) {
+	arts := allPlanningDone()
+	arts[sddstatus.ArtifactApplyProgress] = sddstatus.ArtifactDone
+	arts[sddstatus.ArtifactVerifyReport] = sddstatus.ArtifactDone
+
+	status := sddstatus.ComputeStatus("my-feature", "openspec", withWorkspaceEdit(sddstatus.Input{
+		Artifacts: arts,
+		Contents: map[string]string{
+			sddstatus.ArtifactTasks:        "- [x] 1\n",
+			sddstatus.ArtifactVerifyReport: "## Verification Report\n\nStatus: PASS\n\nHistorical checks passed.\n",
+		},
+	}))
+
+	if got := status.Dependencies[sddstatus.PhaseArchive]; got != sddstatus.DepBlocked {
+		t.Fatalf("archive dependency = %q, want blocked", got)
+	}
+	if !containsString(status.BlockedReasons, "phase sdd-archive blocked — regenerate_with_sdd_verify") {
+		t.Fatalf("blocked reasons = %#v, want typed regeneration code", status.BlockedReasons)
+	}
+}
+
+func TestVerifyReportRequiresCanonicalPassBeyondNegatedNounForms(t *testing.T) {
 	// Common CI summary phrases that contain failure/blocker words in a zero/negated context
 	// must NOT block archive. These were false-positives before the verifyNegatedForms strip.
 	arts := allPlanningDone()
@@ -1047,9 +1398,7 @@ func TestVerifyBlockPatterns_NegatedNounFormsDoNotBlock(t *testing.T) {
 		"## Verify Report\n\nNo failures detected. No blockers remaining.",
 		"## Verify Report\n\nAll green. 0 blockers, 0 failures.",
 		"## Verify Report\n\nno failure, no blocker found.",
-		// non-critical: hyphen creates word boundary before "critical", so \bcritical\b matches
-		// without the negated-forms strip. All of these must pass.
-		"## Verify Report\n\nOnly non-critical warnings remain.",
+		// Non-critical is neutral, so this still needs the explicit "Ship it" pass signal.
 		"## Verify Report\n\nAll items are non-critical. Ship it.",
 		// no pending / no untested also need to pass
 		"## Verify Report\n\nNo pending items. Zero untested paths.",
@@ -1060,8 +1409,8 @@ func TestVerifyBlockPatterns_NegatedNounFormsDoNotBlock(t *testing.T) {
 			Artifacts: arts,
 			Contents:  map[string]string{sddstatus.ArtifactVerifyReport: content},
 		}))
-		if s.Dependencies[sddstatus.PhaseArchive] != sddstatus.DepReady {
-			t.Errorf("archive dep = %q, want ready for content %q", s.Dependencies[sddstatus.PhaseArchive], content)
+		if s.Dependencies[sddstatus.PhaseArchive] != sddstatus.DepBlocked {
+			t.Errorf("archive dep = %q, want blocked without canonical readiness for content %q", s.Dependencies[sddstatus.PhaseArchive], content)
 		}
 	}
 }
