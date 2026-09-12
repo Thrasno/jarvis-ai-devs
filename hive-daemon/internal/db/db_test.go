@@ -118,7 +118,11 @@ func TestOpen_AllTriggersExist(t *testing.T) {
 	}
 	defer func() { _ = d.Close() }()
 
-	triggers := []string{"memories_ai", "memories_au", "memories_ad"}
+	triggers := []string{
+		"memories_ai", "memories_au", "memories_ad",
+		"protect_sdd_apply_progress_documents",
+		"protect_sdd_apply_receipts_update", "protect_sdd_apply_receipts_delete", "protect_sdd_apply_receipts_insert",
+	}
 	for _, trigger := range triggers {
 		t.Run(trigger, func(t *testing.T) {
 			var name string
@@ -181,7 +185,7 @@ func TestInitSchema_ClosedDB_ReturnsError(t *testing.T) {
 	}
 }
 
-func TestValidateSchema_SixTriggersAfterOpen(t *testing.T) {
+func TestValidateSchema_NineTriggersAfterOpen(t *testing.T) {
 	d, err := Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -190,6 +194,8 @@ func TestValidateSchema_SixTriggersAfterOpen(t *testing.T) {
 
 	triggers := []string{
 		"memories_ai", "memories_au", "memories_ad",
+		"protect_sdd_apply_progress_documents",
+		"protect_sdd_apply_receipts_update", "protect_sdd_apply_receipts_delete", "protect_sdd_apply_receipts_insert",
 		"user_prompts_ai", "user_prompts_au", "user_prompts_ad",
 	}
 	for _, trigger := range triggers {

@@ -1616,6 +1616,40 @@ func TestSyncDB_ApplyRemoteMutationNonCreateBranches(t *testing.T) {
 	}
 }
 
+func TestApplyRemoteMutationSkipsImmutableNonCreateBeforeProjectGuards(t *testing.T) {
+	for _, operation := range []MutationOp{MutationOpUpdate, MutationOpDelete, MutationOpRestore} {
+		t.Run(string(operation), func(t *testing.T) {
+			db := setupTestDB(t)
+			t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+			const project = "project"
+			_, err := db.AdvanceApplyProgress(applyProgressRequest(t, "immutable-before-guard-"+string(operation), 0, 0, "", "apb-12121212121212121212121212121212"))
+			require.NoError(t, err)
+			var memoryID int64
+			var syncID string
+			require.NoError(t, db.sqlDB.QueryRow(`SELECT id, sync_id FROM memories WHERE project = ? AND topic_key = ?`, project, "sdd/change/apply-progress/v2").Scan(&memoryID, &syncID))
+			require.NoError(t, func() error {
+				_, err := db.RecordProjectBlock(context.Background(), ProjectBlockCommand{CommandID: "block-" + string(operation), AckToken: "ack-" + string(operation), Project: project, CanonicalProjectKey: canonicalProjectKey(project), Action: "block", Generation: 1})
+				return err
+			}())
+			blocked, err := db.IsProjectBlocked(context.Background(), project)
+			require.NoError(t, err)
+			require.True(t, blocked)
+
+			event := MutationEnvelope{EventID: "immutable-" + string(operation), EntityType: "memory", EntitySyncID: syncID, Project: project, Op: operation, OccurredAt: time.Now().UTC()}
+			if operation == MutationOpUpdate {
+				event.Memory = &MutationMemoryPayload{Title: "ignored immutable update", Content: "ignored", Category: "test", SessionID: "manual-save-" + project}
+			}
+			applied, err := db.ApplyRemoteMutation(event)
+			require.NoError(t, err)
+			assert.False(t, applied, "immutable %s must be cursor-safe even for a blocked project", operation)
+			var mutationCount int
+			require.NoError(t, db.sqlDB.QueryRow(`SELECT COUNT(*) FROM memory_mutations WHERE event_id = ?`, event.EventID).Scan(&mutationCount))
+			assert.Zero(t, mutationCount)
+		})
+	}
+}
+
 func TestSyncDB_ApplyRemoteMutationValidationErrors(t *testing.T) {
 	validMemory := &MutationMemoryPayload{
 		Title:     "Remote title",

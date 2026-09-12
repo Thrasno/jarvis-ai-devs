@@ -861,6 +861,47 @@ func TestSyncStateMergeColumnsMatchSchema(t *testing.T) {
 
 // TestIsProjectMigrationContentionRecognizesRealSQLiteBusy pins the classifier
 // against an error SQLite actually produces, not a hand-built one.
+func TestProjectMigrationRebuildRetainsImmutableApplyProgressProtection(t *testing.T) {
+	database := newMigrationExecutorDB(t)
+	seedMigrationProject(t, database, "Foo")
+	plan, err := ReadProjectMigrationPlan(context.Background(), database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ExecuteProjectMigration(context.Background(), database, plan, func(context.Context) error { return nil }, nil); err != nil {
+		t.Fatalf("ExecuteProjectMigration() = %v", err)
+	}
+
+	committed, err := database.AdvanceApplyProgress(applyProgressRequest(t, "rebuilt-protection", 0, 0, "", "apb-99999999999999999999999999999999"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshotID, evidenceID int64
+	if err := database.sqlDB.QueryRow(`SELECT snapshot_memory_id FROM sdd_apply_heads WHERE project = ? AND change_name = ?`, "project", "change").Scan(&snapshotID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.sqlDB.QueryRow(`SELECT id FROM memories WHERE project = ? AND topic_key = ?`, "project", "sdd/change/apply-evidence/"+committed.State.Snapshot.Batches[0].BatchID).Scan(&evidenceID); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int64{snapshotID, evidenceID} {
+		if _, err := database.sqlDB.Exec(`UPDATE memories SET content = content WHERE id = ?`, id); err == nil {
+			t.Fatalf("generic immutable document update for id %d succeeded", id)
+		}
+		if err := database.DeleteMemory(id, "tester", "generic delete"); err == nil {
+			t.Fatalf("generic immutable document delete for id %d succeeded", id)
+		}
+	}
+	for _, statement := range []string{
+		`UPDATE sdd_apply_receipts SET response_json = response_json WHERE request_id = 'rebuilt-protection'`,
+		`DELETE FROM sdd_apply_receipts WHERE request_id = 'rebuilt-protection'`,
+		`INSERT OR REPLACE INTO sdd_apply_receipts (request_id, project, change_name, payload_sha256, response_json) SELECT request_id, project, change_name, payload_sha256, response_json FROM sdd_apply_receipts WHERE request_id = 'rebuilt-protection'`,
+	} {
+		if _, err := database.sqlDB.Exec(statement); err == nil {
+			t.Fatalf("generic immutable receipt mutation succeeded: %s", statement)
+		}
+	}
+}
+
 func TestIsProjectMigrationContentionRecognizesRealSQLiteBusy(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "memory.db")
 	database, err := Open(path)

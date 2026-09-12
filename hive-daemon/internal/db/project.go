@@ -438,6 +438,16 @@ WHERE project = ?`, target).Scan(&tgtMergedAt, &tgtArchivedAt)
 	if tgtMergedAt.Valid && tgtMergedAt.String != "" {
 		return false, ErrGovernanceProjectMergeConflict
 	}
+	// Guarded apply-progress records embed their project name in signed immutable
+	// bytes and in receipt payloads. Physical project migration cannot safely
+	// rekey either side, so reject before changing identities or moving rows.
+	guarded, err := governanceMergeHasImmutableApplyProgress(tx, source, target)
+	if err != nil {
+		return false, fmt.Errorf("check immutable apply progress merge guard: %w", err)
+	}
+	if guarded {
+		return false, fmt.Errorf("%w: immutable apply progress topology", ErrGovernanceProjectMergeConflict)
+	}
 	if _, err := registerProjectIdentity(ctx, tx, targetSpelling); err != nil {
 		return false, err
 	}
@@ -507,19 +517,35 @@ WHERE hive_project_governance.archived_at IS NULL
 	return true, nil
 }
 
+func governanceMergeHasImmutableApplyProgress(tx *sql.Tx, source, target string) (bool, error) {
+	var exists bool
+	err := tx.QueryRow(`SELECT EXISTS(
+		SELECT 1 FROM sdd_apply_heads WHERE project IN (?, ?)
+		UNION ALL
+		SELECT 1 FROM sdd_apply_receipts WHERE project IN (?, ?)
+		UNION ALL
+		SELECT 1 FROM memories
+		WHERE project IN (?, ?)
+		  AND (topic_key LIKE 'sdd/%/apply-progress/v2' OR topic_key LIKE 'sdd/%/apply-evidence/%')
+		LIMIT 1
+	)`, source, target, source, target, source, target).Scan(&exists)
+	return exists, err
+}
+
 // DeleteGovernanceProject irreversibly purges all local data for an archived project
 // in a single self-contained transaction. The project must already be archived
 // (archived_at IS NOT NULL in hive_project_governance); if not, ErrGovernanceProjectNotArchived
-// is returned. Deletion order: memory_mutations → project_aliases → memories
-// (FTS5 maintained by the memories_ad trigger) → user_prompts → sessions →
-// sync_state (excluding __auth__) → hive_warnings → hive_project_governance.
-// Returns the total count of rows deleted across memory_mutations, project_aliases,
-// memories, user_prompts, sessions, hive_warnings, and the governance row.
+// is returned. Deletion order: memory_mutations → project_aliases → guarded apply
+// progress heads and receipts → memories (FTS5 maintained by the memories_ad trigger)
+// → user_prompts → sessions → sync_state (excluding __auth__) → hive_warnings →
+// hive_project_governance. Returns the total count of rows deleted across
+// memory_mutations, project_aliases, guarded apply progress records, memories,
+// user_prompts, sessions, hive_warnings, and the governance row.
 // sync_state rows are deleted but not counted (the __auth__ row is intentionally
 // excluded from deletion and the per-project row count is not meaningful to callers).
 // If the project is not found at all (already purged), returns (0, nil) for idempotency.
 func (d *DB) DeleteGovernanceProject(ctx context.Context, name, actorID, reason string) (int, error) {
-	name = strings.TrimSpace(name)
+	name = canonicalProjectKey(name)
 	if name == "" {
 		return 0, ErrGovernanceProjectRequired
 	}
@@ -544,8 +570,10 @@ SELECT EXISTS(
     SELECT 1 FROM sessions WHERE project = ?
     UNION ALL SELECT 1 FROM memories WHERE project = ?
     UNION ALL SELECT 1 FROM user_prompts WHERE project = ?
+    UNION ALL SELECT 1 FROM sdd_apply_heads WHERE project = ?
+    UNION ALL SELECT 1 FROM sdd_apply_receipts WHERE project = ?
     LIMIT 1
-)`, name, name, name).Scan(&exists)
+)`, name, name, name, name, name).Scan(&exists)
 		if existErr != nil {
 			return 0, fmt.Errorf("check project existence for delete: %w", existErr)
 		}
@@ -587,7 +615,25 @@ SELECT EXISTS(
 	n, _ = res.RowsAffected()
 	total += int(n)
 
-	// Step 3: delete memories (memories_ad AFTER DELETE trigger maintains FTS5).
+	// Step 3: delete guarded apply progress before their immutable memory records.
+	res, err = tx.ExecContext(ctx, `DELETE FROM sdd_apply_heads WHERE project = ?`, name)
+	if err != nil {
+		return 0, fmt.Errorf("delete sdd_apply_heads: %w", err)
+	}
+	n, _ = res.RowsAffected()
+	total += int(n)
+
+	// Receipt deletion is allowed only after the archived-project guard above, and
+	// only inside this transaction. The helper restores the protection trigger
+	// before the transaction can commit, so generic receipt deletes remain blocked.
+	res, err = deleteApplyProgressReceiptsForGovernancePurge(ctx, tx, name)
+	if err != nil {
+		return 0, fmt.Errorf("delete sdd_apply_receipts: %w", err)
+	}
+	n, _ = res.RowsAffected()
+	total += int(n)
+
+	// Step 4: delete memories (memories_ad AFTER DELETE trigger maintains FTS5).
 	res, err = tx.ExecContext(ctx, `DELETE FROM memories WHERE project = ?`, name)
 	if err != nil {
 		return 0, fmt.Errorf("delete memories: %w", err)
@@ -595,7 +641,7 @@ SELECT EXISTS(
 	n, _ = res.RowsAffected()
 	total += int(n)
 
-	// Step 4: delete user_prompts.
+	// Step 5: delete user_prompts.
 	res, err = tx.ExecContext(ctx, `DELETE FROM user_prompts WHERE project = ?`, name)
 	if err != nil {
 		return 0, fmt.Errorf("delete user_prompts: %w", err)
@@ -603,7 +649,7 @@ SELECT EXISTS(
 	n, _ = res.RowsAffected()
 	total += int(n)
 
-	// Step 5: delete sessions.
+	// Step 6: delete sessions.
 	res, err = tx.ExecContext(ctx, `DELETE FROM sessions WHERE project = ?`, name)
 	if err != nil {
 		return 0, fmt.Errorf("delete sessions: %w", err)
@@ -611,13 +657,13 @@ SELECT EXISTS(
 	n, _ = res.RowsAffected()
 	total += int(n)
 
-	// Step 6: delete sync_state (never touch __auth__).
+	// Step 7: delete sync_state (never touch __auth__).
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM sync_state WHERE project = ? AND project != '__auth__'`, name); err != nil {
 		return 0, fmt.Errorf("delete sync_state: %w", err)
 	}
 
-	// Step 7: delete hive_warnings.
+	// Step 8: delete hive_warnings.
 	res, err = tx.ExecContext(ctx, `DELETE FROM hive_warnings WHERE source = ?`, name)
 	if err != nil {
 		return 0, fmt.Errorf("delete hive_warnings: %w", err)
@@ -625,7 +671,7 @@ SELECT EXISTS(
 	n, _ = res.RowsAffected()
 	total += int(n)
 
-	// Step 8: delete governance row.
+	// Step 9: delete governance row.
 	res, err = tx.ExecContext(ctx, `DELETE FROM hive_project_governance WHERE project = ?`, name)
 	if err != nil {
 		return 0, fmt.Errorf("delete hive_project_governance: %w", err)
@@ -637,6 +683,25 @@ SELECT EXISTS(
 		return 0, fmt.Errorf("commit delete governance project: %w", err)
 	}
 	return total, nil
+}
+
+// deleteApplyProgressReceiptsForGovernancePurge is the sole receipt-deletion
+// exception. SQLite triggers cannot identify the calling Go method, so this
+// archived-project transaction removes the delete trigger only for its exact
+// delete statement and recreates it before commit. SQLite DDL is transactional:
+// any failure rolls back both the receipt deletion and trigger removal.
+func deleteApplyProgressReceiptsForGovernancePurge(ctx context.Context, tx *sql.Tx, project string) (sql.Result, error) {
+	if _, err := tx.ExecContext(ctx, `DROP TRIGGER protect_sdd_apply_receipts_delete`); err != nil {
+		return nil, fmt.Errorf("drop receipt protection trigger: %w", err)
+	}
+	result, deleteErr := tx.ExecContext(ctx, `DELETE FROM sdd_apply_receipts WHERE project = ?`, project)
+	if _, err := tx.ExecContext(ctx, `CREATE TRIGGER protect_sdd_apply_receipts_delete BEFORE DELETE ON sdd_apply_receipts BEGIN SELECT RAISE(ABORT, 'immutable apply progress receipt'); END`); err != nil {
+		return nil, fmt.Errorf("restore receipt protection trigger: %w", err)
+	}
+	if deleteErr != nil {
+		return nil, deleteErr
+	}
+	return result, nil
 }
 
 // ProjectMergeSyncEvidence reports whether any memory in the given projects has

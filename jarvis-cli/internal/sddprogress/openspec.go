@@ -82,6 +82,11 @@ func (s OpenSpec) advance(request AdvanceRequest, legacy []byte) (AdvanceResult,
 		return AdvanceResult{}, err
 	}
 	if err := s.publish(snapshotData); err != nil {
+		if legacy != nil {
+			if restoreErr := s.restoreLegacy(legacy); restoreErr != nil {
+				return AdvanceResult{}, fmt.Errorf("publish legacy upgrade: %w; restore legacy: %v", err, restoreErr)
+			}
+		}
 		return AdvanceResult{}, err
 	}
 	return AdvanceResult{snapshot.Generation, snapshot.Revision, snapshot.Digest}, nil
@@ -130,6 +135,37 @@ func (s OpenSpec) checkReceipt(id, payload string) (bool, error) {
 		return false, ErrRequestConflict
 	}
 	return true, nil
+}
+
+func (s OpenSpec) RestoreLegacy(data []byte) error {
+	unlock, err := s.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return s.restoreLegacy(data)
+}
+
+func (s OpenSpec) restoreLegacy(data []byte) error {
+	file, err := os.CreateTemp(s.Root, ".apply-progress-restore-")
+	if err != nil {
+		return err
+	}
+	name := file.Name()
+	defer os.Remove(name)
+	if _, err = file.Write(data); err == nil {
+		err = file.Sync()
+	}
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(name, filepath.Join(s.Root, "apply-progress.md")); err != nil {
+		return err
+	}
+	return s.syncDir(s.Root)
 }
 
 func (s OpenSpec) publish(data []byte) error {
@@ -185,12 +221,18 @@ func legacyConversion(progress []byte, tasksPath string) (applyprogress.LegacyCo
 	legacy := applyprogress.LegacyProgress{}
 	for _, line := range strings.Split(string(tasksData), "\n") {
 		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "- [") || len(line) < 6 || (line[3] != 'x' && line[3] != ' ') {
+		if !strings.HasPrefix(line, "- [") {
 			continue
 		}
+		if len(line) < 6 || (line[3] != 'x' && line[3] != ' ') || line[4] != ']' {
+			return applyprogress.LegacyConversion{}, "", ErrLegacyMigration
+		}
 		fields := strings.Fields(line[5:])
-		if len(fields) < 2 || fields[0][0] < '0' || fields[0][0] > '9' {
-			continue
+		if len(fields) < 2 {
+			return applyprogress.LegacyConversion{}, "", ErrLegacyMigration
+		}
+		if fields[0][0] < '0' || fields[0][0] > '9' {
+			return applyprogress.LegacyConversion{}, "", ErrLegacyMigration
 		}
 		legacy.Tasks = append(legacy.Tasks, applyprogress.Task{Path: fields[0], Text: strings.Join(fields[1:], " ")})
 		if line[3] == 'x' {
@@ -216,6 +258,9 @@ func legacyConversion(progress []byte, tasksPath string) (applyprogress.LegacyCo
 	converted, err := applyprogress.ConvertLegacy(legacy)
 	if err != nil {
 		return applyprogress.LegacyConversion{}, "", err
+	}
+	if complete && len(converted.Completed) != len(converted.Tasks) {
+		return applyprogress.LegacyConversion{}, "", ErrLegacyMigration
 	}
 	status := applyprogress.StatusPartial
 	if complete || (!partial && len(converted.Completed) == len(converted.Tasks)) {

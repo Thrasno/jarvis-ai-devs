@@ -2,7 +2,9 @@ package db
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -10,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 	"github.com/google/uuid"
 	"modernc.org/sqlite"
@@ -19,6 +22,7 @@ var (
 	ErrProjectMigrationPlanUnsafe     = errors.New("project migration plan is not executable")
 	ErrProjectMigrationPlanStale      = errors.New("project migration plan changed before execution")
 	ErrProjectMigrationUnsupported    = errors.New("project migration contains unsupported state")
+	ErrProjectMigrationApplyProgress  = errors.New("project migration cannot rekey immutable apply progress")
 	ErrProjectMigrationConflict       = errors.New("project migration contains an unmergeable composite row")
 	ErrProjectMigrationInProgress     = errors.New("project migration is already executing")
 	ErrProjectIdentityResolutionStale = errors.New("project identity resolution is stale or unrelated")
@@ -331,6 +335,13 @@ func ExecuteProjectMigration(ctx context.Context, database *DB, plan ProjectMigr
 	if err := requireSupportedProjectMigration(records); err != nil {
 		return err
 	}
+	migrationTargets := make([]string, 0, len(plan.Actions))
+	for _, action := range plan.Actions {
+		migrationTargets = append(migrationTargets, action.Key)
+	}
+	if err := refuseApplyProgressRekey(database.sqlDB, migrationTargets...); err != nil {
+		return err
+	}
 	registryNeeded, err := projectIdentityRegistryNeeded(ctx, database.sqlDB, records)
 	if err != nil {
 		return err
@@ -554,6 +565,114 @@ func enqueueMemoryReprojections(ctx context.Context, tx *sql.Tx, fromProject, to
 	return int64(len(syncIDs)), nil
 }
 
+// ApplyProgressRekeyOffender is a remediation-safe description of one immutable
+// record that prevents its project spelling from changing. It intentionally carries
+// no content: topic, digest, and detected spelling are sufficient to find and repair
+// the row without exposing the signed document through an error path.
+type ApplyProgressRekeyOffender struct {
+	Topic            string
+	Digest           string
+	DetectedSpelling string
+}
+
+// ApplyProgressRekeyRefusal reports immutable rows that make a requested project
+// migration unsafe.
+type ApplyProgressRekeyRefusal struct {
+	Offenders []ApplyProgressRekeyOffender
+}
+
+func (e *ApplyProgressRekeyRefusal) Error() string {
+	parts := make([]string, 0, len(e.Offenders))
+	for _, offender := range e.Offenders {
+		parts = append(parts, fmt.Sprintf("topic=%q digest=%q spelling=%q", offender.Topic, offender.Digest, offender.DetectedSpelling))
+	}
+	return ErrProjectMigrationApplyProgress.Error() + ": " + strings.Join(parts, "; ")
+}
+
+func (e *ApplyProgressRekeyRefusal) Unwrap() error {
+	return ErrProjectMigrationApplyProgress
+}
+
+// refuseApplyProgressRekey fails closed rather than rewriting project fields in
+// signed snapshots, heads, or evidence. Those immutable bytes embed Project, so
+// a rekey would break their digest and their receipt lineage. Receipts themselves
+// remain local idempotency records keyed by request_id and are intentionally not
+// relocated or synchronized.
+//
+// targets are canonical project keys selected by the current migration plan. An
+// immutable row for another project is not evidence that this migration is unsafe.
+// Calling without targets retains the conservative all-project check used by
+// low-level callers and tests.
+func refuseApplyProgressRekey(query interface {
+	Query(string, ...any) (*sql.Rows, error)
+}, targets ...string) error {
+	targetSet := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		targetSet[projectidentity.Canonical(target).String()] = struct{}{}
+	}
+	rows, err := query.Query(`
+SELECT project, 'sdd/' || change_name || '/apply-progress/v2', digest, '' FROM sdd_apply_heads
+UNION ALL
+SELECT project, topic_key, '', content FROM memories
+WHERE topic_key LIKE 'sdd/%/apply-progress/v2' OR topic_key LIKE 'sdd/%/apply-evidence/%'`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var offenders []ApplyProgressRekeyOffender
+	for rows.Next() {
+		var project, topic, digest, content string
+		if err := rows.Scan(&project, &topic, &digest, &content); err != nil {
+			return err
+		}
+		canonical := projectidentity.Canonical(project).String()
+		if canonical == project {
+			continue
+		}
+		if len(targetSet) != 0 {
+			if _, targeted := targetSet[canonical]; !targeted {
+				continue
+			}
+		}
+		if digest == "" {
+			digest = immutableApplyProgressDocumentDigest(topic, content)
+		}
+		offenders = append(offenders, ApplyProgressRekeyOffender{Topic: topic, Digest: digest, DetectedSpelling: project})
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(offenders) == 0 {
+		return nil
+	}
+	sort.Slice(offenders, func(i, j int) bool {
+		if offenders[i].DetectedSpelling != offenders[j].DetectedSpelling {
+			return offenders[i].DetectedSpelling < offenders[j].DetectedSpelling
+		}
+		if offenders[i].Topic != offenders[j].Topic {
+			return offenders[i].Topic < offenders[j].Topic
+		}
+		return offenders[i].Digest < offenders[j].Digest
+	})
+	return &ApplyProgressRekeyRefusal{Offenders: offenders}
+}
+
+func immutableApplyProgressDocumentDigest(topic, content string) string {
+	if strings.HasSuffix(topic, "/apply-progress/v2") {
+		if snapshot, err := applyprogress.DecodeCanonicalSnapshot([]byte(content)); err == nil {
+			return snapshot.Digest
+		}
+	}
+	if strings.Contains(topic, "/apply-evidence/") {
+		if batch, err := applyprogress.DecodeCanonicalBatch([]byte(content)); err == nil {
+			return batch.SHA256
+		}
+	}
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:])
+}
+
 func projectMigrationNeeded(records []ProjectStateRecord) bool {
 	for _, record := range records {
 		if projectidentity.Canonical(record.Project).String() != record.Project {
@@ -691,7 +810,7 @@ func rebuildProjectMigrationState(ctx context.Context, tx *sql.Tx) error {
 	if err := validateMigrationLinks(ctx, tx); err != nil {
 		return err
 	}
-	for _, trigger := range []string{"memories_ai", "memories_au", "memories_ad", "user_prompts_ai", "user_prompts_au", "user_prompts_ad"} {
+	for _, trigger := range []string{"memories_ai", "memories_au", "memories_ad", "protect_sdd_apply_progress_documents", "protect_sdd_apply_receipts_update", "protect_sdd_apply_receipts_delete", "protect_sdd_apply_receipts_insert", "user_prompts_ai", "user_prompts_au", "user_prompts_ad"} {
 		var name string
 		if err := tx.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?`, trigger).Scan(&name); err != nil {
 			return fmt.Errorf("%w: missing schema trigger %s", ErrProjectMigrationConflict, trigger)
@@ -807,7 +926,7 @@ func rebuildStandaloneProjectOwnershipTables(ctx context.Context, tx *sql.Tx) er
 }
 
 func rebuildContentProjectOwnershipTables(ctx context.Context, tx *sql.Tx) error {
-	for _, trigger := range []string{"memories_ai", "memories_au", "memories_ad", "user_prompts_ai", "user_prompts_au", "user_prompts_ad"} {
+	for _, trigger := range []string{"memories_ai", "memories_au", "memories_ad", "protect_sdd_apply_progress_documents", "protect_sdd_apply_receipts_update", "protect_sdd_apply_receipts_delete", "protect_sdd_apply_receipts_insert", "user_prompts_ai", "user_prompts_au", "user_prompts_ad"} {
 		var name string
 		if err := tx.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?`, trigger).Scan(&name); err != nil {
 			return fmt.Errorf("%w: missing schema trigger %s", ErrProjectMigrationConflict, trigger)
@@ -826,7 +945,8 @@ func rebuildContentProjectOwnershipTables(ctx context.Context, tx *sql.Tx) error
 		`INSERT INTO user_prompts_new (id, sync_id, project, session_id, content, created_at, synced_at, sync_from_project) SELECT id, sync_id, project, session_id, content, created_at, synced_at, sync_from_project FROM user_prompts`,
 		`INSERT INTO memory_prompt_links_new SELECT * FROM memory_prompt_links`,
 		`DROP TABLE memory_prompt_links`,
-		`DROP TRIGGER memories_ai`, `DROP TRIGGER memories_au`, `DROP TRIGGER memories_ad`, `DROP TABLE memories_fts`,
+		`DROP TRIGGER memories_ai`, `DROP TRIGGER memories_au`, `DROP TRIGGER memories_ad`,
+		`DROP TRIGGER protect_sdd_apply_progress_documents`, `DROP TABLE memories_fts`,
 		`DROP TRIGGER user_prompts_ai`, `DROP TRIGGER user_prompts_au`, `DROP TRIGGER user_prompts_ad`, `DROP TABLE user_prompts_fts`,
 		`DROP TABLE memories`, `DROP TABLE sessions`, `DROP TABLE user_prompts`,
 		`ALTER TABLE sessions_new RENAME TO sessions`, `ALTER TABLE memories_new RENAME TO memories`, `ALTER TABLE user_prompts_new RENAME TO user_prompts`, `ALTER TABLE memory_prompt_links_new RENAME TO memory_prompt_links`,
@@ -837,6 +957,7 @@ func rebuildContentProjectOwnershipTables(ctx context.Context, tx *sql.Tx) error
 		`CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN INSERT INTO memories_fts(rowid, title, content, tags) VALUES (new.id, new.title, new.content, new.tags); END`,
 		`CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN INSERT INTO memories_fts(memories_fts, rowid, title, content, tags) VALUES ('delete', old.id, old.title, old.content, old.tags); INSERT INTO memories_fts(rowid, title, content, tags) VALUES (new.id, new.title, new.content, new.tags); END`,
 		`CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN INSERT INTO memories_fts(memories_fts, rowid, title, content, tags) VALUES ('delete', old.id, old.title, old.content, old.tags); END`,
+		`CREATE TRIGGER protect_sdd_apply_progress_documents BEFORE UPDATE ON memories WHEN (OLD.topic_key LIKE 'sdd/%/apply-progress/v2' OR OLD.topic_key LIKE 'sdd/%/apply-evidence/%') AND OLD.content LIKE '{"schema":"jarvis.sdd-apply-%' BEGIN SELECT RAISE(ABORT, 'immutable apply progress document'); END`,
 		`CREATE VIRTUAL TABLE user_prompts_fts USING fts5(content, content='user_prompts', content_rowid='id', tokenize='unicode61')`,
 		`CREATE TRIGGER user_prompts_ai AFTER INSERT ON user_prompts BEGIN INSERT INTO user_prompts_fts(rowid, content) VALUES (new.id, new.content); END`,
 		`CREATE TRIGGER user_prompts_au AFTER UPDATE ON user_prompts BEGIN INSERT INTO user_prompts_fts(user_prompts_fts, rowid, content) VALUES ('delete', old.id, old.content); INSERT INTO user_prompts_fts(rowid, content) VALUES (new.id, new.content); END`,

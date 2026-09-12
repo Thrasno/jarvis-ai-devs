@@ -412,16 +412,34 @@ response_json  TEXT NOT NULL,
 created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- Guarded v2 documents are immutable topology, not user memories. General
--- delete/restore must not turn a sealed head or evidence batch into a mutable row.
+-- Guarded v2 documents are immutable topology, not user memories. No generic
+-- update path may rewrite or soft-delete a sealed head or evidence batch.
 CREATE TRIGGER IF NOT EXISTS protect_sdd_apply_progress_documents
-BEFORE UPDATE OF deleted_at ON memories
-WHEN OLD.deleted_at IS NOT NEW.deleted_at AND (
-OLD.topic_key LIKE 'sdd/%/apply-progress/v2' OR
-OLD.topic_key LIKE 'sdd/%/apply-evidence/%'
-)
+BEFORE UPDATE ON memories
+WHEN (OLD.topic_key LIKE 'sdd/%/apply-progress/v2' OR
+OLD.topic_key LIKE 'sdd/%/apply-evidence/%') AND
+OLD.content LIKE '{"schema":"jarvis.sdd-apply-%'
 BEGIN
 SELECT RAISE(ABORT, 'immutable apply progress document');
+END;
+
+CREATE TRIGGER IF NOT EXISTS protect_sdd_apply_receipts_update
+BEFORE UPDATE ON sdd_apply_receipts
+BEGIN
+SELECT RAISE(ABORT, 'immutable apply progress receipt');
+END;
+
+CREATE TRIGGER IF NOT EXISTS protect_sdd_apply_receipts_delete
+BEFORE DELETE ON sdd_apply_receipts
+BEGIN
+SELECT RAISE(ABORT, 'immutable apply progress receipt');
+END;
+
+CREATE TRIGGER IF NOT EXISTS protect_sdd_apply_receipts_insert
+BEFORE INSERT ON sdd_apply_receipts
+WHEN EXISTS (SELECT 1 FROM sdd_apply_receipts WHERE request_id = NEW.request_id)
+BEGIN
+SELECT RAISE(ABORT, 'immutable apply progress receipt');
 END;
 `
 
@@ -625,7 +643,11 @@ func initSchema(sqlDB *sql.DB) error {
 		`ALTER TABLE user_prompts ADD COLUMN sync_from_project TEXT NOT NULL DEFAULT ''`,
 		`CREATE TABLE IF NOT EXISTS sdd_apply_heads (project TEXT NOT NULL, change_name TEXT NOT NULL, snapshot_memory_id INTEGER NOT NULL, generation INTEGER NOT NULL, revision INTEGER NOT NULL, digest TEXT NOT NULL, PRIMARY KEY (project, change_name))`,
 		`CREATE TABLE IF NOT EXISTS sdd_apply_receipts (request_id TEXT PRIMARY KEY, project TEXT NOT NULL, change_name TEXT NOT NULL, payload_sha256 TEXT NOT NULL, response_json TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
-		`CREATE TRIGGER IF NOT EXISTS protect_sdd_apply_progress_documents BEFORE UPDATE OF deleted_at ON memories WHEN OLD.deleted_at IS NOT NEW.deleted_at AND (OLD.topic_key LIKE 'sdd/%/apply-progress/v2' OR OLD.topic_key LIKE 'sdd/%/apply-evidence/%') BEGIN SELECT RAISE(ABORT, 'immutable apply progress document'); END`,
+		`DROP TRIGGER IF EXISTS protect_sdd_apply_progress_documents`,
+		`CREATE TRIGGER IF NOT EXISTS protect_sdd_apply_progress_documents BEFORE UPDATE ON memories WHEN (OLD.topic_key LIKE 'sdd/%/apply-progress/v2' OR OLD.topic_key LIKE 'sdd/%/apply-evidence/%') AND OLD.content LIKE '{"schema":"jarvis.sdd-apply-%' BEGIN SELECT RAISE(ABORT, 'immutable apply progress document'); END`,
+		`CREATE TRIGGER IF NOT EXISTS protect_sdd_apply_receipts_update BEFORE UPDATE ON sdd_apply_receipts BEGIN SELECT RAISE(ABORT, 'immutable apply progress receipt'); END`,
+		`CREATE TRIGGER IF NOT EXISTS protect_sdd_apply_receipts_delete BEFORE DELETE ON sdd_apply_receipts BEGIN SELECT RAISE(ABORT, 'immutable apply progress receipt'); END`,
+		`CREATE TRIGGER IF NOT EXISTS protect_sdd_apply_receipts_insert BEFORE INSERT ON sdd_apply_receipts WHEN EXISTS (SELECT 1 FROM sdd_apply_receipts WHERE request_id = NEW.request_id) BEGIN SELECT RAISE(ABORT, 'immutable apply progress receipt'); END`,
 	}
 	for _, m := range migrations {
 		if _, err := sqlDB.Exec(m); err != nil {
@@ -830,7 +852,7 @@ func migrateMemoriesAddSessionID(sqlDB *sql.DB) error {
 			INSERT INTO memories_fts(memories_fts, rowid, title, content, tags)
 			VALUES ('delete', old.id, old.title, old.content, old.tags);
 		END`,
-		`CREATE TRIGGER IF NOT EXISTS protect_sdd_apply_progress_documents BEFORE UPDATE OF deleted_at ON memories WHEN OLD.deleted_at IS NOT NEW.deleted_at AND (OLD.topic_key LIKE 'sdd/%/apply-progress/v2' OR OLD.topic_key LIKE 'sdd/%/apply-evidence/%') BEGIN SELECT RAISE(ABORT, 'immutable apply progress document'); END`,
+		`CREATE TRIGGER IF NOT EXISTS protect_sdd_apply_progress_documents BEFORE UPDATE ON memories WHEN (OLD.topic_key LIKE 'sdd/%/apply-progress/v2' OR OLD.topic_key LIKE 'sdd/%/apply-evidence/%') AND OLD.content LIKE '{"schema":"jarvis.sdd-apply-%' BEGIN SELECT RAISE(ABORT, 'immutable apply progress document'); END`,
 	} {
 		if _, err = tx.Exec(stmt); err != nil {
 			return fmt.Errorf("recreate fts/trigger: %w", err)
@@ -965,6 +987,7 @@ func wrapUniqueSyncIDError(err error, table string) error {
 func validateSchema(sqlDB *sql.DB) error {
 	triggers := []string{
 		"memories_ai", "memories_au", "memories_ad", "protect_sdd_apply_progress_documents",
+		"protect_sdd_apply_receipts_update", "protect_sdd_apply_receipts_delete", "protect_sdd_apply_receipts_insert",
 		"user_prompts_ai", "user_prompts_au", "user_prompts_ad",
 	}
 	for _, trigger := range triggers {

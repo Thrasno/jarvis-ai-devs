@@ -83,6 +83,9 @@ func (d *DB) saveMemory(mem *models.Memory, prepareTx func(*sql.Tx) error) (int6
 	rawProject := mem.Project
 	mem.Project = canonicalProjectKey(rawProject)
 	mem.TopicKey = topickey.Normalize(mem.TopicKey)
+	if immutableApplyProgressTopic(stringValue(mem.TopicKey)) {
+		return 0, ErrApplyProgressTopicReserved
+	}
 	if mem.Project == "" {
 		return 0, fmt.Errorf("invalid memory: project is required")
 	}

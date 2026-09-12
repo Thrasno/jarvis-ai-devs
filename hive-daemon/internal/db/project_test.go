@@ -11,6 +11,7 @@ import (
 
 	hivedb "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
 )
 
 func TestKnownProjects_ReturnsDistinctProjectsFromWriteTables(t *testing.T) {
@@ -527,6 +528,69 @@ func TestMergeGovernanceProjectIsIdempotentAndPreservesFirstAuditMetadata(t *tes
 	}
 	if alphaSyncRows != 0 {
 		t.Fatal("sync_state for alpha must be deleted after merge")
+	}
+}
+
+func TestMergeGovernanceProjectRefusesImmutableApplyProgressTopology(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		project string
+		insert  func(*testing.T, *hivedb.DB, string)
+	}{
+		{
+			name: "guarded head on source", project: "alpha",
+			insert: func(t *testing.T, d *hivedb.DB, project string) {
+				t.Helper()
+				_, err := d.RawDB().Exec(`INSERT INTO sdd_apply_heads (project, change_name, snapshot_memory_id, generation, revision, digest) VALUES (?, 'change', 1, 1, 1, 'digest')`, project)
+				if err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "receipt on target", project: "beta",
+			insert: func(t *testing.T, d *hivedb.DB, project string) {
+				t.Helper()
+				_, err := d.RawDB().Exec(`INSERT INTO sdd_apply_receipts (request_id, project, change_name, payload_sha256, response_json) VALUES ('merge-guard-receipt', ?, 'change', 'digest', '{}')`, project)
+				if err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "immutable snapshot memory on source", project: "alpha",
+			insert: func(t *testing.T, d *hivedb.DB, project string) {
+				t.Helper()
+				_, err := d.RawDB().Exec(`INSERT INTO memories (sync_id, project, topic_key, title, content, session_id) VALUES ('merge-guard-snapshot', ?, 'sdd/change/apply-progress/v2', 'immutable', '{}', 'manual-save-alpha')`, project)
+				if err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "immutable evidence memory on target", project: "beta",
+			insert: func(t *testing.T, d *hivedb.DB, project string) {
+				t.Helper()
+				_, err := d.RawDB().Exec(`INSERT INTO memories (sync_id, project, topic_key, title, content, session_id) VALUES ('merge-guard-evidence', ?, 'sdd/change/apply-evidence/apb-00000000000000000000000000000001', 'immutable', '{}', 'manual-save-beta')`, project)
+				if err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d := openGovernanceTestDB(t)
+			seedGovernanceMergeProjects(t, d)
+			tt.insert(t, d, tt.project)
+
+			mutated, err := d.MergeGovernanceProject(context.Background(), "alpha", "beta", "actor", "must not rekey", time.Now())
+			if mutated {
+				t.Fatal("MergeGovernanceProject mutated immutable apply-progress topology")
+			}
+			if !errors.Is(err, hivedb.ErrGovernanceProjectMergeConflict) {
+				t.Fatalf("MergeGovernanceProject error = %v, want merge conflict", err)
+			}
+		})
 	}
 }
 
@@ -1585,6 +1649,72 @@ INSERT INTO hive_warnings (severity, source, message) VALUES ('warn', 'purge-me'
 		t.Fatal("keep-me memories must not be deleted by purge")
 	}
 	_ = memID
+}
+
+func TestDeleteGovernanceProjectPurgesApplyProgressAndAllowsRecreation(t *testing.T) {
+	d := openGovernanceTestDB(t)
+	saveGovernanceTestMemory(t, d, "purge-progress", "initial project row")
+	request := applyProgressRequestForProject(t, "purge-progress", "purge-progress-request", "apb-31313131313131313131313131313131")
+	committed, err := d.AdvanceApplyProgress(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.RawDB().QueryRow(`SELECT snapshot_memory_id FROM sdd_apply_heads WHERE project = ? AND change_name = ?`, "purge-progress", "change").Scan(new(int64)); err != nil {
+		t.Fatalf("seed apply head: %v", err)
+	}
+	// Request receipts use a global request-ID identity while retained. Purging
+	// this project must remove that global claim so recreation can reuse it.
+	otherProjectRequest := applyProgressRequestForProject(t, "other-project", request.RequestID, "")
+	if _, err := d.AdvanceApplyProgress(otherProjectRequest); !errors.Is(err, hivedb.ErrApplyProgressRequestConflict) {
+		t.Fatalf("cross-project request ID before purge error = %v, want global conflict", err)
+	}
+	archiveGovernanceProjectForTest(t, d, "purge-progress")
+
+	// Purge must use the same canonical project identity as guarded requests;
+	// otherwise receipts retain their globally unique request ID under a spelling variant.
+	if _, err := d.DeleteGovernanceProject(context.Background(), " Purge.Progress ", "tester", "purge apply progress"); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"sdd_apply_heads", "sdd_apply_receipts"} {
+		var count int
+		if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM `+table+` WHERE project = ?`, "purge-progress").Scan(&count); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("%s rows after purge = %d, want 0", table, count)
+		}
+	}
+
+	saveGovernanceTestMemory(t, d, "purge-progress", "recreated project row")
+	recreated, err := d.AdvanceApplyProgress(request)
+	if err != nil {
+		t.Fatalf("recreate with former request ID: %v", err)
+	}
+	if recreated.Outcome != "committed" || recreated.State.Digest != committed.State.Digest {
+		t.Fatalf("recreated apply progress = %#v, want fresh committed state %#v", recreated, committed)
+	}
+	if _, err := d.RawDB().Exec(`DELETE FROM sdd_apply_receipts WHERE request_id = ?`, request.RequestID); err == nil {
+		t.Fatal("receipt delete succeeded after governance purge restored the protection trigger")
+	}
+	var heads int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM sdd_apply_heads WHERE project = ? AND change_name = ?`, "purge-progress", "change").Scan(&heads); err != nil {
+		t.Fatal(err)
+	}
+	if heads != 1 {
+		t.Fatalf("recreated heads = %d, want 1", heads)
+	}
+}
+
+func applyProgressRequestForProject(t *testing.T, project, requestID, _ string) hivedb.ApplyProgressAdvance {
+	t.Helper()
+	snapshot, _, err := applyprogress.SealSnapshot(applyprogress.Snapshot{
+		Schema: applyprogress.SnapshotSchema, Project: project, Change: "change", Generation: 1, Revision: 1,
+		TaskManifestSHA256: strings.Repeat("a", 64), Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hivedb.ApplyProgressAdvance{Project: project, Change: "change", RequestID: requestID, Snapshot: snapshot, Batches: []applyprogress.Batch{}}
 }
 
 // TestDeleteGovernanceProject_AliasCascade verifies that alias rows where

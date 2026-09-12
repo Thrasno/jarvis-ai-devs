@@ -32,6 +32,9 @@ func TestConvertLegacy(t *testing.T) {
 				if len(converted.Completed) != 1 || converted.Completed[0] != converted.Tasks[0].ID {
 					t.Fatalf("completed = %#v, want converted task ID", converted.Completed)
 				}
+				if converted.EvidenceKind != EvidenceImported {
+					t.Fatalf("evidence kind = %q, want imported", converted.EvidenceKind)
+				}
 				return
 			}
 			var outcome *ValidationError

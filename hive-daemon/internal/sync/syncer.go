@@ -1046,6 +1046,10 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 			SessionID:     remote.SessionID,
 		}
 		if err := s.store.SaveFromRemote(mem); err != nil {
+			var rejected *db.RemoteImmutableCreateRejectedError
+			if errors.As(err, &rejected) {
+				return batchResult{}, nil, fmt.Errorf("guardar memoria remota: %w", err)
+			}
 			logger.Log.Printf("warn: SaveFromRemote %s: %v", remote.SyncID, err)
 		}
 	}
@@ -1056,6 +1060,13 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 		for _, remoteMutation := range resp.PulledMutations {
 			applied, err := s.store.ApplyRemoteMutation(remoteMutation)
 			if err != nil {
+				var rejected *db.RemoteImmutableCreateRejectedError
+				if errors.As(err, &rejected) {
+					// This is the sole non-fatal remote-apply error. The DB has already
+					// rejected it before writing, and the typed error excludes content.
+					logSkippedImmutableRemoteCreate(rejected)
+					continue
+				}
 				return batchResult{}, nil, fmt.Errorf("aplicar mutación remota %s: %w", remoteMutation.EventID, err)
 			}
 			if applied {
@@ -1154,6 +1165,14 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 		PullMemoriesCursor: postBatchPullMemoriesCursor,
 		PullSessionsCursor: postBatchPullSessionsCursor,
 	}, resp, nil
+}
+
+// logSkippedImmutableRemoteCreate logs only the typed rejection metadata. The
+// database error deliberately excludes payload bytes, so this boundary can
+// continue a pull without exposing remote content in daemon logs.
+func logSkippedImmutableRemoteCreate(rejected *db.RemoteImmutableCreateRejectedError) {
+	logger.Log.Printf("warn: skipped immutable remote create event_id=%q sync_id=%q canonical_project=%q topic=%q operation=%q rejection_code=%q payload_digest=%q",
+		rejected.EventID, rejected.SyncID, rejected.CanonicalProject, rejected.Topic, rejected.Operation, rejected.RejectionCode, rejected.PayloadDigest)
 }
 
 const syncAttemptFlushLimit = 100
