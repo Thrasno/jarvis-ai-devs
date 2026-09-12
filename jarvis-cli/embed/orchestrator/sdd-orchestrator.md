@@ -426,15 +426,22 @@ When launching `sdd-apply` or `sdd-verify` sub-agents, the orchestrator MUST:
 
 The orchestrator resolves TDD status ONCE per session (at first apply/verify launch) and caches it.
 
-#### Bounded Apply-Progress Continuation (MANDATORY)
+## Bounded Apply-Progress Continuation (MANDATORY)
 
-When launching `sdd-apply` for a continuation batch, pass the canonical snapshot reference, expected generation/revision/digest, durable receipt state, and the next unpersisted entry. The executor MUST resolve the snapshot and its ordered immutable evidence batches through the dedicated progress reader before writing.
+When launching `sdd-apply` for a checkpoint or continuation, pass the canonical snapshot reference, expected generation/revision/digest, durable receipt state, immutable evidence batches, complete ordered entries, and cursor. The executor MUST use the mode-specific canonical progress reader before writing: OpenSpec reads `apply-progress.md` plus exactly referenced `apply-evidence/<batch-id>.json`; Hive calls `sdd_apply_progress_get`; Hybrid independently validates both. Low-level `advance` is not a reader.
 
-1. Instruct the executor to append complete entries only, keep each serialized batch and snapshot at or below 40,000 Unicode runes, and request a guarded snapshot advance through `jarvis sdd progress advance`.
-2. On `continuation_required`, the checkpoint is committed: preserve its receipt and continue from the returned entry boundary.
-3. On transport loss or missing-side hybrid publication, replay the exact payload with the same request ID; repair only the receipt-recorded missing side.
-4. On conflict, invalid/capacity outcome, migration failure, or `backend_diverged`, STOP and forward the typed recovery/current state. Do not pick a backend winner, synthesize a replacement snapshot, or route downstream.
-5. For legacy progress, authorize migration only on the next mutating apply and preserve the legacy source until guarded v2 publication succeeds.
+The exact checkpoint outcome set is `committed`, `continuation_required`, `evidence_item_too_large`, `snapshot_capacity_exhausted`, `stream_preflight_required`, and `checkpoint_consolidation_required`.
+
+1. Instruct the executor to use `jarvis sdd progress checkpoint`, retain a stable base snapshot and cursor, and keep each serialized batch and snapshot at or below 40,000 Unicode runes. One command plans and commits at most one whole-entry prefix.
+2. On `committed`, record the returned state and receipt. On `continuation_required`, preserve its receipt and continue only from the returned snapshot, coordinates, `next_entry_index`, `next_entry_id`, and `stream_sha256`; preserve and supply `stream_sha256` unchanged with the complete ordered entry stream. Create a new request ID and batch ID only after `continuation_required`.
+3. On `evidence_item_too_large`, STOP without a write or cursor advance and forward the typed recovery. On `snapshot_capacity_exhausted`, use its exact `capacity` (`current_runes`, `projected_runes`, `ceiling_runes`) and recovery: stop with apply `StatusPartial` without archive, list task IDs absent from coverage, and carry them into a new ordinary SDD change. These outcomes are not generic low-level capacity failures.
+4. On `stream_preflight_required`, STOP without a write, receipt, or cursor advance. It is a flat canonical-size simulation before a new stream is bound; surface whether a future indivisible entry or future snapshot topology exceeded capacity, then require evidence consolidation or a new ordinary change before binding that stream. Do not route downstream.
+5. On `checkpoint_consolidation_required`, STOP without a write, receipt, or cursor advance. It is a client-side guard near the 256 immutable-reference budget, not snapshot compaction. It is valid only before a new stream is bound on a base without continuation identity; direct the next apply attempt to accumulate or combine pending evidence into a larger checkpoint request without changing committed stream authority. Never alter entries for an active frozen continuation.
+6. On transport loss or missing-side hybrid publication, replay the same request ID, batch ID, base, cursor, and byte-identical payload; repair only the receipt-recorded missing side.
+7. On conflict, migration failure, invalid evidence, or `backend_diverged`, STOP and forward the typed recovery/current state. Do not pick a backend winner, synthesize a replacement snapshot, or route downstream.
+8. `advance` is retained only for recovery/compatibility of an already planned batch and snapshot. Do not ask low-level `advance`, HTTP, or MCP to select prefixes or plan capacity. They may validate a caller-proposed payload, including defensive capacity validation, but never plan or split evidence.
+9. An unambiguous legacy Markdown artifact is imported automatically by its first checkpoint; preserve its bytes as authoritative until that guarded commit succeeds. If an all-done legacy source is accompanied by new entries, cursor, or stream identity, stop before write with the typed legacy-migration output; never discard that payload. `legacy_upgrade_required` is instead the recovery only for a readable historical v2 snapshot whose wire shape explicitly serialized the all-zero continuation group; an absent group is a new unbound snapshot that starts a later stream normally: `jarvis sdd progress upgrade-continuation --root <change-root> --request <request.json>` performs a guarded CAS mutation that preserves every existing batch and coverage record, keeps generation stable, increments revision, and adds only the atomic continuation identity plus the CAS envelope. `lock_busy` and `legacy_upgrade_required` block downstream routing.
+10. For legacy progress, authorize migration only on the next mutating apply and preserve the legacy source until guarded v2 publication succeeds.
 
 Do not instruct an executor to merge or rewrite cumulative apply-progress observations. General `mem_save` is not an apply-progress replacement and must not be presented as a recovery path. This preserves durable evidence without losing prior batches.
 
@@ -448,15 +455,18 @@ Do not instruct an executor to merge or rewrite cumulative apply-progress observ
 | Spec | `sdd/{change-name}/spec` |
 | Design | `sdd/{change-name}/design` |
 | Tasks | `sdd/{change-name}/tasks` |
-| Apply progress | `sdd/{change-name}/apply-progress` |
+| Apply-progress v2 snapshot | `sdd/{change-name}/apply-progress/v2` (read through `sdd_apply_progress_get`) |
+| Apply-progress immutable evidence | `sdd/{change-name}/apply-evidence/{batch-id}` (resolve only when the snapshot references it) |
 | Verify report | `sdd/{change-name}/verify-report` |
 | Archive report | `sdd/{change-name}/archive-report` |
 | DAG state | `sdd/{change-name}/state` |
 
-Sub-agents retrieve full content via two steps:
+Sub-agents retrieve ordinary SDD artifacts via two steps:
 
 1. `mem_search(query: "{topic_key}", project: "{project}")` → get observation ID
 2. `mem_get_observation(id: {id})` → full content (REQUIRED — search results are truncated)
+
+This generic lookup does not apply to v2 progress. Hive progress reads use `sdd_apply_progress_get`, which resolves the guarded snapshot and its exact referenced evidence; callers must not select a newest snapshot or evidence topic themselves.
 
 ### State and Conventions
 
