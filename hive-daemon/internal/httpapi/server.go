@@ -79,6 +79,8 @@ type SDDService interface {
 	FetchSDDArtifacts(context.Context, string, string) ([]governance.SDDArtifact, error)
 	ListSDDChanges(context.Context, governance.SDDChangePageRequest) (governance.SDDChangePage, error)
 	GetApplyProgress(context.Context, string, string) (governance.ApplyProgressState, error)
+	GetApplyProgressEvidence(context.Context, string, string, string, string) (applyprogress.Batch, error)
+	GetApplyProgressReceipt(context.Context, string, string, string) (governance.ApplyProgressReceipt, error)
 	AdvanceApplyProgress(context.Context, governance.ApplyProgressAdvanceRequest) (governance.ApplyProgressAdvanceResult, error)
 }
 
@@ -201,6 +203,8 @@ func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, 
 		s.mux.HandleFunc("GET /sdd/changes", s.handleSDDChanges)
 		s.mux.HandleFunc("GET /sdd/changes/{change}/artifacts", s.handleSDDArtifacts)
 		s.mux.HandleFunc("GET /sdd/changes/{change}/apply-progress", s.handleApplyProgressGet)
+		s.mux.HandleFunc("GET /sdd/changes/{change}/apply-evidence/{batch_id}", s.handleApplyProgressEvidenceGet)
+		s.mux.HandleFunc("GET /sdd/changes/{change}/apply-progress/receipts/{request_id}", s.handleApplyProgressReceiptGet)
 		s.mux.HandleFunc("POST /sdd/changes/{change}/apply-progress/advance", s.handleApplyProgressAdvance)
 		s.mux.HandleFunc("/governance/capabilities", s.handleGovernanceCapabilities)
 		s.mux.HandleFunc("/governance/projects", s.handleGovernanceProjects)
@@ -258,6 +262,32 @@ func (s *Server) handleApplyProgressGet(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"outcome": "committed", "code": "ok", "state": state})
 }
 
+func (s *Server) handleApplyProgressEvidenceGet(w http.ResponseWriter, r *http.Request) {
+	if s.sdd == nil {
+		writeApplyProgressError(w, errors.New("SDD apply progress is not configured"))
+		return
+	}
+	batch, err := s.sdd.GetApplyProgressEvidence(r.Context(), r.URL.Query().Get("project"), r.PathValue("change"), r.PathValue("batch_id"), r.URL.Query().Get("expected_head_digest"))
+	if err != nil {
+		writeApplyProgressError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"outcome": "committed", "code": "ok", "batch": batch})
+}
+
+func (s *Server) handleApplyProgressReceiptGet(w http.ResponseWriter, r *http.Request) {
+	if s.sdd == nil {
+		writeApplyProgressError(w, errors.New("SDD apply progress is not configured"))
+		return
+	}
+	receipt, err := s.sdd.GetApplyProgressReceipt(r.Context(), r.URL.Query().Get("project"), r.PathValue("change"), r.PathValue("request_id"))
+	if err != nil {
+		writeApplyProgressError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"receipt": receipt})
+}
+
 func (s *Server) handleApplyProgressAdvance(w http.ResponseWriter, r *http.Request) {
 	if s.sdd == nil {
 		writeApplyProgressError(w, errors.New("SDD apply progress is not configured"))
@@ -281,25 +311,46 @@ func (s *Server) handleApplyProgressAdvance(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if result.Outcome == "conflict" {
-		writeJSON(w, http.StatusConflict, map[string]any{"outcome": result.Outcome, "code": "stale", "state": result.State, "recovery": "read current state and retry with a new generation"})
+		writeJSON(w, http.StatusConflict, map[string]any{"outcome": result.Outcome, "code": "stale", "state": result.State, "recovery": "generation is a stable epoch; retry with the authoritative generation plus the current revision and digest to prepare the next revision"})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"outcome": result.Outcome, "code": "ok", "state": result.State, "receipt": result.Receipt})
 }
 
 func writeApplyProgressError(w http.ResponseWriter, err error) {
-	status, code, recovery := http.StatusServiceUnavailable, "unavailable", "retry the same request ID after the daemon recovers"
+	status, outcome, code, recovery := http.StatusServiceUnavailable, "unavailable", "unavailable", "retry the same request ID after the daemon recovers"
 	var capacity *applyprogress.CapacityError
-	if errors.As(err, &capacity) {
-		status, code, recovery = http.StatusRequestEntityTooLarge, "capacity", "split evidence at a complete entry boundary"
-	} else if errors.Is(err, db.ErrApplyProgressRequestConflict) {
-		status, code, recovery = http.StatusConflict, "request_id_conflict", "use a new request ID for changed content"
-	} else if errors.Is(err, db.ErrApplyProgressBatchCollision) {
-		status, code, recovery = http.StatusConflict, "batch_collision", "use a new immutable batch ID"
-	} else if errors.Is(err, db.ErrApplyProgressInvalid) || errors.Is(err, db.ErrApplyProgressNotFound) || errors.Is(err, governance.ErrProjectRequired) || errors.Is(err, governance.ErrSDDChangeRequired) || errors.Is(err, governance.ErrSDDChangeInvalid) {
-		status, code, recovery = http.StatusUnprocessableEntity, "validation", "repair progress and retry"
+	var exhausted *applyprogress.SnapshotCapacityExhaustedError
+	var validation *applyprogress.ValidationError
+	detail := ""
+	switch {
+	case errors.As(err, &exhausted):
+		capacity = exhausted.Capacity
+		status, outcome, code, recovery = http.StatusRequestEntityTooLarge, string(applyprogress.PlanSnapshotCapacityExhausted), string(applyprogress.PlanSnapshotCapacityExhausted), applyprogress.SnapshotCapacityRecovery
+	case errors.As(err, &validation):
+		status, outcome, code, recovery = http.StatusUnprocessableEntity, "invalid", string(validation.Code), "repair progress and retry"
+		detail = validation.Detail
+	case errors.As(err, &capacity):
+		status, outcome, code, recovery = http.StatusRequestEntityTooLarge, "invalid", "capacity", "split evidence at a complete entry boundary"
+	case errors.Is(err, db.ErrApplyProgressNotFound), errors.Is(err, db.ErrApplyProgressEvidenceNotFound), errors.Is(err, db.ErrApplyProgressReceiptNotFound):
+		status, outcome, code, recovery = http.StatusNotFound, "not_found", "not_found", "initialize apply progress before advancing"
+	case errors.Is(err, governance.ErrProjectNotFound):
+		status, outcome, code, recovery = http.StatusNotFound, "not_found", "project_not_found", "select a registered project"
+	case errors.Is(err, db.ErrApplyProgressRequestConflict):
+		status, outcome, code, recovery = http.StatusConflict, "invalid", "request_id_conflict", "use a new request ID for changed content"
+	case errors.Is(err, db.ErrApplyProgressBatchCollision):
+		status, outcome, code, recovery = http.StatusConflict, "invalid", "batch_collision", "use a new immutable batch ID"
+	case errors.Is(err, db.ErrApplyProgressInvalid), errors.Is(err, governance.ErrProjectRequired), errors.Is(err, governance.ErrSDDChangeRequired), errors.Is(err, governance.ErrSDDChangeInvalid):
+		status, outcome, code, recovery = http.StatusUnprocessableEntity, "invalid", "validation", "repair progress and retry"
 	}
-	writeJSON(w, status, map[string]any{"outcome": "invalid", "code": code, "recovery": recovery})
+	response := map[string]any{"outcome": outcome, "code": code, "recovery": recovery}
+	if capacity != nil {
+		response["capacity"] = map[string]any{"document": capacity.Document, "runes": capacity.Runes, "limit": capacity.EffectiveLimit(), "current_runes": capacity.CurrentRunes, "projected_runes": capacity.ProjectedRunes, "ceiling_runes": capacity.CeilingRunes}
+	}
+	if detail != "" {
+		response["detail"] = detail
+	}
+	writeJSON(w, status, response)
 }
 
 func (s *Server) handleSDDChanges(w http.ResponseWriter, r *http.Request) {

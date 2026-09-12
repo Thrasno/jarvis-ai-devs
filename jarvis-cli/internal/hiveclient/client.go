@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -28,6 +29,7 @@ const (
 
 var ErrNotAvailable = errors.New("governance endpoint is not available")
 var ErrDeletedMemoryNotFound = errors.New("deleted memory not found")
+var ErrInvalidApplyProgressState = errors.New("invalid apply progress state")
 
 type Client struct {
 	baseURL *url.URL
@@ -104,15 +106,26 @@ type ApplyProgressState struct {
 	Revision   uint64                 `json:"revision"`
 	Digest     string                 `json:"digest"`
 	Snapshot   applyprogress.Snapshot `json:"snapshot"`
+	// Batches preserves compatibility with pre-bounded daemons only. Current guarded
+	// GET responses omit it; callers then fetch each reference through
+	// GetApplyProgressEvidence.
+	Batches []applyprogress.Batch `json:"batches,omitempty"`
+	// CoordinatesPresent distinguishes an older bounded response that omitted the
+	// redundant outer head coordinates from a response that explicitly asserted
+	// them. It is transport metadata, never part of the wire document.
+	CoordinatesPresent bool `json:"-"`
 }
 
 type ApplyProgressAdvanceRequest struct {
-	Project            string                 `json:"project"`
-	Change             string                 `json:"change"`
-	RequestID          string                 `json:"request_id"`
-	ExpectedGeneration uint64                 `json:"expected_generation"`
-	ExpectedRevision   uint64                 `json:"expected_revision"`
-	ExpectedDigest     string                 `json:"expected_digest"`
+	Project            string `json:"project"`
+	Change             string `json:"change"`
+	RequestID          string `json:"request_id"`
+	ExpectedGeneration uint64 `json:"expected_generation"`
+	ExpectedRevision   uint64 `json:"expected_revision"`
+	ExpectedDigest     string `json:"expected_digest"`
+	// LegacySourceSHA256 is accepted only by low-level recovery requests that
+	// import the authoritative legacy apply-progress artifact.
+	LegacySourceSHA256 string                 `json:"legacy_source_sha256,omitempty"`
 	Snapshot           applyprogress.Snapshot `json:"snapshot"`
 	Batches            []applyprogress.Batch  `json:"batches"`
 }
@@ -122,12 +135,23 @@ type ApplyProgressReceipt struct {
 	PayloadSHA256 string `json:"payload_sha256"`
 }
 
+type ApplyProgressCapacity struct {
+	Document       string `json:"document"`
+	Runes          int    `json:"runes"`
+	Limit          int    `json:"limit"`
+	CurrentRunes   int    `json:"current_runes"`
+	ProjectedRunes int    `json:"projected_runes"`
+	CeilingRunes   int    `json:"ceiling_runes"`
+}
+
 type ApplyProgressResult struct {
-	Outcome  string               `json:"outcome"`
-	Code     string               `json:"code,omitempty"`
-	State    ApplyProgressState   `json:"state"`
-	Receipt  ApplyProgressReceipt `json:"receipt"`
-	Recovery string               `json:"recovery,omitempty"`
+	Outcome  string                 `json:"outcome"`
+	Code     string                 `json:"code,omitempty"`
+	Detail   string                 `json:"detail,omitempty"`
+	State    ApplyProgressState     `json:"state"`
+	Receipt  ApplyProgressReceipt   `json:"receipt"`
+	Recovery string                 `json:"recovery,omitempty"`
+	Capacity *ApplyProgressCapacity `json:"capacity,omitempty"`
 }
 
 // ApplyProgressError preserves the daemon's typed recovery envelope on a
@@ -636,6 +660,52 @@ func (c *Client) GetApplyProgress(ctx context.Context, project, change string) (
 	return c.doApplyProgress(request)
 }
 
+// GetApplyProgressReceipt returns whether a committed receipt exists for this
+// exact project/change/request ID binding and, when it does, its payload identity.
+// The endpoint intentionally does not expose the receipt's stored response.
+// GetApplyProgressEvidence reads one canonical bounded evidence document that the
+// daemon has validated against the current resolved guarded snapshot lineage.
+func (c *Client) GetApplyProgressEvidence(ctx context.Context, project, change, batchID, expectedHeadDigest string) (applyprogress.Batch, error) {
+	u := *c.baseURL
+	setURLPath(&u, "/sdd/changes/"+url.PathEscape(change)+"/apply-evidence/"+url.PathEscape(batchID))
+	u.RawQuery = url.Values{"project": {project}, "expected_head_digest": {expectedHeadDigest}}.Encode()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return applyprogress.Batch{}, err
+	}
+	response, err := c.http.Do(request)
+	if err != nil {
+		return applyprogress.Batch{}, err
+	}
+	defer func() { _ = response.Body.Close() }()
+	var body struct {
+		Batch applyprogress.Batch `json:"batch"`
+		ApplyProgressResult
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		return applyprogress.Batch{}, err
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return applyprogress.Batch{}, &ApplyProgressError{StatusCode: response.StatusCode, Result: body.ApplyProgressResult}
+	}
+	return body.Batch, nil
+}
+
+func (c *Client) GetApplyProgressReceipt(ctx context.Context, project, change, requestID string) (ApplyProgressReceipt, bool, error) {
+	var body struct {
+		Receipt ApplyProgressReceipt `json:"receipt"`
+	}
+	path := "/sdd/changes/" + url.PathEscape(change) + "/apply-progress/receipts/" + url.PathEscape(requestID)
+	if err := c.get(ctx, path, url.Values{"project": {project}}, &body, false); err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return ApplyProgressReceipt{}, false, nil
+		}
+		return ApplyProgressReceipt{}, false, err
+	}
+	return body.Receipt, true, nil
+}
+
 // AdvanceApplyProgress preserves a 409 conflict as a typed recovery result so a
 // transport caller can retry the same request ID without losing current state.
 func (c *Client) AdvanceApplyProgress(ctx context.Context, request ApplyProgressAdvanceRequest) (ApplyProgressResult, error) {
@@ -659,10 +729,26 @@ func (c *Client) doApplyProgress(request *http.Request) (ApplyProgressResult, er
 		return ApplyProgressResult{}, err
 	}
 	defer func() { _ = response.Body.Close() }()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return ApplyProgressResult{}, err
+	}
 	var result ApplyProgressResult
-	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			result = ApplyProgressResult{
+				Outcome:  "unavailable",
+				Code:     "compatibility",
+				Recovery: fmt.Sprintf("daemon returned HTTP %d without an apply-progress JSON envelope; upgrade the daemon to v2", response.StatusCode),
+			}
+			return result, &ApplyProgressError{StatusCode: response.StatusCode, Result: result}
+		}
+		return result, fmt.Errorf("decode apply-progress response: %w", err)
+	}
+	if err := validateApplyProgressResponseCoordinates(body, result); err != nil {
 		return result, err
 	}
+	result.State.CoordinatesPresent = applyProgressResponseCoordinatesPresent(body)
 	if response.StatusCode == http.StatusConflict && result.Outcome == "conflict" && result.Code == "stale" {
 		return result, nil
 	}
@@ -670,6 +756,46 @@ func (c *Client) doApplyProgress(request *http.Request) (ApplyProgressResult, er
 		return result, &ApplyProgressError{StatusCode: response.StatusCode, Result: result}
 	}
 	return result, nil
+}
+
+func validateApplyProgressResponseCoordinates(body []byte, result ApplyProgressResult) error {
+	if result.State.Snapshot.Schema == "" {
+		return nil
+	}
+	var envelope struct {
+		State struct {
+			Generation *uint64 `json:"generation"`
+			Revision   *uint64 `json:"revision"`
+			Digest     *string `json:"digest"`
+		} `json:"state"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return fmt.Errorf("%w: response envelope", ErrInvalidApplyProgressState)
+	}
+	state := envelope.State
+	// Older bounded endpoints omitted the duplicated outer coordinates. When a
+	// daemon supplies any of them, however, all three must authenticate the same
+	// nested immutable snapshot rather than presenting a mixed head.
+	if state.Generation == nil && state.Revision == nil && state.Digest == nil {
+		return nil
+	}
+	if state.Generation == nil || state.Revision == nil || state.Digest == nil || *state.Generation != result.State.Snapshot.Generation || *state.Revision != result.State.Snapshot.Revision || *state.Digest != result.State.Snapshot.Digest {
+		return fmt.Errorf("%w: top-level coordinates differ from nested snapshot", ErrInvalidApplyProgressState)
+	}
+	return nil
+}
+
+func applyProgressResponseCoordinatesPresent(body []byte) bool {
+	var envelope struct {
+		State map[string]json.RawMessage `json:"state"`
+	}
+	if json.Unmarshal(body, &envelope) != nil {
+		return false
+	}
+	_, generation := envelope.State["generation"]
+	_, revision := envelope.State["revision"]
+	_, digest := envelope.State["digest"]
+	return generation || revision || digest
 }
 
 func (c *Client) MemoryByID(ctx context.Context, id int64) (Memory, error) {
