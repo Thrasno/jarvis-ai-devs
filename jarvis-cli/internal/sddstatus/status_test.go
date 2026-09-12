@@ -255,6 +255,32 @@ func TestComputeStatus_VerifyReadyWithApplyProgress(t *testing.T) {
 	}
 }
 
+func TestComputeStatus_BlocksLifecycleForTypedApplyProgressOutcomes(t *testing.T) {
+	for _, state := range []sddstatus.ArtifactState{
+		sddstatus.ArtifactBlockedContinuation,
+		sddstatus.ArtifactBlockedConflict,
+		sddstatus.ArtifactBlockedManifestMismatch,
+	} {
+		t.Run(string(state), func(t *testing.T) {
+			arts := allPlanningDone()
+			arts[sddstatus.ArtifactApplyProgress] = state
+			arts[sddstatus.ArtifactVerifyReport] = sddstatus.ArtifactDone
+			status := sddstatus.ComputeStatus("my-feature", "hive", withWorkspaceEdit(sddstatus.Input{
+				Artifacts: arts,
+				Contents:  map[string]string{sddstatus.ArtifactVerifyReport: "All checks passed."},
+			}))
+			for _, phase := range []string{sddstatus.PhaseApply, sddstatus.PhaseVerify, sddstatus.PhaseArchive} {
+				if got := status.Dependencies[phase]; got != sddstatus.DepBlocked {
+					t.Fatalf("dependency[%s] = %q, want blocked for %q", phase, got, state)
+				}
+			}
+			if !containsString(status.BlockedReasons, "phase sdd-apply blocked — apply-progress outcome "+strings.TrimPrefix(string(state), "blocked:")+" requires recovery") {
+				t.Fatalf("blocked reasons = %#v", status.BlockedReasons)
+			}
+		})
+	}
+}
+
 func TestComputeStatus_VerifyBlockedWithPartialApplyProgress(t *testing.T) {
 	arts := allPlanningDone()
 	arts[sddstatus.ArtifactApplyProgress] = "partial"

@@ -119,6 +119,71 @@ func TestSDDCandidateQueryPlan(t *testing.T) {
 	assert.NotContains(t, strings.ToLower(plan), "fts")
 }
 
+func TestGetApplyProgressFailsClosedForReferencedBatchTopology(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(*DB, string)
+	}{
+		{
+			name: "missing referenced batch",
+			mutate: func(store *DB, topic string) {
+				deleteSDDTestMemory(t, store, topic)
+			},
+		},
+		{
+			name: "corrupt referenced batch",
+			mutate: func(store *DB, topic string) {
+				_, err := store.RawDB().Exec(`UPDATE memories SET content = ? WHERE topic_key = ?`, "corrupt", topic)
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "forked referenced batch",
+			mutate: func(store *DB, topic string) {
+				var content string
+				require.NoError(t, store.RawDB().QueryRow(`SELECT content FROM memories WHERE topic_key = ?`, topic).Scan(&content))
+				insertSDDMemory(t, store, "project", &topic, "fork", content, "2026-08-02 10:00:00", false)
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := openTestDB(t)
+			request := applyProgressRequest(t, "topology-"+tt.name, 0, 0, "", "apb-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+			_, err := store.AdvanceApplyProgress(request)
+			require.NoError(t, err)
+
+			topic := "sdd/change/apply-evidence/" + request.Batches[0].BatchID
+			tt.mutate(store, topic)
+			_, err = store.GetApplyProgress("project", "change")
+			require.ErrorIs(t, err, ErrApplyProgressInvalid)
+			_, err = store.FetchSDDArtifacts("project", "change", testSDDArtifacts)
+			require.NoError(t, err, "inventory must not validate v2 topology")
+		})
+	}
+}
+
+func TestGetApplyProgressIgnoresUnreferencedDelayedBatch(t *testing.T) {
+	store := openTestDB(t)
+	request := applyProgressRequest(t, "delayed-orphan", 0, 0, "", "apb-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	committed, err := store.AdvanceApplyProgress(request)
+	require.NoError(t, err)
+
+	orphan := "sdd/change/apply-evidence/apb-cccccccccccccccccccccccccccccccc"
+	insertSDDMemory(t, store, "project", &orphan, "delayed", "not canonical evidence", "2026-08-02 10:00:00", false)
+	got, err := store.GetApplyProgress("project", "change")
+	require.NoError(t, err)
+	require.Equal(t, committed.State, got)
+}
+
+func deleteSDDTestMemory(t *testing.T, store *DB, topic string) {
+	t.Helper()
+	statement, err := store.RawDB().Prepare(`DELETE FROM memories WHERE topic_key = ? RETURNING id`)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = statement.Close() })
+	var deletedID int64
+	require.NoError(t, statement.QueryRow(topic).Scan(&deletedID))
+}
+
 func insertSDDMemory(t *testing.T, d *DB, project string, topic *string, title, content, createdAt string, deleted bool) int64 {
 	t.Helper()
 	ensureManualSaveSessions(t, d, project)
@@ -126,13 +191,13 @@ func insertSDDMemory(t *testing.T, d *DB, project string, topic *string, title, 
 	if deleted {
 		deletedAt = createdAt
 	}
-	result, err := d.sqlDB.Exec(`
+	const insertMemory = `
 		INSERT INTO memories
 			(sync_id, project, topic_key, title, content, created_at, updated_at, session_id, deleted_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		fmt.Sprintf("sdd-test-%d", topicMemorySequence.Add(1)), project, topic, title, content, createdAt, createdAt, "manual-save-"+project, deletedAt)
-	require.NoError(t, err)
-	id, err := result.LastInsertId()
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`
+	var id int64
+	err := d.sqlDB.QueryRow(insertMemory,
+		fmt.Sprintf("sdd-test-%d", topicMemorySequence.Add(1)), project, topic, title, content, createdAt, createdAt, "manual-save-"+project, deletedAt).Scan(&id)
 	require.NoError(t, err)
 	return id
 }
