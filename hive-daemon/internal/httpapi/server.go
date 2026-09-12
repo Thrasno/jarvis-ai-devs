@@ -21,6 +21,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sanitize"
 	"github.com/Thrasno/jarvis-ai-devs/hivederive"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
 	sqlite "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
@@ -77,6 +78,8 @@ type GovernanceService interface {
 type SDDService interface {
 	FetchSDDArtifacts(context.Context, string, string) ([]governance.SDDArtifact, error)
 	ListSDDChanges(context.Context, governance.SDDChangePageRequest) (governance.SDDChangePage, error)
+	GetApplyProgress(context.Context, string, string) (governance.ApplyProgressState, error)
+	AdvanceApplyProgress(context.Context, governance.ApplyProgressAdvanceRequest) (governance.ApplyProgressAdvanceResult, error)
 }
 
 // Server handles HTTP requests for the Hive prompt-capture endpoint.
@@ -197,6 +200,8 @@ func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, 
 	if governance != nil {
 		s.mux.HandleFunc("GET /sdd/changes", s.handleSDDChanges)
 		s.mux.HandleFunc("GET /sdd/changes/{change}/artifacts", s.handleSDDArtifacts)
+		s.mux.HandleFunc("GET /sdd/changes/{change}/apply-progress", s.handleApplyProgressGet)
+		s.mux.HandleFunc("POST /sdd/changes/{change}/apply-progress/advance", s.handleApplyProgressAdvance)
 		s.mux.HandleFunc("/governance/capabilities", s.handleGovernanceCapabilities)
 		s.mux.HandleFunc("/governance/projects", s.handleGovernanceProjects)
 		s.mux.HandleFunc("/governance/projects/merge", s.handleGovernanceProjectMergeBatch)
@@ -238,6 +243,63 @@ func (s *Server) handleSDDArtifacts(w http.ResponseWriter, r *http.Request) {
 		artifacts = []governance.SDDArtifact{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"artifacts": artifacts})
+}
+
+func (s *Server) handleApplyProgressGet(w http.ResponseWriter, r *http.Request) {
+	if s.sdd == nil {
+		writeApplyProgressError(w, errors.New("SDD apply progress is not configured"))
+		return
+	}
+	state, err := s.sdd.GetApplyProgress(r.Context(), r.URL.Query().Get("project"), r.PathValue("change"))
+	if err != nil {
+		writeApplyProgressError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"outcome": "committed", "code": "ok", "state": state})
+}
+
+func (s *Server) handleApplyProgressAdvance(w http.ResponseWriter, r *http.Request) {
+	if s.sdd == nil {
+		writeApplyProgressError(w, errors.New("SDD apply progress is not configured"))
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var request governance.ApplyProgressAdvanceRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		var capacity *http.MaxBytesError
+		if errors.As(err, &capacity) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"outcome": "invalid", "code": "capacity", "recovery": "split evidence at a complete entry boundary"})
+			return
+		}
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"outcome": "invalid", "code": "validation", "recovery": "submit canonical apply-progress JSON"})
+		return
+	}
+	request.Change = r.PathValue("change")
+	result, err := s.sdd.AdvanceApplyProgress(r.Context(), request)
+	if err != nil {
+		writeApplyProgressError(w, err)
+		return
+	}
+	if result.Outcome == "conflict" {
+		writeJSON(w, http.StatusConflict, map[string]any{"outcome": result.Outcome, "code": "stale", "state": result.State, "recovery": "read current state and retry with a new generation"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"outcome": result.Outcome, "code": "ok", "state": result.State, "receipt": result.Receipt})
+}
+
+func writeApplyProgressError(w http.ResponseWriter, err error) {
+	status, code, recovery := http.StatusServiceUnavailable, "unavailable", "retry the same request ID after the daemon recovers"
+	var capacity *applyprogress.CapacityError
+	if errors.As(err, &capacity) {
+		status, code, recovery = http.StatusRequestEntityTooLarge, "capacity", "split evidence at a complete entry boundary"
+	} else if errors.Is(err, db.ErrApplyProgressRequestConflict) {
+		status, code, recovery = http.StatusConflict, "request_id_conflict", "use a new request ID for changed content"
+	} else if errors.Is(err, db.ErrApplyProgressBatchCollision) {
+		status, code, recovery = http.StatusConflict, "batch_collision", "use a new immutable batch ID"
+	} else if errors.Is(err, db.ErrApplyProgressInvalid) || errors.Is(err, db.ErrApplyProgressNotFound) || errors.Is(err, governance.ErrProjectRequired) || errors.Is(err, governance.ErrSDDChangeRequired) || errors.Is(err, governance.ErrSDDChangeInvalid) {
+		status, code, recovery = http.StatusUnprocessableEntity, "validation", "repair progress and retry"
+	}
+	writeJSON(w, status, map[string]any{"outcome": "invalid", "code": code, "recovery": recovery})
 }
 
 func (s *Server) handleSDDChanges(w http.ResponseWriter, r *http.Request) {
