@@ -102,6 +102,18 @@ func TestValidateEvidenceCoverage(t *testing.T) {
 		want ValidationCode
 	}{
 		{"accepts matching completed evidence", nil, ""},
+		{"accepts partial matching completed evidence", func(snapshot *Snapshot, batches map[string]Batch) {
+			snapshot.Status = StatusPartial
+			snapshot.Coverage = snapshot.Coverage[:1]
+			for id, batch := range batches {
+				batch.Entries[1].CompletesTaskIDs = []string{}
+				batches[id] = batch
+			}
+		}, ""},
+		{"rejects completed evidence omitted from partial coverage", func(snapshot *Snapshot, _ map[string]Batch) {
+			snapshot.Status = StatusPartial
+			snapshot.Coverage = []Coverage{}
+		}, CodeInvalidCoverage},
 		{"rejects coverage without matching completion", func(snapshot *Snapshot, _ map[string]Batch) {
 			snapshot.Coverage[0].EntryID = "green"
 		}, CodeInvalidCoverage},
