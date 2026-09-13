@@ -12,9 +12,13 @@ const StatusSchema = "jarvis.sdd-status"
 type ArtifactState string
 
 const (
-	ArtifactMissing ArtifactState = "missing"
-	ArtifactPartial ArtifactState = "partial"
-	ArtifactDone    ArtifactState = "done"
+	ArtifactMissing                 ArtifactState = "missing"
+	ArtifactPartial                 ArtifactState = "partial"
+	ArtifactDone                    ArtifactState = "done"
+	ArtifactBlockedContinuation     ArtifactState = "blocked:continuation_required"
+	ArtifactBlockedConflict         ArtifactState = "blocked:conflict"
+	ArtifactBlockedManifestMismatch ArtifactState = "blocked:task_manifest_mismatch"
+	ArtifactBlockedInvalid          ArtifactState = "blocked:invalid"
 )
 
 type ActionMode string
@@ -420,6 +424,9 @@ func computeDependencies(artifacts map[string]ArtifactState, tp *TaskProgress, a
 }
 
 func computePhaseDep(phase string, artifacts map[string]ArtifactState, tp *TaskProgress, ad *ApplyDecision, verifyContent string, actionContext ActionContext) DependencyState {
+	if isBlockedApplyProgress(artifacts[ArtifactApplyProgress]) && (phase == PhaseApply || phase == PhaseVerify || phase == PhaseArchive) {
+		return DepBlocked
+	}
 	// A stale archive report must not bypass incomplete parsed task progress.
 	if phase == PhaseArchive && tp != nil && !tp.AllDone {
 		return DepBlocked
@@ -545,6 +552,9 @@ func hasWorkspaceEditAuthority(actionContext ActionContext) bool {
 }
 
 func phaseSpecificBlocker(phase string, artifacts map[string]ArtifactState, tp *TaskProgress, ad *ApplyDecision, verifyContent string) []string {
+	if outcome := applyProgressOutcome(artifacts[ArtifactApplyProgress]); outcome != "" && (phase == PhaseApply || phase == PhaseVerify || phase == PhaseArchive) {
+		return []string{fmt.Sprintf("phase %s blocked — apply-progress outcome %s requires recovery", phase, outcome)}
+	}
 	switch phase {
 	case PhaseApply:
 		if ad != nil && ad.Required && !ad.Resolved {
@@ -572,6 +582,18 @@ func phaseSpecificBlocker(phase string, artifacts map[string]ArtifactState, tp *
 		return blockers
 	}
 	return nil
+}
+
+func isBlockedApplyProgress(state ArtifactState) bool {
+	return applyProgressOutcome(state) != ""
+}
+
+func applyProgressOutcome(state ArtifactState) string {
+	value := string(state)
+	if !strings.HasPrefix(value, "blocked:") {
+		return ""
+	}
+	return strings.TrimPrefix(value, "blocked:")
 }
 
 func missingDepsFor(phase string, artifacts map[string]ArtifactState) []string {

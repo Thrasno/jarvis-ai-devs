@@ -77,6 +77,42 @@ func TestAdvanceApplyProgressConcurrentWritersCommitOneHead(t *testing.T) {
 	require.Equal(t, 1, conflict)
 }
 
+func TestAdvanceApplyProgressRejectsCoverageContradictingEvidenceWithoutCommit(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		edit func(*ApplyProgressAdvance)
+	}{
+		{
+			name: "coverage has no matching completion",
+			edit: func(request *ApplyProgressAdvance) {
+				request.Snapshot.Coverage = []applyprogress.Coverage{{TaskID: "1.1", BatchID: request.Batches[0].BatchID, EntryID: "entry"}}
+			},
+		},
+		{
+			name: "complete snapshot has no coverage or batches",
+			edit: func(request *ApplyProgressAdvance) {
+				request.Snapshot.Status = applyprogress.StatusComplete
+				request.Snapshot.Batches = []applyprogress.BatchRef{}
+				request.Batches = []applyprogress.Batch{}
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := openTestDB(t)
+			request := applyProgressRequest(t, "request-invalid-coverage", 0, 0, "", "apb-33333333333333333333333333333333")
+			tt.edit(&request)
+			var err error
+			request.Snapshot, _, err = applyprogress.SealSnapshot(request.Snapshot)
+			require.NoError(t, err)
+
+			_, err = store.AdvanceApplyProgress(request)
+			require.ErrorIs(t, err, ErrApplyProgressInvalid)
+			_, err = store.GetApplyProgress("project", "change")
+			require.ErrorIs(t, err, ErrApplyProgressNotFound)
+		})
+	}
+}
+
 func TestAdvanceApplyProgressRejectsInvalidRequestWithoutCommit(t *testing.T) {
 	store := openTestDB(t)
 	req := applyProgressRequest(t, "request-invalid", 0, 0, "", "apb-33333333333333333333333333333333")

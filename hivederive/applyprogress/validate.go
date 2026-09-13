@@ -98,6 +98,42 @@ func LegacyTaskID(path, text string) (string, error) {
 	return "legacy-" + digest([]byte(path + "\n" + text))[:32], nil
 }
 
+// ValidateEvidenceCoverage verifies snapshot coverage against its immutable evidence.
+// It intentionally does not require a task manifest.
+func ValidateEvidenceCoverage(snapshot Snapshot, batches map[string]Batch) error {
+	if snapshot.Status == StatusComplete && (len(snapshot.Coverage) == 0 || len(snapshot.Batches) == 0) {
+		return invalid(CodeInvalidCoverage)
+	}
+	completed := make(map[string]Coverage)
+	for _, ref := range snapshot.Batches {
+		batch, ok := batches[ref.BatchID]
+		if !ok {
+			return invalid(CodeMissingBatch)
+		}
+		entries := map[string]bool{}
+		for _, entry := range batch.Entries {
+			if entries[entry.EntryID] {
+				return invalid(CodeDuplicateEvidence)
+			}
+			entries[entry.EntryID] = true
+			for _, id := range entry.CompletesTaskIDs {
+				if _, exists := completed[id]; exists {
+					return invalid(CodeDuplicateEvidence)
+				}
+				completed[id] = Coverage{TaskID: id, BatchID: batch.BatchID, EntryID: entry.EntryID}
+			}
+		}
+	}
+	covered := map[string]bool{}
+	for _, coverage := range snapshot.Coverage {
+		if covered[coverage.TaskID] || completed[coverage.TaskID] != coverage {
+			return invalid(CodeInvalidCoverage)
+		}
+		covered[coverage.TaskID] = true
+	}
+	return nil
+}
+
 // ValidateProgress accepts only one canonical snapshot and its referenced batches.
 // Batches not referenced by the snapshot are deliberately non-authoritative.
 func ValidateProgress(snapshotData []byte, tasks []Task, batches map[string][]byte) error {

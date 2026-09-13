@@ -190,6 +190,7 @@ func validateApplyProgressBatchRefs(tx *sql.Tx, snapshot applyprogress.Snapshot,
 	for i, batch := range batches {
 		provided[batch.BatchID] = i
 	}
+	referenced := make(map[string]applyprogress.Batch, len(snapshot.Batches))
 	seen := make(map[string]bool, len(snapshot.Batches))
 	for _, ref := range snapshot.Batches {
 		if seen[ref.BatchID] {
@@ -200,6 +201,7 @@ func validateApplyProgressBatchRefs(tx *sql.Tx, snapshot applyprogress.Snapshot,
 			if batches[i].SHA256 != ref.SHA256 {
 				return ErrApplyProgressInvalid
 			}
+			referenced[ref.BatchID] = batches[i]
 			continue
 		}
 		var content []byte
@@ -214,16 +216,25 @@ func validateApplyProgressBatchRefs(tx *sql.Tx, snapshot applyprogress.Snapshot,
 		if err != nil || batch.Project != project || batch.Change != change || batch.BatchID != ref.BatchID || batch.SHA256 != ref.SHA256 {
 			return ErrApplyProgressInvalid
 		}
+		referenced[ref.BatchID] = batch
 	}
 	for id := range provided {
 		if !seen[id] {
 			return ErrApplyProgressInvalid
 		}
 	}
+	if err := applyprogress.ValidateEvidenceCoverage(snapshot, referenced); err != nil {
+		return ErrApplyProgressInvalid
+	}
 	return nil
 }
 
-func (d *DB) applyProgressState(query interface{ QueryRow(string, ...any) *sql.Row }, project, change string) (ApplyProgressState, error) {
+type applyProgressQuery interface {
+	QueryRow(string, ...any) *sql.Row
+	Query(string, ...any) (*sql.Rows, error)
+}
+
+func (d *DB) applyProgressState(query applyProgressQuery, project, change string) (ApplyProgressState, error) {
 	var state ApplyProgressState
 	var snapshotBytes []byte
 	err := query.QueryRow(`SELECT h.generation, h.revision, h.digest, m.content FROM sdd_apply_heads h JOIN memories m ON m.id = h.snapshot_memory_id AND m.deleted_at IS NULL WHERE h.project = ? AND h.change_name = ?`, project, change).Scan(&state.Generation, &state.Revision, &state.Digest, &snapshotBytes)
@@ -237,8 +248,48 @@ func (d *DB) applyProgressState(query interface{ QueryRow(string, ...any) *sql.R
 	if err != nil || snapshot.Generation != state.Generation || snapshot.Revision != state.Revision || snapshot.Digest != state.Digest {
 		return ApplyProgressState{}, fmt.Errorf("%w: corrupt head", ErrApplyProgressInvalid)
 	}
+	if err := resolveApplyProgressBatches(query, snapshot); err != nil {
+		return ApplyProgressState{}, err
+	}
 	state.Snapshot = snapshot
 	return state, nil
+}
+
+func resolveApplyProgressBatches(query applyProgressQuery, snapshot applyprogress.Snapshot) error {
+	batches := make(map[string]applyprogress.Batch, len(snapshot.Batches))
+	for _, ref := range snapshot.Batches {
+		if _, exists := batches[ref.BatchID]; exists {
+			return fmt.Errorf("%w: duplicate referenced batch", ErrApplyProgressInvalid)
+		}
+		topic := "sdd/" + snapshot.Change + "/apply-evidence/" + ref.BatchID
+		rows, err := query.Query(`SELECT content FROM memories WHERE project = ? AND topic_key = ? AND deleted_at IS NULL`, snapshot.Project, topic)
+		if err != nil {
+			return fmt.Errorf("%w: read referenced batch", ErrApplyProgressInvalid)
+		}
+		count := 0
+		for rows.Next() {
+			count++
+			var content []byte
+			if err := rows.Scan(&content); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("%w: read referenced batch", ErrApplyProgressInvalid)
+			}
+			batch, err := applyprogress.DecodeCanonicalBatch(content)
+			if err != nil || batch.Project != snapshot.Project || batch.Change != snapshot.Change || batch.BatchID != ref.BatchID || batch.SHA256 != ref.SHA256 {
+				_ = rows.Close()
+				return fmt.Errorf("%w: corrupt referenced batch", ErrApplyProgressInvalid)
+			}
+			batches[ref.BatchID] = batch
+		}
+		err = rows.Close()
+		if err != nil || count != 1 {
+			return fmt.Errorf("%w: missing or forked referenced batch", ErrApplyProgressInvalid)
+		}
+	}
+	if err := applyprogress.ValidateEvidenceCoverage(snapshot, batches); err != nil {
+		return fmt.Errorf("%w: invalid referenced evidence", ErrApplyProgressInvalid)
+	}
+	return nil
 }
 
 func (d *DB) storeApplyProgressBatch(tx *sql.Tx, project, change string, batch applyprogress.Batch, bytes []byte) error {
