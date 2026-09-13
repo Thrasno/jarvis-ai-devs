@@ -69,6 +69,11 @@ docs/EXECUTIVE_PROPOSAL.md
 docs/INFRASTRUCTURE.md
 docs/ANALYSIS.md
 
+# SDD progress lockfiles are process-local coordination state. Immutable evidence and
+# request receipts are archived protocol state and must remain trackable.
+**/.*.apply-progress.lock
+**/.*.apply-progress-hybrid.lock
+
 # Skill registry per-machine scan cache (gitignored by default; use --no-gitignore to opt out)
 .jarvis/skill-registry.md
 .jarvis/skills/
