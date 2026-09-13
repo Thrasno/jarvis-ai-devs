@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -386,7 +387,7 @@ func TestRunSddContinue_IncompleteTasksBlockArchiveRouting(t *testing.T) {
 			sddstatus.ArtifactArchiveReport: sddstatus.ArtifactDone,
 		},
 		contents: map[string]string{
-			sddstatus.ArtifactTasks:        "- [x] T1\n- [ ] T2\n",
+			sddstatus.ArtifactTasks:        "- [x] 1\n- [ ] 2\n",
 			sddstatus.ArtifactVerifyReport: "All checks passed.",
 		},
 	}, "hive", nil)
@@ -453,6 +454,26 @@ func TestPrintStatusHuman_BlockedWithNoNextRecommended(t *testing.T) {
 
 // TestPrintStatusHuman_AllDone_ShowsComplete verifies the "all phases complete ✓"
 // message is still shown correctly when there are no blocked reasons.
+func TestSddArchiveHelpUsesFlagOnlySyntax(t *testing.T) {
+	command := newSddArchiveCommand(func(string) sddArchiver { return archiveFunc(func(string) error { return nil }) }, archiveReadyStatus)
+	var output bytes.Buffer
+	command.SetOut(&output)
+	command.SetErr(&output)
+	command.SetArgs([]string{"--help"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); !strings.Contains(got, "jarvis sdd archive --root <change-root> --destination <archive-destination>") || strings.Contains(got, "archive [change]") {
+		t.Fatalf("archive help = %q", got)
+	}
+
+	invalid := newSddArchiveCommand(func(string) sddArchiver { return archiveFunc(func(string) error { return nil }) }, archiveReadyStatus)
+	invalid.SetArgs([]string{"unexpected", "--root", "change", "--destination", "archive/change"})
+	if err := invalid.Execute(); err == nil {
+		t.Fatal("archive accepted a positional change")
+	}
+}
+
 func TestSddArchiveInvokesProductionArchiver(t *testing.T) {
 	var gotRoot, gotDestination string
 	command := newSddArchiveCommand(func(root string) sddArchiver {
@@ -480,7 +501,7 @@ func TestSddArchiveCommandRejectsNoncanonicalRootBeforeArchive(t *testing.T) {
 		"spec.md":          "spec",
 		"design.md":        "design",
 		"tasks.md":         "- [x] 1.1 task\n",
-		"verify-report.md": "All checks passed.\n",
+		"verify-report.md": "## Verdict\n\n**PASS — archive ready.**\n\n## Critical Findings\n\n0\n\n## Blockers\n\nNone\n",
 	} {
 		if err := os.WriteFile(filepath.Join(validatedRoot, name), []byte(content), 0o600); err != nil {
 			t.Fatalf("write %s: %v", name, err)
@@ -517,6 +538,14 @@ func TestSddArchiveCommandRejectsNoncanonicalRootBeforeArchive(t *testing.T) {
 	}
 	t.Setenv("JARVIS_SDD_STORE_MODE", "openspec")
 
+	status, err := archiveStatus(validatedRoot, "jarvis-dev")
+	if err != nil {
+		t.Fatalf("archiveStatus with canonical root: %v", err)
+	}
+	if got, want := status.ChangeRoot, canonicalSddTestPath(t, validatedRoot); got != want {
+		t.Fatalf("archiveStatus ChangeRoot = %q, want canonical root %q", got, want)
+	}
+
 	archived := false
 	command := newSddArchiveCommand(func(string) sddArchiver {
 		return archiveFunc(func(string) error { archived = true; return nil })
@@ -543,8 +572,74 @@ func TestSddArchiveCommandRejectsNoncanonicalRootBeforeArchive(t *testing.T) {
 	}
 }
 
+func TestSddLegacyUpgradeStatusAndArchiveEndToEnd(t *testing.T) {
+	workspace := t.TempDir()
+	root := filepath.Join(workspace, "openspec", "changes", "issue-653")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "tasks.md"), []byte("- [x] 1.1 task\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "apply-progress.md"), []byte("status: complete\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request := progressLegacyRequest(t)
+	store := sddprogress.OpenSpec{Root: root}
+	if _, upgraded, err := store.UpgradeLegacy(request); err != nil || !upgraded {
+		t.Fatalf("UpgradeLegacy() upgraded=%t error=%v", upgraded, err)
+	}
+	artifacts, _, err := sddstatus.NewOpenSpecSource(workspace).FetchArtifacts(context.Background(), "issue-653")
+	if err != nil || artifacts[sddstatus.ArtifactApplyProgress] != sddstatus.ArtifactDone {
+		t.Fatalf("status after upgrade = %#v, %v", artifacts, err)
+	}
+	for name, data := range map[string][]byte{
+		"proposal.md":       []byte("# Proposal\n"),
+		"design.md":         []byte("# Design\n"),
+		"verify-report.md":  []byte("## Verdict\n\n**PASS — archive ready.**\n\n## Critical Findings\n\n0\n\n## Blockers\n\nNone\n"),
+		"archive-report.md": []byte("# Archive\n"),
+		filepath.Join("specs", "base", "spec.md"): []byte("# Spec\n"),
+	} {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	archive := filepath.Join(workspace, "openspec", "archive", "issue-653")
+	if err := store.Archive(archive); err != nil {
+		t.Fatalf("Archive() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(archive, "apply-progress.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applyprogress.DecodeCanonicalSnapshot(data); err != nil {
+		t.Fatalf("archived snapshot = %q: %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(archive, ".apply-progress-receipts", request.RequestID+".json")); err != nil {
+		t.Fatalf("archived receipt: %v", err)
+	}
+}
+
 func TestSddArchiveCommandMovesValidatedTopology(t *testing.T) {
-	root := t.TempDir()
+	root := newProgressTestRoot(t)
+	for name, data := range map[string][]byte{
+		"proposal.md":      []byte("# Proposal\n"),
+		"design.md":        []byte("# Design\n"),
+		"verify-report.md": []byte("## Verdict\n\n**PASS — archive ready.**\n\n## Critical Findings\n\n0\n\n## Blockers\n\nNone\n"),
+		filepath.Join("specs", "base", "spec.md"): []byte("# Spec\n"),
+	} {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	request := progressRequest(t, "archive", "apb-00000000000000000000000000000001", 1, "")
 	request.Batches[0].Entries[0].TaskIDs = []string{"1.1"}
 	request.Batches[0].Entries[0].CompletesTaskIDs = []string{"1.1"}
@@ -568,10 +663,10 @@ func TestSddArchiveCommandMovesValidatedTopology(t *testing.T) {
 	if _, err := (sddprogress.OpenSpec{Root: root}).Advance(request); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "tasks.md"), []byte("- [ ] 1.1 task\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "tasks.md"), []byte("- [x] 1.1 task\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	archive := filepath.Join(t.TempDir(), "issue-653")
+	archive := filepath.Join(filepath.Dir(root), "archive", "issue-653")
 	command := newSddArchiveCommand(func(root string) sddArchiver { return sddprogress.OpenSpec{Root: root} }, archiveReadyStatus)
 	command.SetArgs([]string{"--root", root, "--destination", archive})
 	if err := command.Execute(); err != nil {
@@ -584,23 +679,32 @@ func TestSddArchiveCommandMovesValidatedTopology(t *testing.T) {
 
 func TestSddArchiveRevalidatesLifecycleReadinessUnderLock(t *testing.T) {
 	t.Setenv("JARVIS_SDD_STORE_MODE", "openspec")
-	root := filepath.Join(t.TempDir(), "openspec", "changes", "issue-653")
+	workspace := canonicalSddTestPath(t, t.TempDir())
+	root := filepath.Join(workspace, "openspec", "changes", "issue-653")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatalf("create change root: %v", err)
 	}
 	for name, content := range map[string]string{
-		"spec.md":          "spec\n",
-		"design.md":        "design\n",
-		"tasks.md":         "- [x] 1.1 task\n",
-		"verify-report.md": "All checks passed.\n",
+		"proposal.md":       "# Proposal\n",
+		"spec.md":           "# Spec\n",
+		"design.md":         "# Design\n",
+		"tasks.md":          "- [x] 1.1 task\n",
+		"verify-report.md":  "## Verdict\n\n**PASS — archive ready.**\n\n## Critical Findings\n\n0\n\n## Blockers\n\nNone\n",
+		"archive-report.md": "# Archive report\n",
+		filepath.Join("specs", "delivery", "spec.md"): "# Delivery Delta\n",
 	} {
-		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o600); err != nil {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("create parent for %s: %v", name, err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 			t.Fatalf("write %s: %v", name, err)
 		}
 	}
 
 	request := progressRequest(t, "archive-revalidation", "apb-00000000000000000000000000000001", 1, "")
-	request.Batches[0].Entries[0].TaskIDs, request.Batches[0].Entries[0].CompletesTaskIDs = []string{"1.1"}, []string{"1.1"}
+	request.Batches[0].Entries[0].TaskIDs = []string{"1.1"}
+	request.Batches[0].Entries[0].CompletesTaskIDs = []string{"1.1"}
 	var err error
 	request.Batches[0], _, err = applyprogress.SealBatch(request.Batches[0])
 	if err != nil {
@@ -629,7 +733,7 @@ func TestSddArchiveRevalidatesLifecycleReadinessUnderLock(t *testing.T) {
 			return os.WriteFile(filepath.Join(root, "verify-report.md"), []byte("critical blocker\n"), 0o600)
 		}}
 	}, archiveStatus)
-	command.SetArgs([]string{"--root", root, "--destination", filepath.Join(t.TempDir(), "archive")})
+	command.SetArgs([]string{"--root", root, "--destination", filepath.Join(workspace, "openspec", "archive", "issue-653")})
 
 	if err := command.Execute(); err == nil {
 		t.Fatal("archive succeeded after verify-report became invalid under the archive lock")
@@ -639,6 +743,81 @@ func TestSddArchiveRevalidatesLifecycleReadinessUnderLock(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "apply-progress.md")); err != nil {
 		t.Fatalf("archive moved lifecycle after failed revalidation: %v", err)
+	}
+}
+
+func TestArchiveStatusReadiesProductionArchiveWithNestedDeltaSpecs(t *testing.T) {
+	t.Setenv("JARVIS_SDD_STORE_MODE", "openspec")
+	workspace := canonicalSddTestPath(t, t.TempDir())
+	root := filepath.Join(workspace, "openspec", "changes", "issue-653")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "tasks.md"), []byte("- [x] 1.1 task\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	request := progressRequest(t, "archive-nested-spec", "apb-00000000000000000000000000000001", 1, "")
+	request.Batches[0].Entries[0].TaskIDs = []string{"1.1"}
+	request.Batches[0].Entries[0].CompletesTaskIDs = []string{"1.1"}
+	var err error
+	request.Batches[0], _, err = applyprogress.SealBatch(request.Batches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, manifest, err := applyprogress.TaskManifest([]applyprogress.Task{{ID: "1.1", Text: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Snapshot.Status = applyprogress.StatusComplete
+	request.Snapshot.TaskManifestSHA256 = manifest
+	request.Snapshot.Coverage = []applyprogress.Coverage{{TaskID: "1.1", BatchID: request.Batches[0].BatchID, EntryID: "entry"}}
+	request.Snapshot.Batches[0].SHA256 = request.Batches[0].SHA256
+	request.Snapshot, _, err = applyprogress.SealSnapshot(request.Snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := sddprogress.OpenSpec{Root: root}
+	if _, err := store.Advance(request); err != nil {
+		t.Fatal(err)
+	}
+
+	for path, data := range map[string][]byte{
+		"proposal.md":       []byte("# Proposal\n"),
+		"design.md":         []byte("# Design\n"),
+		"verify-report.md":  []byte("## Verdict\n\n**PASS — archive ready.**\n\n## Critical Findings\n\n0\n\n## Blockers\n\nNone\n"),
+		"archive-report.md": []byte("# Archive report\n"),
+		filepath.Join("specs", "delivery", "spec.md"):           []byte("# Delivery Delta\n"),
+		filepath.Join("specs", "delivery", "nested", "spec.md"): []byte("# Nested Delivery Delta\n"),
+	} {
+		path = filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	status, err := archiveStatus(root, "jarvis-dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Artifacts[sddstatus.ArtifactSpec] != sddstatus.ArtifactDone || (status.Dependencies[sddstatus.PhaseArchive] != sddstatus.DepReady && status.Dependencies[sddstatus.PhaseArchive] != sddstatus.DepAllDone) {
+		t.Fatalf("archive status = %#v, want nested delta specs to permit archive", status)
+	}
+
+	destination := filepath.Join(workspace, "openspec", "changes", "archive", "2026-09-10-issue-653")
+	if err := runSddArchive(store, status, destination); err != nil {
+		t.Fatalf("runSddArchive() error = %v", err)
+	}
+	for _, path := range []string{
+		filepath.Join(destination, "specs", "delivery", "spec.md"),
+		filepath.Join(destination, "specs", "delivery", "nested", "spec.md"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("archived nested delta spec %q: %v", path, err)
+		}
 	}
 }
 
@@ -656,7 +835,7 @@ func TestRunSddArchiveFailsClosedOnLifecycleState(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			calls := 0
-			status := &sddstatus.ChangeStatus{ArtifactStore: tt.store, Artifacts: map[string]sddstatus.ArtifactState{sddstatus.ArtifactApplyProgress: tt.progress}, Dependencies: map[string]sddstatus.DependencyState{sddstatus.PhaseArchive: tt.dependency}}
+			status := &sddstatus.ChangeStatus{ArtifactStore: tt.store, ChangeRoot: "change", ActionContext: sddstatus.ActionContext{AllowedEditRoots: []string{"."}}, Artifacts: map[string]sddstatus.ArtifactState{sddstatus.ArtifactApplyProgress: tt.progress}, Dependencies: map[string]sddstatus.DependencyState{sddstatus.PhaseArchive: tt.dependency}}
 			err := runSddArchive(archiveFunc(func(string) error { calls++; return nil }), status, "archive/change")
 			if (err != nil) != tt.wantErr || calls != map[bool]int{true: 0, false: 1}[tt.wantErr] {
 				t.Fatalf("runSddArchive() error=%v calls=%d", err, calls)
@@ -665,8 +844,8 @@ func TestRunSddArchiveFailsClosedOnLifecycleState(t *testing.T) {
 	}
 }
 
-func archiveReadyStatus(string, string) (*sddstatus.ChangeStatus, error) {
-	return &sddstatus.ChangeStatus{ArtifactStore: "openspec", Artifacts: map[string]sddstatus.ArtifactState{sddstatus.ArtifactApplyProgress: sddstatus.ArtifactDone}, Dependencies: map[string]sddstatus.DependencyState{sddstatus.PhaseArchive: sddstatus.DepReady}}, nil
+func archiveReadyStatus(root, _ string) (*sddstatus.ChangeStatus, error) {
+	return &sddstatus.ChangeStatus{ArtifactStore: "openspec", ChangeRoot: root, ActionContext: sddstatus.ActionContext{AllowedEditRoots: []string{filepath.Dir(root)}}, Artifacts: map[string]sddstatus.ArtifactState{sddstatus.ArtifactApplyProgress: sddstatus.ArtifactDone}, Dependencies: map[string]sddstatus.DependencyState{sddstatus.PhaseArchive: sddstatus.DepReady}}, nil
 }
 
 type archiveFunc func(string) error
