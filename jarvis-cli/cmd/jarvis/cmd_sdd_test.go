@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
 )
 
@@ -451,6 +453,205 @@ func TestPrintStatusHuman_BlockedWithNoNextRecommended(t *testing.T) {
 
 // TestPrintStatusHuman_AllDone_ShowsComplete verifies the "all phases complete ✓"
 // message is still shown correctly when there are no blocked reasons.
+func TestSddArchiveInvokesProductionArchiver(t *testing.T) {
+	var gotRoot, gotDestination string
+	command := newSddArchiveCommand(func(root string) sddArchiver {
+		gotRoot = root
+		return archiveFunc(func(destination string) error { gotDestination = destination; return nil })
+	}, archiveReadyStatus)
+	command.SetArgs([]string{"--root", "change", "--destination", "archive/change"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if gotRoot != "change" || gotDestination != "archive/change" {
+		t.Fatalf("archive call = root %q destination %q", gotRoot, gotDestination)
+	}
+}
+
+func TestSddArchiveCommandRejectsNoncanonicalRootBeforeArchive(t *testing.T) {
+	workspace := canonicalSddTestPath(t, t.TempDir())
+	change := "issue-653"
+	validatedRoot := filepath.Join(workspace, "openspec", "changes", change)
+	for name, content := range map[string]string{
+		"proposal.md":       "proposal",
+		"spec.md":           "spec",
+		"design.md":         "design",
+		"tasks.md":          "- [x] T1\n",
+		"apply-progress.md": "status: complete\n",
+		"verify-report.md":  "All checks passed.\n",
+	} {
+		if err := os.MkdirAll(validatedRoot, 0o755); err != nil {
+			t.Fatalf("create validated change root: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(validatedRoot, name), []byte(content), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	noncanonicalRoot := filepath.Join(workspace, "unrelated", "other", "change")
+	if err := os.MkdirAll(noncanonicalRoot, 0o755); err != nil {
+		t.Fatalf("create noncanonical change root: %v", err)
+	}
+	t.Setenv("JARVIS_SDD_STORE_MODE", "openspec")
+	archived := false
+	command := newSddArchiveCommand(func(string) sddArchiver {
+		return archiveFunc(func(string) error { archived = true; return nil })
+	}, archiveStatus)
+	command.SetArgs([]string{"--root", noncanonicalRoot, "--destination", filepath.Join(t.TempDir(), "archive")})
+
+	err := command.Execute()
+	if err == nil || !strings.Contains(err.Error(), "canonical OpenSpec change root") {
+		t.Fatalf("archive with noncanonical root error = %v, want canonical-root rejection", err)
+	}
+	if archived {
+		t.Fatal("archive invoked with a noncanonical root")
+	}
+
+	command = newSddArchiveCommand(func(string) sddArchiver {
+		return archiveFunc(func(string) error { archived = true; return nil })
+	}, archiveStatus)
+	command.SetArgs([]string{"--root", validatedRoot, "--destination", filepath.Join(t.TempDir(), "archive")})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("archive with canonical root: %v", err)
+	}
+	if !archived {
+		t.Fatal("archive was not invoked with a canonical root")
+	}
+}
+
+func TestSddArchiveCommandMovesValidatedTopology(t *testing.T) {
+	root := t.TempDir()
+	request := progressRequest(t, "archive", "apb-00000000000000000000000000000001", 1, "")
+	request.Batches[0].Entries[0].TaskIDs = []string{"1.1"}
+	request.Batches[0].Entries[0].CompletesTaskIDs = []string{"1.1"}
+	var err error
+	request.Batches[0], _, err = applyprogress.SealBatch(request.Batches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, manifest, err := applyprogress.TaskManifest([]applyprogress.Task{{ID: "1.1", Text: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Snapshot.Status = applyprogress.StatusComplete
+	request.Snapshot.TaskManifestSHA256 = manifest
+	request.Snapshot.Coverage = []applyprogress.Coverage{{TaskID: "1.1", BatchID: request.Batches[0].BatchID, EntryID: "entry"}}
+	request.Snapshot.Batches[0].SHA256 = request.Batches[0].SHA256
+	request.Snapshot, _, err = applyprogress.SealSnapshot(request.Snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (sddprogress.OpenSpec{Root: root}).Advance(request); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "tasks.md"), []byte("- [ ] 1.1 task\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "issue-653")
+	command := newSddArchiveCommand(func(root string) sddArchiver { return sddprogress.OpenSpec{Root: root} }, archiveReadyStatus)
+	command.SetArgs([]string{"--root", root, "--destination", archive})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(archive, "apply-progress.md")); err != nil {
+		t.Fatalf("archived snapshot: %v", err)
+	}
+}
+
+func TestSddArchiveRevalidatesLifecycleReadinessUnderLock(t *testing.T) {
+	t.Setenv("JARVIS_SDD_STORE_MODE", "openspec")
+	root := filepath.Join(t.TempDir(), "openspec", "changes", "issue-653")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("create change root: %v", err)
+	}
+	for name, content := range map[string]string{
+		"spec.md":          "spec\n",
+		"design.md":        "design\n",
+		"tasks.md":         "- [x] 1.1 task\n",
+		"verify-report.md": "All checks passed.\n",
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	request := progressRequest(t, "archive-revalidation", "apb-00000000000000000000000000000001", 1, "")
+	request.Batches[0].Entries[0].TaskIDs, request.Batches[0].Entries[0].CompletesTaskIDs = []string{"1.1"}, []string{"1.1"}
+	var err error
+	request.Batches[0], _, err = applyprogress.SealBatch(request.Batches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, manifest, err := applyprogress.TaskManifest([]applyprogress.Task{{ID: "1.1", Text: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Snapshot.Status = applyprogress.StatusComplete
+	request.Snapshot.TaskManifestSHA256 = manifest
+	request.Snapshot.Coverage = []applyprogress.Coverage{{TaskID: "1.1", BatchID: request.Batches[0].BatchID, EntryID: "entry"}}
+	request.Snapshot.Batches[0].SHA256 = request.Batches[0].SHA256
+	request.Snapshot, _, err = applyprogress.SealSnapshot(request.Snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (sddprogress.OpenSpec{Root: root}).Advance(request); err != nil {
+		t.Fatal(err)
+	}
+
+	mutated := false
+	command := newSddArchiveCommand(func(root string) sddArchiver {
+		return sddprogress.OpenSpec{Root: root, BeforeArchiveValidate: func() error {
+			mutated = true
+			return os.WriteFile(filepath.Join(root, "verify-report.md"), []byte("critical blocker\n"), 0o600)
+		}}
+	}, archiveStatus)
+	command.SetArgs([]string{"--root", root, "--destination", filepath.Join(t.TempDir(), "archive")})
+
+	if err := command.Execute(); err == nil {
+		t.Fatal("archive succeeded after verify-report became invalid under the archive lock")
+	}
+	if !mutated {
+		t.Fatal("verify-report was not invalidated under the archive lock")
+	}
+	if _, err := os.Stat(filepath.Join(root, "apply-progress.md")); err != nil {
+		t.Fatalf("archive moved lifecycle after failed revalidation: %v", err)
+	}
+}
+
+func TestRunSddArchiveFailsClosedOnLifecycleState(t *testing.T) {
+	for _, tt := range []struct {
+		name, store string
+		progress    sddstatus.ArtifactState
+		dependency  sddstatus.DependencyState
+		wantErr     bool
+	}{
+		{"partial", "openspec", sddstatus.ArtifactPartial, sddstatus.DepBlocked, true},
+		{"diverged", "hybrid", sddstatus.ArtifactBlockedBackendDiverged, sddstatus.DepBlocked, true},
+		{"hive mode", "hive", sddstatus.ArtifactDone, sddstatus.DepReady, true},
+		{"complete", "openspec", sddstatus.ArtifactDone, sddstatus.DepReady, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			status := &sddstatus.ChangeStatus{ArtifactStore: tt.store, Artifacts: map[string]sddstatus.ArtifactState{sddstatus.ArtifactApplyProgress: tt.progress}, Dependencies: map[string]sddstatus.DependencyState{sddstatus.PhaseArchive: tt.dependency}}
+			err := runSddArchive(archiveFunc(func(string) error { calls++; return nil }), status, "archive/change")
+			if (err != nil) != tt.wantErr || calls != map[bool]int{true: 0, false: 1}[tt.wantErr] {
+				t.Fatalf("runSddArchive() error=%v calls=%d", err, calls)
+			}
+		})
+	}
+}
+
+func archiveReadyStatus(string, string) (*sddstatus.ChangeStatus, error) {
+	return &sddstatus.ChangeStatus{ArtifactStore: "openspec", Artifacts: map[string]sddstatus.ArtifactState{sddstatus.ArtifactApplyProgress: sddstatus.ArtifactDone}, Dependencies: map[string]sddstatus.DependencyState{sddstatus.PhaseArchive: sddstatus.DepReady}}, nil
+}
+
+type archiveFunc func(string) error
+
+func (f archiveFunc) Archive(destination string) error { return f(destination) }
+func (f archiveFunc) ArchiveWithLifecycleValidation(destination string, _ func() error) error {
+	return f(destination)
+}
+
 func TestPrintStatusHuman_AllDone_ShowsComplete(t *testing.T) {
 	s := &sddstatus.ChangeStatus{
 		Schema:          sddstatus.StatusSchema,
