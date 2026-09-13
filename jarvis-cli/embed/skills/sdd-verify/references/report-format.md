@@ -61,9 +61,30 @@
 **WARNING**: {list or None}
 **SUGGESTION**: {list or None}
 
-### Verdict
-{PASS / PASS WITH WARNINGS / FAIL}
-{one-line reason}
+## Verdict
+
+**{PASS / PASS WITH WARNINGS / FAIL}**
+
+## Critical Findings
+
+{0 or positive integer}
+
+## Blockers
+
+{None | blocker list}
 ~~~
+
+## Active archive contract
+
+The final three `##` sections are the only active archive decision fields. Emit them exactly once with the exact headings `## Verdict`, `## Critical Findings`, and `## Blockers`.
+
+Archive-ready reports must use one of these exact verdict values:
+
+- `**PASS — archive ready.**`
+- `**PASS WITH WARNINGS — archive ready.**`
+
+Emit `archive ready` only when `Critical Findings` is `0` and `Blockers` is `None`. `None`, `**None**`, and `_None_` normalize to the same no-blocker value. Do not emit `archive ready` for `FAIL`, nonzero critical findings, or a non-None blocker value.
+
+The consumer ignores historical narrative and does not fall back to archived-style, YAML, or prose reports. Missing or duplicate active headings, missing fields, or a missing marker are invalid and must be regenerated with `sdd-verify` (`regenerate_with_sdd_verify`).
 
 When Strict TDD is active, insert the TDD compliance, test layer distribution, changed-file coverage, and quality metrics sections from `../strict-tdd-verify.md`.

@@ -24,6 +24,32 @@ const sharedHiveConventionPath = "embed/skills/_shared/hive-convention.md"
 const sharedPersistenceContractPath = "embed/skills/_shared/persistence-contract.md"
 const sharedOpenSpecConventionPath = "embed/skills/_shared/openspec-convention.md"
 
+func TestCatalogContract_SDDVerifyPublishesCanonicalActiveReport(t *testing.T) {
+	verify := readEmbeddedSkillAsset(t, "embed/skills/sdd-verify/SKILL.md")
+	reportFormat := readEmbeddedSkillAsset(t, "embed/skills/sdd-verify/references/report-format.md")
+	archive := readEmbeddedSkillAsset(t, "embed/skills/sdd-archive/SKILL.md")
+
+	for path, content := range map[string]string{
+		"embed/skills/sdd-verify/SKILL.md":                    verify,
+		"embed/skills/sdd-verify/references/report-format.md": reportFormat,
+		"embed/skills/sdd-archive/SKILL.md":                   archive,
+	} {
+		for _, required := range []string{
+			"## Verdict",
+			"## Critical Findings",
+			"## Blockers",
+			"regenerate_with_sdd_verify",
+		} {
+			if !strings.Contains(content, required) {
+				t.Fatalf("expected %s to contain canonical active verify contract %q", path, required)
+			}
+		}
+	}
+	if !strings.Contains(reportFormat, "**PASS — archive ready.**") || !strings.Contains(reportFormat, "**PASS WITH WARNINGS — archive ready.**") {
+		t.Fatal("verify report format must show the exact archive-ready producer forms")
+	}
+}
+
 func TestCatalogContract_SharedSDDPhaseCommonMatchesJarvisAdaptedUpstreamShape(t *testing.T) {
 	content := readEmbeddedSkillAsset(t, sharedPhaseCommonPath)
 
@@ -530,7 +556,8 @@ func TestCatalogContract_SDDCoreSkillsMatchJarvisAdaptedUpstreamContract(t *test
 				"allowedEditRoots",
 				"workspace-planning",
 				"Read Previous Apply-Progress (if exists)",
-				"apply-progress = partial",
+				"Hive calls `sdd_apply_progress_get`",
+				"Canonical v2 checkpoint request",
 				"There is no silent fallback.",
 				"Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.",
 			},
@@ -665,9 +692,13 @@ func TestCatalogContract_SDDVerifyStrictTDDSourcePreservesQualityVerificationRul
 		"Gentleman-Programming/gentle-ai/v1.40.2/internal/assets/skills/sdd-verify/strict-tdd-verify.md",
 		"660917927b4821f5e540dc8fa501d6bee723222c",
 		"## Step 5a: TDD Compliance Check",
-		"RED evidence must include an executed focused failing command",
-		"GREEN evidence must be re-run during verify",
-		"REFACTOR evidence must include a post-refactor passing command or an explicit no-refactor rationale",
+		"Read the canonical v2 snapshot and exactly its referenced immutable evidence batches.",
+		"In Hive use `sdd_apply_progress_get`",
+		"`sdd_apply_evidence_get`",
+		"Require entry_id, task_ids, completes_task_ids, kind, summary, command, exit_code, outcome, and files",
+		"RED (`kind=red`): must record an executed focused failing command",
+		"GREEN (`kind=green`): must record an executable passing command",
+		"REFACTOR (`kind=refactor`): require a post-refactor passing command or an explicit no-refactor rationale",
 		"### Test Layer Distribution",
 		"For each spec scenario, note which test layer covers it",
 		"### Changed File Coverage",
@@ -688,6 +719,11 @@ func TestCatalogContract_SDDVerifyStrictTDDSourcePreservesQualityVerificationRul
 	for _, want := range requiredSnippets {
 		if !strings.Contains(content, want) {
 			t.Fatalf("expected sdd-verify strict-tdd source to contain quality rule %q", want)
+		}
+	}
+	for _, forbidden := range []string{"Find the \"TDD Cycle Evidence\" table", "FOR EACH task row:", "If NO \"TDD Cycle Evidence\" table found:", "ALWAYS check the TDD Cycle Evidence table"} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("expected sdd-verify strict-tdd source not to retain legacy TDD-table guidance %q", forbidden)
 		}
 	}
 }
@@ -818,10 +854,11 @@ func TestCatalogContract_SDDApplySourceUsesJarvisAdaptedStatusGuards(t *testing.
 		"Generated artifacts are output, never sources of truth",
 		"mcp__hive__mem_save",
 		"Artifact store mode (`hive | openspec | hybrid | none`)",
-		"Reject the obsolete wording “When prior `apply-progress = partial` exists, merge/reconcile it with current task state”",
+		"OpenSpec reads the change's canonical `apply-progress.md` snapshot",
+		"Hive calls `sdd_apply_progress_get`",
 		"do not jump to `sdd-verify` until apply progress and task checkboxes agree",
-		"include `status: partial` on its own line",
-		"legacy `complete` boolean means a verify-report artifact exists",
+		"Do not emit free-form lifecycle markers",
+		"`complete` means canonical apply-progress is complete and authoritative task checkboxes are all checked; verify-report remains a separate dependency",
 	}
 	for _, snippet := range requiredSnippets {
 		if !strings.Contains(content, snippet) {
@@ -870,20 +907,36 @@ func TestCatalogContract_BoundedApplyProgressGuidanceUsesGuardedImmutableProtoco
 			required: []string{
 				"immutable evidence batches",
 				"40,000 Unicode runes",
-				"`jarvis sdd progress advance`",
-				"guarded snapshot advance",
-				"Retry the same request ID",
+				"`jarvis sdd progress checkpoint --root <change-root> --request <request.json>`",
+				"ordered complete entries",
+				"stable base snapshot and cursor",
+				"preserve and supply `stream_sha256` unchanged",
+				"same request ID, batch ID, base, cursor, and byte-identical payload",
+				"new request ID and new batch ID only after `continuation_required`",
+				"low-level `advance` remains a recovery/compatibility primitive",
+				"Do not ask `advance`, HTTP, or MCP to select prefixes or plan capacity.",
+				"committed",
 				"continuation_required",
 				"evidence_item_too_large",
 				"snapshot_capacity_exhausted",
 				"Do not use `mcp__hive__mem_save` to write, replace, or recover apply-progress.",
 				"legacy source authoritative",
+				"Canonical v2 checkpoint request",
+				"`project`, `change`",
+				"`expected_generation`, `expected_revision`, `expected_digest`",
+				"`entry_index`, `entry_id`",
+				"`lock_busy`",
+				"`legacy_upgrade_required`",
+				"checkpoint frequency cannot repair a full reference set",
+				"sdd_apply_evidence_get",
 			},
 			forbidden: []string{
 				"When saving your apply-progress in Step 6, MERGE",
 				"The final artifact should show the cumulative state of ALL assigned tasks across ALL batches",
 				"Save progress as `sdd/{change-name}/apply-progress` with `capture_prompt:false`.",
 				"persist progress to Hive (`mcp__hive__mem_save` with topic_key grouping",
+				"Use `jarvis sdd progress advance` for every progress checkpoint.",
+				"include `status: partial` on its own line",
 			},
 		},
 		{
@@ -891,7 +944,12 @@ func TestCatalogContract_BoundedApplyProgressGuidanceUsesGuardedImmutableProtoco
 			required: []string{
 				"exact referenced immutable evidence batches",
 				"`jarvis.sdd-apply-progress/v2`",
-				"continuation, conflict, capacity, migration, or `backend_diverged`",
+				"`jarvis sdd archive --root <change-root> --destination <archive-destination>` is the canonical archive operation",
+				"`sdd_apply_progress_get`",
+				"`sdd_apply_evidence_get`",
+				"`.apply-progress-receipts/`",
+				"`lock_busy`",
+				"`legacy_upgrade_required`",
 				"fail closed",
 			},
 		},
@@ -900,9 +958,21 @@ func TestCatalogContract_BoundedApplyProgressGuidanceUsesGuardedImmutableProtoco
 			required: []string{
 				"## Bounded Apply-Progress Continuation (MANDATORY)",
 				"immutable evidence batches",
-				"guarded snapshot advance",
-				"same request ID",
+				"`jarvis sdd progress checkpoint`",
+				"stable base snapshot and cursor",
+				"preserve and supply `stream_sha256` unchanged",
+				"same request ID, batch ID, base, cursor, and byte-identical payload",
+				"new request ID and batch ID only after `continuation_required`",
+				"committed",
 				"continuation_required",
+				"evidence_item_too_large",
+				"snapshot_capacity_exhausted",
+				"`advance` is retained only for recovery/compatibility",
+				"They may validate a caller-proposed payload, including defensive capacity validation",
+				"OpenSpec reads `apply-progress.md` plus exactly referenced `apply-evidence/<batch-id>.json`",
+				"Hive calls `sdd_apply_progress_get`",
+				"Apply-progress v2 snapshot",
+				"`sdd/{change-name}/apply-progress/v2`",
 				"Do not instruct an executor to merge or rewrite cumulative apply-progress observations.",
 				"dependencies[phase] == `ready`",
 				"actionContext.mode == `workspace-edit`",
@@ -913,6 +983,7 @@ func TestCatalogContract_BoundedApplyProgressGuidanceUsesGuardedImmutableProtoco
 				"merge your new progress with the existing progress",
 				"save the combined result. Do NOT overwrite — MERGE.",
 				"read-merge-write",
+				"request a guarded snapshot advance through `jarvis sdd progress advance`",
 			},
 		},
 	}
@@ -936,6 +1007,62 @@ func TestCatalogContract_BoundedApplyProgressGuidanceUsesGuardedImmutableProtoco
 				}
 			}
 		})
+	}
+}
+
+func TestCatalogContract_BoundedApplyProgressGuidanceUsesCanonicalOutcomesAndArchiveOrder(t *testing.T) {
+	apply := readEmbeddedSkillAsset(t, "embed/skills/sdd-apply/SKILL.md")
+	for _, required := range []string{
+		"`committed`, `continuation_required`, `evidence_item_too_large`, `snapshot_capacity_exhausted`, `stream_preflight_required`, and `checkpoint_consolidation_required`",
+		"`imported` is internal legacy provenance only",
+	} {
+		if !strings.Contains(apply, required) {
+			t.Fatalf("expected sdd-apply source to contain canonical checkpoint guidance %q", required)
+		}
+	}
+	if strings.Contains(apply, "`kind` (`red`, `green`, `triangulate`, `refactor`, `verification`, `delivery`, or `imported`)") {
+		t.Fatal("sdd-apply must not present imported evidence as a normal caller-supplied kind")
+	}
+
+	archive := readEmbeddedSkillAsset(t, "embed/skills/sdd-archive/SKILL.md")
+	prepare := strings.Index(archive, "### Step 3: Prepare Verification and Archive Report")
+	sync := strings.Index(archive, "### Step 4: Sync Delta Specs to Main Specs")
+	preflight := strings.Index(archive, "#### Read-Only Whole-Delta Preflight")
+	write := strings.Index(archive, "#### Write Planned Merges")
+	move := strings.Index(archive, "### Step 5: Move to Archive")
+	if prepare < 0 || sync < 0 || preflight < 0 || write < 0 || move < 0 || prepare >= sync || sync >= preflight || preflight >= write || write >= move {
+		t.Fatalf("sdd-archive must prepare reports, preflight every active delta, fully verify spec sync, then move: prepare=%d sync=%d preflight=%d write=%d move=%d", prepare, sync, preflight, write, move)
+	}
+	for _, required := range []string{
+		"Sync from active `openspec/changes/{change-name}/specs/` before the archive move, using these two phases.",
+		"Before the first main-spec write, read every active delta spec and plan every merge without writing.",
+		"Any unsupported, invalid, or destructive-without-confirmation case blocks the entire sync before all writes.",
+		"Only after the complete preflight succeeds may writes begin.",
+		"Capture each destination's exact pre-write bytes, existence, and SHA-256 digest before the first write.",
+		"Immediately before writing each sealed destination, re-read its bytes/existence and byte-compare them with the captured pre-sync state.",
+		"On mismatch, STOP before writing that destination or any remaining destination; return `spec_sync_conflict_recovery_required` without overwriting concurrent work.",
+		"Before rollback, byte-compare each touched target's current bytes with the exact bytes written by this operation; any mismatch MUST STOP and escalate rather than overwrite concurrent post-write edits.",
+		"On any write or post-write digest verification failure, restore every touched target and verify the rollback before returning.",
+		"If rollback cannot be verified, return fail-closed `spec_sync_recovery_required` with every affected path and expected pre-write digest; do not claim cycle completion.",
+		"Before invoking `jarvis sdd archive`, verify every destination digest from the sealed preflight plan.",
+		"If archive validation or the move blocks after verified sync, do not roll back the main specs or claim cycle completion.",
+		"Preserve or recover the active change topology or the exact destination topology and return typed archive recovery for retry.",
+	} {
+		if !strings.Contains(archive, required) {
+			t.Fatalf("expected sdd-archive source to contain canonical archive ordering phrase %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"Do not sync delta specs before `jarvis sdd archive` succeeds.",
+		"a blocked archive performs no spec sync.",
+		"read every archived delta spec",
+	} {
+		if strings.Contains(archive, forbidden) {
+			t.Fatalf("sdd-archive must not retain contradictory archive-order promise %q", forbidden)
+		}
+	}
+	if strings.Contains(archive, "### Step 7: Persist Archive Report") {
+		t.Fatal("sdd-archive must not persist archive reports after the move")
 	}
 }
 
@@ -982,28 +1109,21 @@ func TestCatalogContract_MutatingPhaseSkillsFailClosedOnNativeWorkspaceAuthority
 	}
 }
 
-func TestCatalogContract_ApplyProgressMarkerCompatibility(t *testing.T) {
-	required := map[string][]string{
-		"embed/skills/sdd-apply/SKILL.md": {
-			"include `status: partial` on its own line",
-			"record `status: complete`",
-		},
-		"embed/skills/sdd-verify/SKILL.md": {
-			"only an exact `status: complete` marker",
-			"unknown, malformed, conflicting, or unmarked progress",
-		},
-		"embed/skills/sdd-archive/SKILL.md": {
-			"only an exact `status: complete` marker",
-			"unknown, malformed, conflicting, or unmarked progress",
-		},
+func TestCatalogContract_ApplyProgressUsesValidatedV2LifecycleGuidance(t *testing.T) {
+	apply := readEmbeddedSkillAsset(t, "embed/skills/sdd-apply/SKILL.md")
+	for _, want := range []string{"Do not emit free-form lifecycle markers", "validated v2 snapshot status", "`stream_sha256`"} {
+		if !strings.Contains(apply, want) {
+			t.Fatalf("expected apply source to use validated v2 lifecycle guidance %q", want)
+		}
+	}
+	if strings.Contains(apply, "include `status: partial` on its own line") {
+		t.Fatal("sdd-apply must not instruct a standalone partial marker")
 	}
 
-	for asset, snippets := range required {
+	for _, asset := range []string{"embed/skills/sdd-verify/SKILL.md", "embed/skills/sdd-archive/SKILL.md"} {
 		content := readEmbeddedSkillAsset(t, asset)
-		for _, snippet := range snippets {
-			if !strings.Contains(content, snippet) {
-				t.Fatalf("expected %s to document apply-progress compatibility %q", asset, snippet)
-			}
+		if !strings.Contains(content, "only an exact `status: complete` marker") {
+			t.Fatalf("expected %s to retain read-only legacy compatibility", asset)
 		}
 	}
 }
@@ -1031,12 +1151,15 @@ func TestCatalogContract_SDDArchiveSourceUsesJarvisAdaptedArchiveSafetyGuards(t 
 		"Unresolved CRITICAL verification findings always block archive",
 		"Any incomplete task checkbox or `taskProgress` entry blocks archive",
 		"Stale checkboxes are not archive-ready by themselves",
-		"When prior `apply-progress = partial` exists, STOP until current tasks, apply-progress, and verify-report have been reconciled and re-verified",
+		"When the validated v2 snapshot lifecycle is incomplete, STOP until current tasks, progress topology, and verify-report have been reconciled and re-verified",
 		"Generated artifacts are output, never sources of truth",
 		"Partial, missing, or stale artifacts block archive until they are reconciled and re-verified",
 		"For `none` mode, return a closure summary only; do not persist an archive report",
 		"mcp__hive__mem_save",
 		"Artifact store mode (`hive | openspec | hybrid | none`)",
+		"`jarvis sdd archive --root <change-root> --destination <archive-destination>` is the canonical archive operation",
+		"`.apply-progress-receipts/`",
+		"sdd_apply_progress_get",
 	}
 	for _, snippet := range requiredSnippets {
 		if !strings.Contains(content, snippet) {
@@ -1295,6 +1418,26 @@ func TestCatalogContract_SDDApplyStrictTDDSourceRequiresExecutedREDEvidence(t *t
 	for _, want := range requiredSnippets {
 		if !strings.Contains(content, want) {
 			t.Fatalf("expected sdd-apply strict-tdd source to require executed RED evidence %q", want)
+		}
+	}
+}
+
+func TestCatalogContract_SDDApplyStrictTDDUsesStructuredV2Evidence(t *testing.T) {
+	content := readEmbeddedSkillAsset(t, "embed/skills/sdd-apply/strict-tdd.md")
+	for _, want := range []string{
+		"structured v2 entries",
+		"`EvidenceEntry`",
+		"`completes_task_ids`",
+		"`kind: \"triangulate\"`",
+		"immutable v2 entries are authoritative",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("expected strict TDD source to contain structured v2 evidence guidance %q", want)
+		}
+	}
+	for _, forbidden := range []string{"### TDD Cycle Evidence", "| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |", "evidence table"} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("expected strict TDD source not to contain legacy table guidance %q", forbidden)
 		}
 	}
 }

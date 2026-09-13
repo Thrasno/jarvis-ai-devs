@@ -72,7 +72,7 @@ FOR EACH TASK:
 │   ├── Skip triangulation ONLY when ALL of these are true:
 │   │   ├── The task is purely structural (config file, constant definition, type export)
 │   │   ├── There is literally ONE possible output (no branching, no logic)
-│   │   └── You explicitly note "Triangulation skipped: {reason}" in the evidence table
+│   │   └── Record a `triangulate` `EvidenceEntry` with `outcome: not_run` and the concrete reason: `Triangulation skipped: {reason}`
 │   ├── A single spec scenario is NOT a triangulation skip reason; only structural one-output work may skip triangulation
 │   └── GATE: All spec scenarios for this task must have tests before REFACTOR
 │
@@ -208,31 +208,23 @@ Failure: expected strict TDD source to reject trivial assertion loophole "expect
 
 ## Return Summary Extension
 
-When Strict TDD Mode is active, your return summary MUST include this section:
+When Strict TDD Mode is active, persist TDD proof as structured v2 entries in the checkpoint request's immutable `entries` stream; each entry is an `EvidenceEntry`. Do not use a Markdown cycle table as apply-progress evidence. When reading prior Hive proof, first call `sdd_apply_progress_get`, then iterate `snapshot.batches` with `sdd_apply_evidence_get` for each referenced `batch_id`; never consume aggregate history from a progress response.
 
-```markdown
-### TDD Cycle Evidence
-| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
-|------|-----------|-------|------------|-----|-------|-------------|----------|
-| 1.1 | `path/test.ext` | Unit | ✅ 5/5 | ✅ `go test ...` failed with expected assertion | ✅ Passed | ✅ 3 cases | ✅ Clean |
-| 1.2 | `path/test.ext` | Integration | N/A (new) | ✅ `go test ...` failed with missing symbol | ✅ Passed | Triangulation skipped: structural one-output type export | ✅ Clean |
-| 1.3 | `path/test.ext` | Unit | ✅ 2/2 | ✅ `go test ...` failed with behavior mismatch | ✅ Passed | ✅ 2 cases | ➖ None needed |
-
-### Test Summary
-- **Total tests written**: {N}
-- **Total tests passing**: {N}
-- **Layers used**: Unit ({N}), Integration ({N}), E2E ({N})
-- **Approval tests** (refactoring): {N} or "None — no refactoring tasks"
-- **Pure functions created**: {N}
+```json
+{
+  "entry_id": "tdd-1.1-red",
+  "task_ids": ["1.1"],
+  "completes_task_ids": [],
+  "kind": "red",
+  "summary": "Focused test failed with undefined symbol.",
+  "command": "go test ./internal/skills -run TestExample",
+  "exit_code": 1,
+  "outcome": "fail",
+  "files": ["internal/skills/example_test.go"]
+}
 ```
 
-**Column definitions**:
-- **Safety Net**: Pre-existing tests run before modifying files. "N/A (new)" for new files.
-- **RED**: Test written first and confirmed by an executed focused failing command. Must show command and failure output.
-- **GREEN**: Tests executed and passing after minimal implementation. Must show execution result.
-- **TRIANGULATE**: Additional test cases added to force real logic. Use "Triangulation skipped: {reason}" only for purely structural one-output tasks with no branching or logic.
-  A single spec scenario is NOT a triangulation skip reason; only structural one-output work may skip triangulation, and the evidence table must include the rationale.
-- **REFACTOR**: Code improved with tests still passing. "➖ None needed" if code was already clean.
+Emit distinct entries for the safety net, RED, GREEN, TRIANGULATE, and REFACTOR observations. RED carries the executed failing command and failure summary; GREEN carries the passing command and exit code. A task-completion entry names its task in `completes_task_ids` only after the required evidence is satisfied. For a structural one-output skip, use `kind: "triangulate"`, `outcome: "not_run"`, and a concrete reason in `summary`; one scenario is not a skip reason. Return summaries may list entry IDs and outcomes, but immutable v2 entries are authoritative.
 
 ## Assertion Quality Rules (MANDATORY)
 
@@ -420,7 +412,7 @@ CSS class assertions are not valid behavior assertions. If you need to verify vi
 - ALWAYS verify that every assertion CALLS production code and asserts a SPECIFIC expected value or observable effect
 - ALWAYS capture RED failure evidence before implementing GREEN
 - ALWAYS run the Safety Net before modifying existing files — protect what already works
-- ALWAYS report the TDD Cycle Evidence table — the verify phase will check it
+- ALWAYS report structured v2 EvidenceEntry IDs and outcomes — the verify phase will check them
 - If a test runner execution fails for infrastructure reasons (not test failures), STOP and report the blocker; do not continue with implementation
 - Prefer pure functions — but don't force it where it doesn't fit (e.g., React components with state)
 - For refactoring tasks, ALWAYS write approval tests before touching code

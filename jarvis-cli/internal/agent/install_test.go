@@ -328,10 +328,8 @@ func TestInstallSkillsFromEmbeddedSDDApply_PreservesJarvisStatusAndWorkspaceGuar
 		"If `actionContext.allowedEditRoots` is missing or empty, STOP before editing.",
 		"If a needed edit is outside every `actionContext.allowedEditRoots` entry, STOP",
 		"Generated artifacts are output, never sources of truth",
-		"When prior `apply-progress = partial` exists, merge/reconcile it with current task state",
 		"do not jump to `sdd-verify` until apply progress and task checkboxes agree.",
-		"include `status: partial` on its own line",
-		"legacy `complete` boolean means a verify-report artifact exists",
+		"`complete` means canonical apply-progress is complete and authoritative task checkboxes are all checked; verify-report remains a separate dependency",
 	}
 	for _, want := range requiredSnippets {
 		if !strings.Contains(content, want) {
@@ -428,7 +426,7 @@ func TestInstallSkillsFromEmbeddedSDDArchive_PreservesJarvisArchiveSafetyGuards(
 	}
 }
 
-func TestInstallSkillsFromEmbeddedApplyProgressMarkerCompatibility(t *testing.T) {
+func TestInstallSkillsFromEmbeddedRejectsLegacyApplyProgressMarkerGuidance(t *testing.T) {
 	skillsFS, err := fs.Sub(jarvis.SkillsFS, "embed/skills")
 	if err != nil {
 		t.Fatalf("open embedded skills FS: %v", err)
@@ -439,29 +437,13 @@ func TestInstallSkillsFromEmbeddedApplyProgressMarkerCompatibility(t *testing.T)
 		t.Fatalf("install skills: %v", err)
 	}
 
-	required := map[string][]string{
-		"sdd-apply/SKILL.md": {
-			"include `status: partial` on its own line",
-			"record `status: complete`",
-		},
-		"sdd-verify/SKILL.md": {
-			"only an exact `status: complete` marker",
-			"unknown, malformed, conflicting, or unmarked progress",
-		},
-		"sdd-archive/SKILL.md": {
-			"only an exact `status: complete` marker",
-			"unknown, malformed, conflicting, or unmarked progress",
-		},
+	content, err := os.ReadFile(filepath.Join(dest, "sdd-apply", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read installed sdd-apply: %v", err)
 	}
-	for path, snippets := range required {
-		content, err := os.ReadFile(filepath.Join(dest, path))
-		if err != nil {
-			t.Fatalf("read installed %s: %v", path, err)
-		}
-		for _, snippet := range snippets {
-			if !strings.Contains(string(content), snippet) {
-				t.Fatalf("installed %s missing apply-progress compatibility %q", path, snippet)
-			}
+	for _, forbidden := range []string{"include `status: partial` on its own line", "record `status: complete`"} {
+		if strings.Contains(string(content), forbidden) {
+			t.Fatalf("installed sdd-apply retained legacy apply-progress marker guidance %q", forbidden)
 		}
 	}
 }

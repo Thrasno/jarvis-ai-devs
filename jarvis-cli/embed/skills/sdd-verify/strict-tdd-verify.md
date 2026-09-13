@@ -18,44 +18,23 @@ Strict TDD verification has two responsibilities:
 
 ## Step 5a: TDD Compliance Check
 
-Read the `apply-progress` artifact and verify that TDD was actually followed:
+Read the canonical v2 snapshot and exactly its referenced immutable evidence batches. In Hive use `sdd_apply_progress_get`, then iterate ordered `snapshot.batches` with `sdd_apply_evidence_get` for each `batch_id`; in OpenSpec read `apply-progress.md` and only snapshot-referenced `apply-evidence/<batch-id>.json`. Verify that TDD was actually followed from structured `EvidenceEntry` values:
 
 ```text
-Read apply-progress artifact:
-├── Find the "TDD Cycle Evidence" table
-├── FOR EACH task row:
-│   ├── RED column:
-│   │   ├── Must say the test was written before implementation
-│   │   ├── Test file must exist in the codebase
-│   │   ├── RED evidence must include an executed focused failing command
-│   │   ├── Evidence must include the failing assertion, compile error, or behavior mismatch output
-│   │   └── Flag CRITICAL when RED is hypothetical, missing, or not tied to a real command
-│   │
-│   ├── GREEN column:
-│   │   ├── Must say the focused test passed after minimal implementation
-│   │   ├── GREEN evidence must be re-run during verify
-│   │   ├── The referenced test command must pass now
-│   │   └── Flag CRITICAL if the test fails now or no executable command is recorded
-│   │
-│   ├── TRIANGULATE column:
-│   │   ├── If "✅ N cases" → verify N meaningful cases exist in the test file
-│   │   ├── A single spec scenario is not enough by itself to pass triangulation
-│   │   ├── Accept a skipped triangulation rationale only for structural one-output work
-│   │   └── Flag WARNING when behavior has too few varied test cases
-│   │
-│   ├── SAFETY NET column:
-│   │   ├── If "✅ N/N" → existing tests were run before modification
-│   │   ├── If "N/A (new)" → verify the referenced files were actually new
-│   │   └── Flag WARNING if a modified file is reported as new or has no baseline run
-│   │
-│   └── REFACTOR column:
-│       ├── REFACTOR evidence must include a post-refactor passing command or an explicit no-refactor rationale
-│       └── Flag WARNING if refactor evidence is claimed but not supported by command output
-│
-├── If NO "TDD Cycle Evidence" table found:
-│   └── Flag CRITICAL — Strict TDD was enabled but apply did not report evidence
-│
-└── Summary: "{N}/{total} tasks have complete TDD evidence"
+Resolve canonical v2 progress:
+├── Validate snapshot identity, hashes, task-manifest digest, coverage, and ordered batch references
+├── FOR EACH EvidenceEntry in snapshot batch order:
+│   ├── Require entry_id, task_ids, completes_task_ids, kind, summary, command, exit_code, outcome, and files
+│   ├── IMPORTED (`kind=imported`): preserve it as migration provenance only; it NEVER satisfies RED, GREEN, TRIANGULATE, or REFACTOR quality for Strict TDD
+│   ├── RED (`kind=red`): must record an executed focused failing command, non-zero exit code, failure summary, and real test file
+│   ├── GREEN (`kind=green`): must record an executable passing command and zero exit code; re-run it during verify
+│   ├── TRIANGULATE (`kind=triangulate`): verify varied meaningful cases; accept `outcome=not_run` only with a structural one-output reason
+│   ├── REFACTOR (`kind=refactor`): require a post-refactor passing command or an explicit no-refactor rationale
+│   ├── Safety-net evidence: require a recorded pre-edit passing command for modified files; new files may be explicitly identified in summary
+│   └── Flag CRITICAL for malformed, hypothetical, missing, unreferenced, or non-executable RED/GREEN evidence
+├── Verify each completes_task_ids value is covered by a matching validated entry and current frozen task manifest
+├── If no referenced v2 EvidenceEntry values exist, flag CRITICAL — Strict TDD was enabled but apply did not persist evidence
+└── Summary: "{N}/{total} tasks have complete structured TDD evidence"
 ```
 
 ## Step 5b: Test Execution Cross-Check
@@ -138,7 +117,7 @@ IF coverage tool is available from cached capabilities or project convention:
 ├── Run the configured coverage command
 ├── Parse the coverage report
 ├── Filter to ONLY files created or modified in this change
-│   (get file list from apply-progress "Files Changed" table and current git diff)
+│   (get file list from validated EvidenceEntry `files` values and current git diff)
 ├── Report per file:
 │   ├── File path
 │   ├── Line coverage %
@@ -304,11 +283,12 @@ Use this rule of thumb:
 
 ## Rules (Strict TDD Verify specific)
 
-- ALWAYS check the TDD Cycle Evidence table from apply-progress — it is the primary artifact.
-- ALWAYS cross-reference reported test files against actual execution — do not trust the report blindly.
+- ALWAYS check snapshot-referenced v2 EvidenceEntry batches — they are the primary artifact.
+- ALWAYS cross-reference entry `files` and `command` values against actual execution — do not trust evidence blindly.
 - ALWAYS run the Assertion Quality Audit — trivial tests are worse than missing tests.
-- If apply-progress has no TDD evidence table, flag CRITICAL.
+- If canonical v2 progress has no referenced TDD evidence entries, flag CRITICAL.
 - If tautology assertions are found, flag CRITICAL.
+- Imported legacy evidence never counts toward Strict-TDD quality; require fresh RED/GREEN evidence for the completed task.
 - If RED evidence is hypothetical or lacks executed failing-command output, flag CRITICAL.
 - If GREEN evidence cannot be reproduced, flag CRITICAL.
 - If triangulation is skipped without a structural one-output rationale, flag WARNING.

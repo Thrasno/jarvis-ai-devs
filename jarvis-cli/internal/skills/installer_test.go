@@ -131,6 +131,27 @@ func TestInstallSelected(t *testing.T) {
 				t.Errorf("skill %s has empty content", coreID)
 			}
 		}
+
+		applyData, err := os.ReadFile(filepath.Join(dir, "sdd-apply", "SKILL.md"))
+		if err != nil {
+			t.Fatalf("read installed sdd-apply: %v", err)
+		}
+		for _, want := range []string{"jarvis sdd progress checkpoint", "Canonical v2 checkpoint request", "sdd_apply_progress_get"} {
+			if !strings.Contains(string(applyData), want) {
+				t.Fatalf("installed sdd-apply missing executable v2 guidance %q", want)
+			}
+		}
+		if strings.Contains(string(applyData), "include `status: partial` on its own line") {
+			t.Fatal("installed sdd-apply retained obsolete standalone partial-marker guidance")
+		}
+
+		archiveData, err := os.ReadFile(filepath.Join(dir, "sdd-archive", "SKILL.md"))
+		if err != nil {
+			t.Fatalf("read installed sdd-archive: %v", err)
+		}
+		if !strings.Contains(string(archiveData), "jarvis sdd archive --root <change-root> --destination <archive-destination>") {
+			t.Fatal("installed sdd-archive missing canonical archive operation")
+		}
 	})
 }
 
