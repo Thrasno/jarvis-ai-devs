@@ -2,7 +2,9 @@ package db
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/topickey"
 )
@@ -66,6 +69,55 @@ const (
 	// variant it must tell the server which name the row moved from and to.
 	MutationOpReproject MutationOp = "reproject"
 )
+
+// ImmutableRemoteCreateRejectionCode classifies immutable remote CREATE
+// rejections that are safe for the pull loop to skip after logging their
+// sanitized identity. The code must never encode remote payload bytes.
+type ImmutableRemoteCreateRejectionCode string
+
+const (
+	ImmutableRemoteCreateRejectionInvalidDocument ImmutableRemoteCreateRejectionCode = "invalid_document"
+	ImmutableRemoteCreateRejectionSyncIDConflict  ImmutableRemoteCreateRejectionCode = "sync_id_conflict"
+)
+
+// RemoteImmutableCreateRejectedError is the only remote-apply error that the
+// pull loop may skip. It deliberately carries only stable identifiers and a
+// payload digest; remote content must not cross the database error boundary.
+type RemoteImmutableCreateRejectedError struct {
+	EventID          string
+	SyncID           string
+	CanonicalProject string
+	Topic            string
+	Operation        MutationOp
+	RejectionCode    ImmutableRemoteCreateRejectionCode
+	PayloadDigest    string
+}
+
+func (e *RemoteImmutableCreateRejectedError) Error() string {
+	return "immutable remote create rejected"
+}
+
+func immutableRemoteCreateRejected(event MutationEnvelope, code ImmutableRemoteCreateRejectionCode) *RemoteImmutableCreateRejectedError {
+	topic, content := "", ""
+	if event.Memory != nil {
+		topic = stringValue(topickey.Normalize(event.Memory.TopicKey))
+		content = event.Memory.Content
+	}
+	return immutableRemoteCreateRejectedForIdentity(event.EventID, event.EntitySyncID, event.Project, topic, event.Op, content, code)
+}
+
+func immutableRemoteCreateRejectedForIdentity(eventID, syncID, project, topic string, operation MutationOp, content string, code ImmutableRemoteCreateRejectionCode) *RemoteImmutableCreateRejectedError {
+	digest := sha256.Sum256([]byte(content))
+	return &RemoteImmutableCreateRejectedError{
+		EventID:          eventID,
+		SyncID:           syncID,
+		CanonicalProject: project,
+		Topic:            topic,
+		Operation:        operation,
+		RejectionCode:    code,
+		PayloadDigest:    hex.EncodeToString(digest[:]),
+	}
+}
 
 type MutationEnvelope struct {
 	EventID       string                    `json:"event_id"`
@@ -765,9 +817,9 @@ func (d *DB) ApplyRemoteMutation(event MutationEnvelope) (bool, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Resolve alias inside the transaction so the lookup is atomic with the
-	// subsequent writes. If event.Project is a known alias source, rewrite to
-	// the canonical target project name.
+	// Resolve and canonicalize in memory before classifying. This keeps immutable
+	// validation aligned with the eventual project identity without registering it:
+	// a blocked immutable CREATE must leave no identity, session, or row behind.
 	var aliasTarget string
 	aliasErr := tx.QueryRow(
 		`SELECT target_project FROM project_aliases WHERE source_project = ? LIMIT 1`, event.Project,
@@ -779,14 +831,42 @@ func (d *DB) ApplyRemoteMutation(event MutationEnvelope) (bool, error) {
 		event.Project = aliasTarget
 	}
 	rawProject := event.Project
-	canonicalProject, err := registerProjectIdentity(context.Background(), tx, rawProject)
+	event.Project = projectidentity.Canonical(rawProject).String()
+	if event.Memory != nil && event.Memory.SessionID == "manual-save-"+rawProject {
+		event.Memory.SessionID = "manual-save-" + event.Project
+	}
+
+	classification := classifyRemoteImmutableApplyProgressMutation(tx, event)
+	switch classification {
+	case immutableApplyProgressNoop:
+		if err := tx.Commit(); err != nil {
+			return false, err
+		}
+		logSkippedImmutableApplyProgressMutation()
+		return false, nil
+	case immutableApplyProgressInvalid:
+		return false, immutableRemoteCreateRejected(event, ImmutableRemoteCreateRejectionInvalidDocument)
+	case immutableApplyProgressCreate:
+		if err := ensureProjectWritableInTx(tx, event.Project); err != nil {
+			return false, err
+		}
+		canonicalProject, err := registerProjectIdentity(context.Background(), tx, event.Project)
+		if err != nil {
+			return false, err
+		}
+		event.Project = canonicalProject
+		applied, createErr := applyRemoteImmutableApplyProgressCreate(tx, event)
+		if createErr != nil {
+			return false, createErr
+		}
+		return applied, tx.Commit()
+	}
+
+	canonicalProject, err := registerProjectIdentity(context.Background(), tx, event.Project)
 	if err != nil {
 		return false, err
 	}
 	event.Project = canonicalProject
-	if event.Memory != nil && event.Memory.SessionID == "manual-save-"+rawProject {
-		event.Memory.SessionID = "manual-save-" + event.Project
-	}
 	if err := ensureProjectWritableInTx(tx, event.Project); err != nil {
 		return false, err
 	}
@@ -799,7 +879,6 @@ func (d *DB) ApplyRemoteMutation(event MutationEnvelope) (bool, error) {
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, fmt.Errorf("check remote mutation idempotency: %w", err)
 	}
-
 	switch event.Op {
 	case MutationOpCreate:
 		if event.Memory == nil {
@@ -959,6 +1038,124 @@ WHERE sync_id = ? AND deleted_at IS NULL`,
 	return true, tx.Commit()
 }
 
+// logSkippedImmutableApplyProgressMutation contains no remote identifiers,
+// topic, payload, or error text: those may be unbounded or user-provided.
+func logSkippedImmutableApplyProgressMutation() {
+	logger.Log.Print("warn: skipped immutable apply-progress remote mutation")
+}
+
+type immutableApplyProgressClassification uint8
+
+const (
+	immutableApplyProgressOrdinary immutableApplyProgressClassification = iota
+	immutableApplyProgressCreate
+	immutableApplyProgressNoop
+	immutableApplyProgressInvalid
+)
+
+// classifyRemoteImmutableApplyProgressMutation makes the protocol decision once,
+// before identity registration and writability checks. Non-CREATE mutations of a
+// protected row are cursor-safe no-ops; a CREATE directed at a protected sync ID
+// without an immutable destination is invalid rather than an overwrite attempt.
+func classifyRemoteImmutableApplyProgressMutation(tx *sql.Tx, event MutationEnvelope) immutableApplyProgressClassification {
+	if event.Memory != nil && immutableApplyProgressTopic(stringValue(event.Memory.TopicKey)) {
+		if event.Op != MutationOpCreate {
+			return immutableApplyProgressNoop
+		}
+		if validRemoteImmutableApplyProgressDocument(event.Project, stringValue(event.Memory.TopicKey), event.Memory.Content) {
+			return immutableApplyProgressCreate
+		}
+		return immutableApplyProgressInvalid
+	}
+
+	var project string
+	var topic sql.NullString
+	var content string
+	err := tx.QueryRow(`SELECT project, topic_key, content FROM memories WHERE sync_id = ?`, event.EntitySyncID).Scan(&project, &topic, &content)
+	if err != nil || !validRemoteImmutableApplyProgressDocument(project, topic.String, content) {
+		return immutableApplyProgressOrdinary
+	}
+	if event.Op == MutationOpCreate {
+		return immutableApplyProgressInvalid
+	}
+	return immutableApplyProgressNoop
+}
+
+// applyRemoteImmutableApplyProgressCreate admits one peer-created protocol
+// document only after validating both its canonical bytes and topic identity.
+// The immutable identity is the remote sync ID plus the canonical content, not
+// the topic: every snapshot version intentionally shares one topic. A sync-ID
+// collision with different immutable bytes is rejected without overwriting the
+// first record; the pull loop recognizes that typed rejection and continues.
+func applyRemoteImmutableApplyProgressCreate(tx *sql.Tx, event MutationEnvelope) (bool, error) {
+	if event.Memory == nil {
+		return false, nil
+	}
+	topic := stringValue(event.Memory.TopicKey)
+	if !validRemoteImmutableApplyProgressDocument(event.Project, topic, event.Memory.Content) {
+		return false, immutableRemoteCreateRejected(event, ImmutableRemoteCreateRejectionInvalidDocument)
+	}
+	var existingProject, existingContent string
+	var existingTopic sql.NullString
+	err := tx.QueryRow(`SELECT project, topic_key, content FROM memories WHERE sync_id = ?`, event.EntitySyncID).Scan(&existingProject, &existingTopic, &existingContent)
+	if err == nil {
+		if existingProject == event.Project && existingTopic.String == topic && existingContent == event.Memory.Content {
+			return false, nil
+		}
+		return false, immutableRemoteCreateRejected(event, ImmutableRemoteCreateRejectionSyncIDConflict)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("read remote immutable apply-progress record: %w", err)
+	}
+	if err := ensureMutationSession(tx, event.Project, event.Memory.SessionID); err != nil {
+		return false, err
+	}
+	createdAt := event.OccurredAt.UTC().Format("2006-01-02 15:04:05")
+	_, err = tx.Exec(`
+INSERT INTO memories
+	(sync_id, project, topic_key, category, title, content, tags, files_affected,
+	 created_by, created_at, updated_at, synced_at, session_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		event.EntitySyncID, event.Project, event.Memory.TopicKey, event.Memory.Category,
+		event.Memory.Title, event.Memory.Content, mustMarshalStrings(event.Memory.Tags), mustMarshalStrings(event.Memory.FilesAffected),
+		event.Memory.CreatedBy, createdAt, createdAt, createdAt, event.Memory.SessionID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("insert remote immutable apply-progress record: %w", err)
+	}
+	return true, nil
+}
+
+func validRemoteImmutableApplyProgressDocument(project, topic, content string) bool {
+	const prefix = "sdd/"
+	if !strings.HasPrefix(topic, prefix) {
+		return false
+	}
+	rest := strings.TrimPrefix(topic, prefix)
+	if strings.HasSuffix(rest, "/apply-progress/v2") {
+		change := strings.TrimSuffix(rest, "/apply-progress/v2")
+		snapshot, err := applyprogress.DecodeCanonicalSnapshot([]byte(content))
+		return err == nil && snapshot.Project == project && snapshot.Change == change
+	}
+	marker := "/apply-evidence/"
+	if change, batchID, found := strings.Cut(rest, marker); found {
+		batch, err := applyprogress.DecodeCanonicalBatch([]byte(content))
+		return err == nil && batch.Project == project && batch.Change == change && batch.BatchID == batchID
+	}
+	return false
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func immutableApplyProgressTopic(topic string) bool {
+	return strings.HasPrefix(topic, "sdd/") && (strings.HasSuffix(topic, "/apply-progress/v2") || strings.Contains(topic, "/apply-evidence/"))
+}
+
 // SaveFromRemote guarda una memoria recibida del servidor (pull).
 // La marca como ya sincronizada para no reenviarla en el próximo push.
 // INSERT OR IGNORE: si el sync_id ya existe localmente, no tocamos nada.
@@ -967,6 +1164,10 @@ WHERE sync_id = ? AND deleted_at IS NULL`,
 // resolvemos defensivamente a `manual-save-{project}` para que el INSERT no quede
 // silenciosamente descartado por la combinación de NOT NULL + INSERT OR IGNORE.
 func (d *DB) SaveFromRemote(mem *models.Memory) error {
+	topic := stringValue(topickey.Normalize(mem.TopicKey))
+	if immutableApplyProgressTopic(topic) {
+		return d.acceptRemoteImmutableApplyProgressReplay(mem, topic)
+	}
 	tagsJSON, err := json.Marshal(orNil(mem.Tags))
 	if err != nil {
 		return fmt.Errorf("marshal tags: %w", err)
@@ -1035,6 +1236,67 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		mem.CreatedBy, createdAt, updatedAt, now, sessionID,
 	)
 	return err
+}
+
+// acceptRemoteImmutableApplyProgressReplay admits a valid absent immutable
+// document or treats an exact replay as a no-op. It never journals a received
+// row as a new local mutation.
+func (d *DB) acceptRemoteImmutableApplyProgressReplay(mem *models.Memory, topic string) error {
+	project := mem.Project
+	var aliasTarget string
+	aliasErr := d.sqlDB.QueryRow(`SELECT target_project FROM project_aliases WHERE source_project = ? LIMIT 1`, project).Scan(&aliasTarget)
+	if aliasErr != nil && !errors.Is(aliasErr, sql.ErrNoRows) {
+		return fmt.Errorf("SaveFromRemote resolve immutable alias: %w", aliasErr)
+	}
+	if aliasErr == nil {
+		project = aliasTarget
+	}
+	project = projectidentity.Canonical(project).String()
+
+	tx, err := d.sqlDB.Begin()
+	if err != nil {
+		return fmt.Errorf("begin immutable remote receive: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var existingProject, existingContent string
+	var existingTopic sql.NullString
+	err = tx.QueryRow(`SELECT project, topic_key, content FROM memories WHERE sync_id = ?`, mem.SyncID).Scan(&existingProject, &existingTopic, &existingContent)
+	if err == nil {
+		if existingProject == project && existingTopic.String == topic && existingContent == mem.Content {
+			return tx.Commit()
+		}
+		return immutableRemoteCreateRejectedForIdentity("", mem.SyncID, project, topic, MutationOpCreate, mem.Content, ImmutableRemoteCreateRejectionSyncIDConflict)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("read remote immutable apply-progress replay: %w", err)
+	}
+	if !validRemoteImmutableApplyProgressDocument(project, topic, mem.Content) {
+		return immutableRemoteCreateRejectedForIdentity("", mem.SyncID, project, topic, MutationOpCreate, mem.Content, ImmutableRemoteCreateRejectionInvalidDocument)
+	}
+	if err := ensureProjectWritableInTx(tx, project); err != nil {
+		return err
+	}
+	if project, err = registerProjectIdentity(context.Background(), tx, project); err != nil {
+		return err
+	}
+	sessionID := mem.SessionID
+	if sessionID == "" {
+		sessionID = "manual-save-" + project
+	}
+	if err := ensureMutationSession(tx, project, sessionID); err != nil {
+		return err
+	}
+	_, err = tx.Exec(`INSERT INTO memories
+		(sync_id, project, topic_key, category, title, content, tags, files_affected, created_by, created_at, updated_at, synced_at, session_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		mem.SyncID, project, topickey.Normalize(mem.TopicKey), mem.Category, mem.Title, mem.Content,
+		mustMarshalStrings(mem.Tags), mustMarshalStrings(mem.FilesAffected), mem.CreatedBy,
+		mem.CreatedAt.UTC().Format("2006-01-02 15:04:05"), mem.UpdatedAt.UTC().Format("2006-01-02 15:04:05"), time.Now().UTC().Format("2006-01-02 15:04:05"), sessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("insert remote immutable apply-progress record: %w", err)
+	}
+	return tx.Commit()
 }
 
 // GetLastSync devuelve el timestamp del último sync exitoso para un proyecto.

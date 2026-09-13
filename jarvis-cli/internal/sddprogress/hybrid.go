@@ -45,6 +45,14 @@ type currentBackend interface {
 	Current(AdvanceRequest) (AdvanceResult, error)
 }
 
+type legacyBackend interface {
+	UpgradeLegacy(AdvanceRequest) (AdvanceResult, bool, error)
+}
+
+type legacyRestorer interface {
+	RestoreLegacy([]byte) error
+}
+
 type receiptOutcome string
 
 const (
@@ -65,6 +73,30 @@ type Hybrid struct {
 	OpenSpec  advanceBackend
 	Hive      advanceBackend
 	HiveFirst bool // Test seam for either interrupted publication direction.
+}
+
+func (h Hybrid) UpgradeLegacy(request AdvanceRequest) (AdvanceResult, bool, error) {
+	upgrader, ok := h.OpenSpec.(legacyBackend)
+	if !ok {
+		return AdvanceResult{}, false, nil
+	}
+	legacy, readErr := os.ReadFile(filepath.Join(h.Root, "apply-progress.md"))
+	if readErr != nil || isV2(legacy) {
+		return AdvanceResult{}, false, nil
+	}
+	_, upgraded, err := upgrader.UpgradeLegacy(request)
+	if !upgraded || err != nil {
+		return AdvanceResult{}, upgraded, err
+	}
+	result, err := h.Advance(request)
+	if err != nil {
+		if restorer, ok := h.OpenSpec.(legacyRestorer); ok {
+			if restoreErr := restorer.RestoreLegacy(legacy); restoreErr != nil {
+				return AdvanceResult{}, true, fmt.Errorf("hybrid legacy upgrade: %w; restore legacy: %v", err, restoreErr)
+			}
+		}
+	}
+	return result, true, err
 }
 
 func (h Hybrid) Advance(request AdvanceRequest) (AdvanceResult, error) {

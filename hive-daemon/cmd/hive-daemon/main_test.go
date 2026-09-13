@@ -190,6 +190,7 @@ func TestDaemon_Starts_AndRegistersRequiredTools(t *testing.T) {
 		"mem_session_summary":        true,
 		"mem_suggest_topic_key":      true,
 		"mem_sync":                   true,
+		"sdd_apply_evidence_get":     true,
 		"sdd_apply_progress_advance": true,
 		"sdd_apply_progress_get":     true,
 	}

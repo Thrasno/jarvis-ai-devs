@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/governance"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
@@ -28,9 +29,10 @@ const MaxObservationLength = 50_000
 // MaxRecentPrompts is the maximum number of recent user prompts to include in mem_context.
 const MaxRecentPrompts = 10
 
-type applyProgressStore interface {
-	GetApplyProgress(project, change string) (db.ApplyProgressState, error)
-	AdvanceApplyProgress(db.ApplyProgressAdvance) (db.ApplyProgressAdvanceResult, error)
+type applyProgressService interface {
+	GetApplyProgress(context.Context, string, string) (governance.ApplyProgressState, error)
+	GetApplyProgressEvidence(context.Context, string, string, string, string) (applyprogress.Batch, error)
+	AdvanceApplyProgress(context.Context, governance.ApplyProgressAdvanceRequest) (governance.ApplyProgressAdvanceResult, error)
 }
 
 func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime, activity *ActivityTracker, prompts PromptStore, gate *project.MigrationGate) {
@@ -87,9 +89,13 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 		}`),
 	}, gateTool(gate, memSaveHandler(store, syncRuntime, activity, prompts)))
 
-	if _, ok := store.(applyProgressStore); ok {
-		s.AddTool(&sdkmcp.Tool{Name: "sdd_apply_progress_get", Description: "Read the guarded v2 SDD apply-progress snapshot.", InputSchema: json.RawMessage(`{"type":"object","required":["project","change"],"properties":{"project":{"type":"string"},"change":{"type":"string"}}}`)}, gateTool(gate, sddApplyProgressGetHandler(store)))
-		s.AddTool(&sdkmcp.Tool{Name: "sdd_apply_progress_advance", Description: "Atomically advance guarded v2 SDD apply progress; retry transport loss with the same request_id.", InputSchema: json.RawMessage(`{"type":"object","required":["project","change","request_id","snapshot","batches"],"properties":{"project":{"type":"string"},"change":{"type":"string"},"request_id":{"type":"string"},"expected_generation":{"type":"integer"},"expected_revision":{"type":"integer"},"expected_digest":{"type":"string"},"snapshot":{"type":"object"},"batches":{"type":"array"}}}`)}, gateTool(gate, sddApplyProgressAdvanceHandler(store)))
+	if database, ok := store.(*db.DB); ok {
+		// Keep the MCP surface on the same governance boundary as HTTP: direct DB
+		// calls would bypass project registration and change-name validation.
+		progress := governance.NewService(database)
+		s.AddTool(&sdkmcp.Tool{Name: "sdd_apply_progress_get", Description: "Read the bounded guarded v2 SDD apply-progress snapshot and head metadata.", InputSchema: json.RawMessage(`{"type":"object","required":["project","change"],"properties":{"project":{"type":"string"},"change":{"type":"string"}}}`)}, gateTool(gate, sddApplyProgressGetHandler(progress)))
+		s.AddTool(&sdkmcp.Tool{Name: "sdd_apply_evidence_get", Description: "Read one canonical bounded apply-evidence batch referenced by the expected current guarded SDD snapshot.", InputSchema: json.RawMessage(`{"type":"object","required":["project","change","batch_id","expected_head_digest"],"properties":{"project":{"type":"string"},"change":{"type":"string"},"batch_id":{"type":"string"},"expected_head_digest":{"type":"string"}}}`)}, gateTool(gate, sddApplyEvidenceGetHandler(progress)))
+		s.AddTool(&sdkmcp.Tool{Name: "sdd_apply_progress_advance", Description: "Atomically advance guarded v2 SDD apply progress; retry transport loss with the same request_id. legacy_source_sha256 is compatibility-only for an exact legacy migration recovery.", InputSchema: json.RawMessage(`{"type":"object","required":["project","change","request_id","snapshot","batches"],"properties":{"project":{"type":"string"},"change":{"type":"string"},"request_id":{"type":"string"},"expected_generation":{"type":"integer"},"expected_revision":{"type":"integer"},"expected_digest":{"type":"string"},"legacy_source_sha256":{"type":"string"},"snapshot":{"type":"object"},"batches":{"type":"array"}}}`)}, gateTool(gate, sddApplyProgressAdvanceHandler(progress)))
 	}
 
 	s.AddTool(&sdkmcp.Tool{
@@ -904,8 +910,8 @@ func writeSlugHyphen(b *strings.Builder, lastWasHyphen *bool) {
 	}
 }
 
-func sddApplyProgressGetHandler(store MemoryStore) sdkmcp.ToolHandler {
-	return func(_ context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+func sddApplyProgressGetHandler(progress applyProgressService) sdkmcp.ToolHandler {
+	return func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
 		var input struct {
 			Project string `json:"project"`
 			Change  string `json:"change"`
@@ -913,11 +919,7 @@ func sddApplyProgressGetHandler(store MemoryStore) sdkmcp.ToolHandler {
 		if err := json.Unmarshal(req.Params.Arguments, &input); err != nil {
 			return toolJSON(map[string]string{"outcome": "invalid", "code": "validation", "recovery": "provide string project and change arguments"})
 		}
-		progress, ok := store.(applyProgressStore)
-		if !ok {
-			return toolJSON(map[string]string{"outcome": "unavailable", "code": "unavailable"})
-		}
-		state, err := progress.GetApplyProgress(input.Project, input.Change)
+		state, err := progress.GetApplyProgress(ctx, input.Project, input.Change)
 		if err != nil {
 			return applyProgressToolError(err)
 		}
@@ -925,17 +927,32 @@ func sddApplyProgressGetHandler(store MemoryStore) sdkmcp.ToolHandler {
 	}
 }
 
-func sddApplyProgressAdvanceHandler(store MemoryStore) sdkmcp.ToolHandler {
-	return func(_ context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+func sddApplyEvidenceGetHandler(progress applyProgressService) sdkmcp.ToolHandler {
+	return func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+		var input struct {
+			Project            string `json:"project"`
+			Change             string `json:"change"`
+			BatchID            string `json:"batch_id"`
+			ExpectedHeadDigest string `json:"expected_head_digest"`
+		}
+		if err := json.Unmarshal(req.Params.Arguments, &input); err != nil {
+			return toolJSON(map[string]string{"outcome": "invalid", "code": "validation", "recovery": "provide string project, change, batch_id, and expected_head_digest arguments"})
+		}
+		batch, err := progress.GetApplyProgressEvidence(ctx, input.Project, input.Change, input.BatchID, input.ExpectedHeadDigest)
+		if err != nil {
+			return applyProgressToolError(err)
+		}
+		return toolJSON(map[string]any{"outcome": "committed", "code": "ok", "batch": batch})
+	}
+}
+
+func sddApplyProgressAdvanceHandler(progress applyProgressService) sdkmcp.ToolHandler {
+	return func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
 		var input db.ApplyProgressAdvance
 		if err := json.Unmarshal(req.Params.Arguments, &input); err != nil {
 			return toolJSON(map[string]string{"outcome": "invalid", "code": "validation", "recovery": "provide a canonical apply-progress request with correct argument types"})
 		}
-		progress, ok := store.(applyProgressStore)
-		if !ok {
-			return toolJSON(map[string]string{"outcome": "unavailable", "code": "unavailable"})
-		}
-		result, err := progress.AdvanceApplyProgress(input)
+		result, err := progress.AdvanceApplyProgress(ctx, input)
 		if err != nil {
 			return applyProgressToolError(err)
 		}
@@ -947,18 +964,36 @@ func sddApplyProgressAdvanceHandler(store MemoryStore) sdkmcp.ToolHandler {
 }
 
 func applyProgressToolError(err error) (*sdkmcp.CallToolResult, error) {
-	code, recovery := "unavailable", "retry the same request ID after the daemon recovers"
+	outcome, code, recovery := "unavailable", "unavailable", "retry the same request ID after the daemon recovers"
 	var capacity *applyprogress.CapacityError
-	if errors.As(err, &capacity) {
-		code, recovery = "capacity", "split evidence at a complete entry boundary"
+	var exhausted *applyprogress.SnapshotCapacityExhaustedError
+	var validation *applyprogress.ValidationError
+	detail := ""
+	if errors.As(err, &exhausted) {
+		outcome, code, recovery, capacity = string(applyprogress.PlanSnapshotCapacityExhausted), string(applyprogress.PlanSnapshotCapacityExhausted), applyprogress.SnapshotCapacityRecovery, exhausted.Capacity
+	} else if errors.As(err, &validation) {
+		outcome, code, recovery, detail = "invalid", string(validation.Code), "repair progress and retry", validation.Detail
+	} else if errors.As(err, &capacity) {
+		outcome, code, recovery = "invalid", "capacity", "split evidence at a complete entry boundary"
 	} else if errors.Is(err, db.ErrApplyProgressRequestConflict) {
-		code, recovery = "request_id_conflict", "use a new request ID for changed content"
+		outcome, code, recovery = "invalid", "request_id_conflict", "use a new request ID for changed content"
 	} else if errors.Is(err, db.ErrApplyProgressBatchCollision) {
-		code, recovery = "batch_collision", "use a new immutable batch ID"
-	} else if errors.Is(err, db.ErrApplyProgressInvalid) || errors.Is(err, db.ErrApplyProgressNotFound) {
-		code, recovery = "validation", "repair progress and retry"
+		outcome, code, recovery = "invalid", "batch_collision", "use a new immutable batch ID"
+	} else if errors.Is(err, db.ErrApplyProgressNotFound) || errors.Is(err, db.ErrApplyProgressEvidenceNotFound) {
+		return toolJSON(map[string]string{"outcome": "not_found", "code": "not_found", "recovery": "initialize apply progress before advancing"})
+	} else if errors.Is(err, governance.ErrProjectNotFound) {
+		return toolJSON(map[string]string{"outcome": "not_found", "code": "project_not_found", "recovery": "select a registered project"})
+	} else if errors.Is(err, db.ErrApplyProgressInvalid) || errors.Is(err, governance.ErrProjectRequired) || errors.Is(err, governance.ErrSDDChangeRequired) || errors.Is(err, governance.ErrSDDChangeInvalid) {
+		outcome, code, recovery = "invalid", "validation", "repair progress and retry"
 	}
-	return toolJSON(map[string]string{"outcome": "invalid", "code": code, "recovery": recovery})
+	response := map[string]any{"outcome": outcome, "code": code, "recovery": recovery}
+	if capacity != nil {
+		response["capacity"] = map[string]any{"document": capacity.Document, "runes": capacity.Runes, "limit": capacity.EffectiveLimit(), "current_runes": capacity.CurrentRunes, "projected_runes": capacity.ProjectedRunes, "ceiling_runes": capacity.CeilingRunes}
+	}
+	if detail != "" {
+		response["detail"] = detail
+	}
+	return toolJSON(response)
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────

@@ -1,6 +1,8 @@
 package applyprogress
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -17,6 +19,26 @@ func TestSealBatchCanonicalAndBounded(t *testing.T) {
 		{
 			name:  "seals canonical batch deterministically",
 			batch: validBatch("<evidence>"),
+		},
+		{
+			name: "accepts imported legacy evidence",
+			batch: func() Batch {
+				batch := validBatch("imported legacy completion")
+				batch.Entries[0].Kind = EvidenceImported
+				batch.Entries[0].Outcome = OutcomeNotRun
+				return batch
+			}(),
+		},
+		{
+			name: "rejects empty evidence batch",
+			batch: Batch{
+				Schema:  EvidenceSchema,
+				Project: "jarvis-dev",
+				Change:  "issue-653",
+				BatchID: "apb-0123456789abcdef0123456789abcdef",
+				Entries: []EvidenceEntry{},
+			},
+			wantErr: ErrInvalidValue,
 		},
 		{
 			name: "rejects invalid batch ID",
@@ -55,7 +77,7 @@ func TestSealBatchCanonicalAndBounded(t *testing.T) {
 	}
 
 	for _, target := range []int{MaxDocumentRunes, MaxDocumentRunes + 1} {
-		t.Run("enforces final rune boundary", func(t *testing.T) {
+		t.Run(documentBoundaryName("batch", target), func(t *testing.T) {
 			batch := validBatch("")
 			_, bytes, err := SealBatch(batch)
 			if err != nil {
@@ -70,8 +92,8 @@ func TestSealBatchCanonicalAndBounded(t *testing.T) {
 				return
 			}
 			var capacity *CapacityError
-			if !errors.As(err, &capacity) || capacity.Runes != target {
-				t.Fatalf("SealBatch() error = %#v, want capacity at %d", err, target)
+			if !errors.As(err, &capacity) || capacity.Document != "evidence batch" || capacity.Runes != target || capacity.Limit != MaxDocumentRunes {
+				t.Fatalf("SealBatch() error = %#v, want evidence batch capacity at %d with limit %d", err, target, MaxDocumentRunes)
 			}
 		})
 	}
@@ -104,7 +126,7 @@ func TestCanonicalDecodingIntegrityAndSnapshotBounds(t *testing.T) {
 	}
 
 	for _, target := range []int{MaxDocumentRunes, MaxDocumentRunes + 1} {
-		t.Run("enforces snapshot rune boundary", func(t *testing.T) {
+		t.Run(documentBoundaryName("snapshot", target), func(t *testing.T) {
 			snapshot := snapshotAtSize(t, target)
 			sealed, bytes, err := SealSnapshot(snapshot)
 			if target == MaxDocumentRunes {
@@ -154,6 +176,89 @@ func TestDecodeCanonicalSnapshot(t *testing.T) {
 	snapshot.Status = StatusComplete
 	if err := VerifySnapshot(snapshot); !errors.Is(err, ErrHashMismatch) {
 		t.Fatalf("VerifySnapshot() error = %v, want %v", err, ErrHashMismatch)
+	}
+}
+
+func TestSnapshotContinuationFieldsAreAtomicAndPreserveIndexZero(t *testing.T) {
+	partial := validSnapshot("")
+	partial.StreamSHA256, partial.NextEntryIndex, partial.NextEntryID = strings.Repeat("c", 64), 0, "next"
+	_, data, err := SealSnapshot(partial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{`"stream_sha256"`, `"next_entry_index":0`, `"next_entry_id"`} {
+		if !strings.Contains(string(data), field) {
+			t.Fatalf("partial snapshot %s omitted required continuation field %s", data, field)
+		}
+	}
+
+	terminal := partial
+	terminal.Status = StatusComplete
+	if _, _, err := SealSnapshot(terminal); !errors.Is(err, ErrInvalidValue) {
+		t.Fatalf("terminal continuation error = %v, want invalid value", err)
+	}
+}
+
+func TestDecodeCanonicalSnapshotAcceptsPreContinuationV2Document(t *testing.T) {
+	legacy := validSnapshot("")
+	legacy, data, err := SealSnapshot(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "stream_sha256") {
+		t.Fatalf("pre-continuation snapshot unexpectedly emitted continuation fields: %s", data)
+	}
+	decoded, err := DecodeCanonicalSnapshot(data)
+	if err != nil || !reflect.DeepEqual(decoded, legacy) {
+		t.Fatalf("DecodeCanonicalSnapshot() = %#v, %v; want %#v, nil", decoded, err, legacy)
+	}
+}
+
+func TestDecodeCanonicalSnapshotAcceptsLiteralHistoricalZeroContinuationFields(t *testing.T) {
+	// This literal was emitted by the pre-continuation v2 encoder. It must never
+	// be regenerated through the current serializer, whose canonical output omits
+	// the three zero continuation fields.
+	const historical = `{"schema":"jarvis.sdd-apply-progress/v2","project":"jarvis-dev","change":"issue-653","generation":0,"revision":0,"previous_digest":"","task_manifest_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"partial","coverage":[],"batches":[{"batch_id":"apb-0123456789abcdef0123456789abcdef","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}],"stream_sha256":"","next_entry_index":0,"next_entry_id":"","digest":"52eee8a57760f4b7a4423d1834f94f662bdff65a57602635b97ae7154b2aca73"}`
+
+	snapshot, err := DecodeCanonicalSnapshot([]byte(historical))
+	if err != nil {
+		t.Fatalf("DecodeCanonicalSnapshot() error = %v", err)
+	}
+	if snapshot.StreamSHA256 != "" || snapshot.NextEntryIndex != 0 || snapshot.NextEntryID != "" {
+		t.Fatalf("historical continuation = %#v, want explicit zero fields", snapshot)
+	}
+	if err := VerifySnapshot(snapshot); err != nil {
+		t.Fatalf("VerifySnapshot() error = %v", err)
+	}
+	reserialized, err := json.Marshal(snapshot)
+	if err != nil || !bytes.Equal(reserialized, []byte(historical)) {
+		t.Fatalf("json.Marshal(decoded historical snapshot) = %s, %v; want exact historical fixture bytes", reserialized, err)
+	}
+	_, current, err := SealSnapshot(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(current), `"stream_sha256"`) {
+		t.Fatalf("new canonical encoding retained historical zero continuation fields: %s", current)
+	}
+}
+
+func TestSnapshotRequiresContinuationUpgradeOnlyForHistoricalWireShape(t *testing.T) {
+	ordinary, _, err := SealSnapshot(validSnapshot(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ordinary.RequiresContinuationUpgrade() {
+		t.Fatalf("new unbound snapshot = %#v, want no continuation upgrade", ordinary)
+	}
+
+	const historical = `{"schema":"jarvis.sdd-apply-progress/v2","project":"jarvis-dev","change":"issue-653","generation":0,"revision":0,"previous_digest":"","task_manifest_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"partial","coverage":[],"batches":[{"batch_id":"apb-0123456789abcdef0123456789abcdef","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}],"stream_sha256":"","next_entry_index":0,"next_entry_id":"","digest":"52eee8a57760f4b7a4423d1834f94f662bdff65a57602635b97ae7154b2aca73"}`
+	decoded, err := DecodeCanonicalSnapshot([]byte(historical))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decoded.RequiresContinuationUpgrade() {
+		t.Fatalf("historical snapshot = %#v, want continuation upgrade", decoded)
 	}
 }
 
@@ -258,6 +363,32 @@ func snapshotAtSize(t *testing.T, target int) Snapshot {
 			return snapshot
 		}
 	}
+}
+
+func documentBoundaryName(document string, target int) string {
+	if target == MaxDocumentRunes {
+		return "accepts " + document + " at exact rune ceiling"
+	}
+	return "rejects " + document + " above rune ceiling"
+}
+
+func historicalSnapshotForTest(t *testing.T, snapshot Snapshot) Snapshot {
+	t.Helper()
+	snapshot.historicalZeroContinuation = true
+	payload, err := canonicalJSON(snapshotPayloadForDigest(snapshot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Digest = digest(payload)
+	data, err := snapshotCanonicalJSON(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeCanonicalSnapshot(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return decoded
 }
 
 func validBatch(summary string) Batch {

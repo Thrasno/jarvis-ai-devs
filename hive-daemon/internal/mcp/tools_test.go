@@ -119,16 +119,47 @@ func decodeJSONResponse(t *testing.T, res *sdkmcp.CallToolResult) map[string]any
 
 // ─── mem_suggest_topic_key ────────────────────────────────────────────────
 
-func TestSddApplyProgressMCPHandlersReturnTypedRecovery(t *testing.T) {
+func TestSddApplyProgressMCPHandlersUseGovernanceProjectValidation(t *testing.T) {
 	store, err := hivedb.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	session := connectTestServer(t, store)
+	body := decodeJSONResponse(t, callTool(t, session, "sdd_apply_progress_get", map[string]any{"project": "missing", "change": "change"}))
+	if body["outcome"] != "not_found" || body["code"] != "project_not_found" {
+		t.Fatalf("response = %#v", body)
+	}
+}
+
+func TestSddApplyProgressMCPUnavailableUsesUnavailableOutcome(t *testing.T) {
+	store, err := hivedb.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := connectTestServer(t, store)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	body := decodeJSONResponse(t, callTool(t, session, "sdd_apply_progress_get", map[string]any{"project": "project", "change": "change"}))
+	if body["outcome"] != "unavailable" || body["code"] != "unavailable" {
+		t.Fatalf("response = %#v", body)
+	}
+}
+
+func TestSddApplyProgressMCPHandlersReturnTypedRecovery(t *testing.T) {
+	store, err := hivedb.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	_, err = store.SaveMemoryWithManualSession(&models.Memory{Project: "project", Title: "project", Content: "registered"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := connectTestServer(t, store)
 
 	for _, args := range []map[string]any{
-		{"project": "project", "change": "change"},
 		{"project": true, "change": "change"},
 		{"project": "project", "change": "change", "request_id": "request", "snapshot": map[string]any{}, "batches": []any{}},
 		{"project": "project", "change": "change", "request_id": true},
@@ -157,10 +188,84 @@ func TestSddApplyProgressMCPHandlersReturnTypedRecovery(t *testing.T) {
 	if body["outcome"] != "committed" || body["receipt"] == nil {
 		t.Fatalf("commit response = %#v", body)
 	}
+	var mutationsBefore int
+	if err := store.RawDB().QueryRow(`SELECT total_changes()`).Scan(&mutationsBefore); err != nil {
+		t.Fatal(err)
+	}
+	body = decodeJSONResponse(t, callTool(t, session, "sdd_apply_progress_get", map[string]any{"project": "project", "change": "change"}))
+	state, ok := body["state"].(map[string]any)
+	if body["outcome"] != "committed" || body["code"] != "ok" || !ok || state["snapshot"] == nil || state["batches"] != nil {
+		t.Fatalf("bounded committed response = %#v", body)
+	}
+	body = decodeJSONResponse(t, callTool(t, session, "sdd_apply_evidence_get", map[string]any{"project": "project", "change": "change", "batch_id": batch.BatchID, "expected_head_digest": snapshot.Digest}))
+	batchBody, ok := body["batch"].(map[string]any)
+	entries, entriesOK := batchBody["entries"].([]any)
+	if body["outcome"] != "committed" || body["code"] != "ok" || !ok || batchBody["batch_id"] != batch.BatchID || !entriesOK || len(entries) != 1 {
+		t.Fatalf("referenced evidence response = %#v", body)
+	}
+	var mutationsAfter int
+	if err := store.RawDB().QueryRow(`SELECT total_changes()`).Scan(&mutationsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if mutationsAfter != mutationsBefore {
+		t.Fatalf("apply-progress MCP GET mutations = %d, want %d", mutationsAfter, mutationsBefore)
+	}
 	advance["request_id"] = "mcp-stale"
 	body = decodeJSONResponse(t, callTool(t, session, "sdd_apply_progress_advance", advance))
 	if body["outcome"] != "conflict" || body["code"] != "stale" || body["recovery"] == "" {
 		t.Fatalf("conflict response = %#v", body)
+	}
+}
+
+func TestSddApplyProgressMCPRejectsUnprovenImportedEvidence(t *testing.T) {
+	store, err := hivedb.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.SaveMemoryWithManualSession(&models.Memory{Project: "project", Title: "project", Content: "registered"}); err != nil {
+		t.Fatal(err)
+	}
+	batch, _, err := applyprogress.SealBatch(applyprogress.Batch{Schema: applyprogress.EvidenceSchema, Project: "project", Change: "change", BatchID: "apb-57575757575757575757575757575757", Entries: []applyprogress.EvidenceEntry{{EntryID: "imported", TaskIDs: []string{}, CompletesTaskIDs: []string{}, Kind: applyprogress.EvidenceImported, Summary: "imported", Command: "legacy import", Outcome: applyprogress.OutcomePass, Files: []string{}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _, err := applyprogress.SealSnapshot(applyprogress.Snapshot{Schema: applyprogress.SnapshotSchema, Project: "project", Change: "change", Generation: 1, Revision: 1, TaskManifestSHA256: strings.Repeat("a", 64), Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{{BatchID: batch.BatchID, SHA256: batch.SHA256}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := decodeJSONResponse(t, callTool(t, connectTestServer(t, store), "sdd_apply_progress_advance", map[string]any{
+		"project": "project", "change": "change", "request_id": "mcp-unproven-import", "legacy_source_sha256": strings.Repeat("a", 64),
+		"snapshot": snapshot, "batches": []applyprogress.Batch{batch},
+	}))
+	if body["outcome"] != "invalid" || body["code"] != "legacy_migration" {
+		t.Fatalf("response = %#v", body)
+	}
+}
+
+func TestSddApplyProgressMCPCapacityIncludesProtocolDiagnostics(t *testing.T) {
+	store, err := hivedb.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.SaveMemoryWithManualSession(&models.Memory{Project: "project", Title: "project", Content: "registered"}); err != nil {
+		t.Fatal(err)
+	}
+	batch := applyprogress.Batch{Schema: applyprogress.EvidenceSchema, Project: "project", Change: "change", BatchID: "apb-68686868686868686868686868686868", Entries: []applyprogress.EvidenceEntry{{EntryID: "entry", TaskIDs: []string{}, CompletesTaskIDs: []string{}, Kind: applyprogress.EvidenceGreen, Summary: strings.Repeat("界", 40_000), Command: "go test", Outcome: applyprogress.OutcomePass, Files: []string{}}}}
+	_, _, err = applyprogress.SealBatch(batch)
+	var capacity *applyprogress.CapacityError
+	if !errors.As(err, &capacity) {
+		t.Fatalf("SealBatch() error = %v, want CapacityError", err)
+	}
+	snapshot, _, err := applyprogress.SealSnapshot(applyprogress.Snapshot{Schema: applyprogress.SnapshotSchema, Project: "project", Change: "change", Generation: 1, Revision: 1, TaskManifestSHA256: strings.Repeat("a", 64), Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := decodeJSONResponse(t, callTool(t, connectTestServer(t, store), "sdd_apply_progress_advance", map[string]any{"project": "project", "change": "change", "request_id": "mcp-capacity", "snapshot": snapshot, "batches": []applyprogress.Batch{batch}}))
+	capacityBody, ok := body["capacity"].(map[string]any)
+	if body["outcome"] != "invalid" || body["code"] != "capacity" || !ok || capacityBody["document"] != capacity.Document || capacityBody["runes"] != float64(capacity.Runes) || capacityBody["limit"] != float64(applyprogress.MaxDocumentRunes) {
+		t.Fatalf("capacity response = %#v, want %+v", body, capacity)
 	}
 }
 

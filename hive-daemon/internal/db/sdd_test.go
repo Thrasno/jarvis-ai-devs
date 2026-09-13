@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -133,6 +134,7 @@ func TestGetApplyProgressFailsClosedForReferencedBatchTopology(t *testing.T) {
 		{
 			name: "corrupt referenced batch",
 			mutate: func(store *DB, topic string) {
+				allowApplyProgressCorruption(t, store)
 				_, err := store.RawDB().Exec(`UPDATE memories SET content = ? WHERE topic_key = ?`, "corrupt", topic)
 				require.NoError(t, err)
 			},
@@ -142,13 +144,18 @@ func TestGetApplyProgressFailsClosedForReferencedBatchTopology(t *testing.T) {
 			mutate: func(store *DB, topic string) {
 				var content string
 				require.NoError(t, store.RawDB().QueryRow(`SELECT content FROM memories WHERE topic_key = ?`, topic).Scan(&content))
-				insertSDDMemory(t, store, "project", &topic, "fork", content, "2026-08-02 10:00:00", false)
+				batch, err := applyprogress.DecodeCanonicalBatch([]byte(content))
+				require.NoError(t, err)
+				batch.Entries[0].Summary = "forked immutable bytes"
+				_, forked, err := applyprogress.SealBatch(batch)
+				require.NoError(t, err)
+				insertSDDMemory(t, store, "project", &topic, "fork", string(forked), "2026-08-02 10:00:00", false)
 			},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			store := openTestDB(t)
-			request := applyProgressRequest(t, "topology-"+tt.name, 0, 0, "", "apb-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+			request := applyProgressRequest(t, "topology-"+strings.ReplaceAll(tt.name, " ", "-"), 0, 0, "", "apb-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 			_, err := store.AdvanceApplyProgress(request)
 			require.NoError(t, err)
 
@@ -172,7 +179,7 @@ func TestGetApplyProgressIgnoresUnreferencedDelayedBatch(t *testing.T) {
 	insertSDDMemory(t, store, "project", &orphan, "delayed", "not canonical evidence", "2026-08-02 10:00:00", false)
 	got, err := store.GetApplyProgress("project", "change")
 	require.NoError(t, err)
-	require.Equal(t, committed.State, got)
+	require.Equal(t, boundedApplyProgressState(committed.State), got)
 }
 
 func deleteSDDTestMemory(t *testing.T, store *DB, topic string) {

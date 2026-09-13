@@ -9,6 +9,7 @@ import (
 	"unicode"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
 )
 
 var (
@@ -33,11 +34,14 @@ type sddStore interface {
 	FetchSDDArtifacts(project, change string, artifacts []string) ([]db.SDDArtifact, error)
 	ListSDDChanges(project string, artifacts []string, after string, limit int) ([]string, error)
 	GetApplyProgress(project, change string) (db.ApplyProgressState, error)
+	GetApplyProgressEvidence(project, change, batchID, expectedHeadDigest string) (applyprogress.Batch, error)
+	GetApplyProgressReceipt(project, change, requestID string) (db.ApplyProgressReceipt, error)
 	AdvanceApplyProgress(db.ApplyProgressAdvance) (db.ApplyProgressAdvanceResult, error)
 }
 
 type ApplyProgressAdvanceRequest = db.ApplyProgressAdvance
 type ApplyProgressState = db.ApplyProgressState
+type ApplyProgressReceipt = db.ApplyProgressReceipt
 type ApplyProgressAdvanceResult = db.ApplyProgressAdvanceResult
 
 // SDDArtifact is the daemon response projection for one known artifact.
@@ -117,6 +121,46 @@ func (s *Service) GetApplyProgress(ctx context.Context, project, change string) 
 		return ApplyProgressState{}, errors.New("SDD store is not configured")
 	}
 	return s.sdd.GetApplyProgress(project, change)
+}
+
+// GetApplyProgressEvidence returns one bounded canonical evidence document only
+// when it is referenced by the current resolved guarded snapshot lineage.
+func (s *Service) GetApplyProgressEvidence(ctx context.Context, project, change, batchID, expectedHeadDigest string) (applyprogress.Batch, error) {
+	project = strings.TrimSpace(project)
+	if project == "" {
+		return applyprogress.Batch{}, ErrProjectRequired
+	}
+	change, err := validateSDDChange(change)
+	if err != nil {
+		return applyprogress.Batch{}, err
+	}
+	if _, err := s.store.GetGovernanceProject(ctx, project); err != nil {
+		return applyprogress.Batch{}, mapProjectError(err)
+	}
+	if s.sdd == nil {
+		return applyprogress.Batch{}, errors.New("SDD store is not configured")
+	}
+	return s.sdd.GetApplyProgressEvidence(project, change, batchID, expectedHeadDigest)
+}
+
+// GetApplyProgressReceipt returns only the identity of a committed request bound
+// to one project and change. It never returns the receipt's stored response.
+func (s *Service) GetApplyProgressReceipt(ctx context.Context, project, change, requestID string) (ApplyProgressReceipt, error) {
+	project = strings.TrimSpace(project)
+	if project == "" {
+		return ApplyProgressReceipt{}, ErrProjectRequired
+	}
+	change, err := validateSDDChange(change)
+	if err != nil {
+		return ApplyProgressReceipt{}, err
+	}
+	if _, err := s.store.GetGovernanceProject(ctx, project); err != nil {
+		return ApplyProgressReceipt{}, mapProjectError(err)
+	}
+	if s.sdd == nil {
+		return ApplyProgressReceipt{}, errors.New("SDD store is not configured")
+	}
+	return s.sdd.GetApplyProgressReceipt(project, change, requestID)
 }
 
 // AdvanceApplyProgress performs the dedicated snapshot CAS operation.

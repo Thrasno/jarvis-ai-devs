@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,6 +38,7 @@ type mockSyncStore struct {
 	markedMemoriesSyncedBySyncID  []string
 	markMemoriesSyncedBySyncIDErr error
 	savedFromRemote               []*models.Memory
+	saveFromRemoteErrors          map[string]error
 	unsyncedPrompts               []*models.Prompt
 	unsyncedPromptsErr            error
 	markedPromptSynced            []string
@@ -57,6 +61,7 @@ type mockSyncStore struct {
 	markMutationsAndMemoriesErr   error
 	appliedRemoteMutations        []db.MutationEnvelope
 	applyRemoteMutationErr        error
+	applyRemoteMutationErrors     map[string]error
 	mutationCursor                db.MutationCursor
 	setMutationCursors            []db.MutationCursor
 	pendingSyncAttempts           []db.SyncAttemptLog
@@ -238,11 +243,16 @@ func (m *mockSyncStore) ListPendingProjectBlockAcks(ctx context.Context, limit i
 func (m *mockSyncStore) SaveFromRemote(mem *models.Memory) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := m.saveFromRemoteErrors[mem.SyncID]; err != nil {
+		return err
+	}
 	m.savedFromRemote = append(m.savedFromRemote, mem)
 	return nil
 }
 
 func (m *mockSyncStore) GetLastSync(project string) (time.Time, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.lastSync, nil
 }
 
@@ -489,6 +499,9 @@ func (m *mockSyncStore) MarkMutationsAndMemoriesSynced(eventIDs []string, syncID
 func (m *mockSyncStore) ApplyRemoteMutation(event db.MutationEnvelope) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := m.applyRemoteMutationErrors[event.EventID]; err != nil {
+		return false, err
+	}
 	if m.applyRemoteMutationErr != nil {
 		return false, m.applyRemoteMutationErr
 	}
@@ -2355,6 +2368,110 @@ func TestSyncer_Sync_TerminalRejectionDoesNotBlockLaterMutation(t *testing.T) {
 	assert.Equal(t, 1, result.MutationsPushed, "terminal rejection is not shared success")
 	assert.Equal(t, []string{"wrong-project"}, store.markedMutationsRejected)
 	assert.Equal(t, []string{"valid-later"}, store.markedMutationsSynced)
+}
+
+func TestSyncer_Sync_LegacyPullRejectsReservedDocumentWithoutAdvancingCursor(t *testing.T) {
+	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	const rejectedSyncID = "reserved-remote-sync"
+	const remoteContent = "secret remote immutable content"
+	store := &mockSyncStore{
+		jwt: "valid-token",
+		saveFromRemoteErrors: map[string]error{
+			rejectedSyncID: &db.RemoteImmutableCreateRejectedError{
+				SyncID: rejectedSyncID, CanonicalProject: "test-project", Topic: "sdd/change/apply-progress/v2",
+				Operation: db.MutationOpCreate, RejectionCode: db.ImmutableRemoteCreateRejectionSyncIDConflict, PayloadDigest: "0123456789abcdef",
+			},
+		},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveProjectBlockInbox(t, w, r) {
+			return
+		}
+		require.Equal(t, "/sync", r.URL.Path)
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pulled: []apiMemory{
+			{SyncID: rejectedSyncID, Project: "test-project", Content: remoteContent},
+			{SyncID: "valid-later-sync", Project: "test-project", Content: "safe content"},
+		}, PulledHasMore: true, NextPullCursor: &PullCursor{SyncID: "must-not-advance"}}))
+	}))
+	defer server.Close()
+
+	var logs bytes.Buffer
+	logger.Log.SetOutput(&logs)
+	t.Cleanup(func() { logger.Log.SetOutput(os.Stderr) })
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now: func() time.Time { return now }, jitter: func(time.Duration) time.Duration { return 0 },
+	})
+
+	result, err := syncer.Sync(context.Background(), "test-project")
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.NotContains(t, err.Error(), remoteContent)
+	store.mu.Lock()
+	require.Empty(t, store.savedFromRemote, "later remote content must not be applied")
+	require.Empty(t, store.setPullCursorCalls, "pull cursor must not advance after rejection")
+	require.Empty(t, store.clearPullCursorCalls, "pull cursor must not clear after rejection")
+	store.mu.Unlock()
+	require.NotContains(t, logs.String(), remoteContent)
+}
+
+func TestSyncer_Sync_SkipsSanitizedImmutableCreateRejectionAndAdvancesCursor(t *testing.T) {
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	const rejectedEventID = "malformed-immutable-event"
+	const remoteContent = "secret remote immutable content"
+	store := &mockSyncStore{
+		jwt: "valid-token",
+		applyRemoteMutationErrors: map[string]error{
+			rejectedEventID: &db.RemoteImmutableCreateRejectedError{
+				EventID:          rejectedEventID,
+				CanonicalProject: "test-project",
+				Topic:            "sdd/change/apply-progress/v2",
+				Operation:        db.MutationOpCreate,
+				RejectionCode:    db.ImmutableRemoteCreateRejectionInvalidDocument,
+				PayloadDigest:    "0123456789abcdef",
+			},
+		},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveProjectBlockInbox(t, w, r) {
+			return
+		}
+		require.Equal(t, "/sync", r.URL.Path)
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{
+			CompatibilityMode:  compatibilityModeMutationV2,
+			NextMutationCursor: &db.MutationCursor{Sequence: 12, EventID: "valid-later-event"},
+			PulledMutations: []db.MutationEnvelope{
+				{EventID: rejectedEventID, EntityType: "memory", EntitySyncID: "immutable-sync", Project: "test-project", Op: db.MutationOpCreate, Sequence: 11, OccurredAt: now, Memory: &db.MutationMemoryPayload{Content: remoteContent}},
+				{EventID: "valid-later-event", EntityType: "memory", EntitySyncID: "valid-sync", Project: "test-project", Op: db.MutationOpDelete, Sequence: 12, OccurredAt: now},
+			},
+		}))
+	}))
+	defer server.Close()
+
+	var logs bytes.Buffer
+	logger.Log.SetOutput(&logs)
+	t.Cleanup(func() { logger.Log.SetOutput(os.Stderr) })
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return now },
+		jitter: func(time.Duration) time.Duration { return 0 },
+	})
+
+	result, err := syncer.Sync(context.Background(), "test-project")
+
+	require.NoError(t, err)
+	require.Equal(t, 1, result.MutationsPulled)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	require.Equal(t, []db.MutationEnvelope{{EventID: "valid-later-event", EntityType: "memory", EntitySyncID: "valid-sync", Project: "test-project", Op: db.MutationOpDelete, Sequence: 12, OccurredAt: now}}, store.appliedRemoteMutations)
+	require.Equal(t, []db.MutationCursor{{Sequence: 12, EventID: "valid-later-event"}}, store.setMutationCursors)
+	logged := logs.String()
+	require.Contains(t, logged, `event_id="malformed-immutable-event"`)
+	require.Contains(t, logged, `canonical_project="test-project"`)
+	require.Contains(t, logged, `topic="sdd/change/apply-progress/v2"`)
+	require.Contains(t, logged, `operation="create"`)
+	require.Contains(t, logged, `rejection_code="invalid_document"`)
+	require.Contains(t, logged, `payload_digest="0123456789abcdef"`)
+	require.NotContains(t, logged, remoteContent)
 }
 
 func TestSyncer_Sync_DoesNotAdvanceMutationCursorWhenPulledApplyFails(t *testing.T) {

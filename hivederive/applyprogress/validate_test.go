@@ -2,6 +2,7 @@ package applyprogress
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -51,6 +52,17 @@ func TestValidateProgress(t *testing.T) {
 		{"rejects referenced hash mismatch", func(s *Snapshot, _ map[string][]byte) { s.Batches[0].SHA256 = strings.Repeat("d", 64) }, nil, CodeCorruptBatch},
 		{"rejects duplicate completed task", nil, func(b *Batch) { b.Entries[1].TaskIDs, b.Entries[1].CompletesTaskIDs = []string{"1.1"}, []string{"1.1"} }, CodeDuplicateEvidence},
 		{"rejects duplicate entry ID", nil, func(b *Batch) { b.Entries[1].EntryID = b.Entries[0].EntryID }, CodeDuplicateEvidence},
+		{"rejects duplicate entry ID across batches", func(s *Snapshot, batches map[string][]byte) {
+			batch := mustBatch(t, batches)
+			batch.BatchID = "apb-ffffffffffffffffffffffffffffffff"
+			batch.Entries = batch.Entries[:1]
+			sealed, raw, err := SealBatch(batch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.Batches = append(s.Batches, BatchRef{BatchID: sealed.BatchID, SHA256: sealed.SHA256})
+			batches[sealed.BatchID] = raw
+		}, nil, CodeDuplicateEvidence},
 		{"rejects unknown attribution", nil, func(b *Batch) { b.Entries[1].TaskIDs = []string{"unknown"} }, CodeInvalidCoverage},
 		{"rejects repeated attribution", nil, func(b *Batch) { b.Entries[1].TaskIDs = []string{"1.2", "1.2"} }, CodeInvalidCoverage},
 		{"rejects completion without attribution", nil, func(b *Batch) { b.Entries[1].CompletesTaskIDs = []string{"1.1"} }, CodeInvalidCoverage},
@@ -59,7 +71,11 @@ func TestValidateProgress(t *testing.T) {
 		{"rejects batch change mismatch", nil, func(b *Batch) { b.Change = "other" }, CodeCorruptBatch},
 		{"rejects batch identity mismatch", nil, func(b *Batch) { b.BatchID = "apb-ffffffffffffffffffffffffffffffff" }, CodeCorruptBatch},
 		{"rejects changed task manifest", func(s *Snapshot, _ map[string][]byte) { s.TaskManifestSHA256 = strings.Repeat("c", 64) }, nil, CodeTaskManifestMismatch},
-		{"rejects partial claiming complete coverage", func(s *Snapshot, _ map[string][]byte) { s.Status = StatusPartial }, nil, CodeInvalidCoverage},
+		{"rejects partial claiming complete coverage without continuation", func(s *Snapshot, _ map[string][]byte) { s.Status = StatusPartial }, nil, CodeInvalidCoverage},
+		{"accepts partial full coverage with continuation", func(s *Snapshot, _ map[string][]byte) {
+			s.Status = StatusPartial
+			s.StreamSHA256, s.NextEntryIndex, s.NextEntryID = strings.Repeat("a", 64), 1, "trailing"
+		}, nil, ""},
 		{"rejects complete with incomplete coverage", func(s *Snapshot, _ map[string][]byte) { s.Coverage = s.Coverage[:1] }, func(b *Batch) { b.Entries[1].CompletesTaskIDs = []string{} }, CodeInvalidCoverage},
 		{"accepts valid partial coverage", func(s *Snapshot, _ map[string][]byte) { s.Coverage = s.Coverage[:1]; s.Status = StatusPartial }, func(b *Batch) { b.Entries[1].CompletesTaskIDs = []string{} }, ""},
 		{"ignores corrupt orphan batch", func(_ *Snapshot, batches map[string][]byte) {
@@ -92,6 +108,22 @@ func TestValidateProgress(t *testing.T) {
 				t.Fatalf("ValidateProgress() error = %#v, want code %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestValidationErrorsIdentifyInvalidTaskAndReferencedBatch(t *testing.T) {
+	_, _, err := TaskManifest([]Task{{ID: "not a valid ID", Text: "task"}})
+	var invalidTask *ValidationError
+	if !errors.As(err, &invalidTask) || invalidTask.Code != CodeInvalidTask || invalidTask.Detail != "task 0" {
+		t.Fatalf("TaskManifest() error = %#v, want invalid task 0", err)
+	}
+
+	snapshot, tasks, batches := validatedFixture(t)
+	delete(batches, snapshot.Batches[0].BatchID)
+	err = ValidateProgress(mustSnapshot(t, snapshot), tasks, batches)
+	var missing *ValidationError
+	if !errors.As(err, &missing) || missing.Code != CodeMissingBatch || missing.Detail != snapshot.Batches[0].BatchID {
+		t.Fatalf("ValidateProgress() error = %#v, want missing batch detail", err)
 	}
 }
 
@@ -164,6 +196,15 @@ func validatedFixture(t *testing.T) (Snapshot, []Task, map[string][]byte) {
 	return snapshot, tasks, map[string][]byte{batch.BatchID: raw}
 }
 
+func mustSnapshot(t *testing.T, snapshot Snapshot) []byte {
+	t.Helper()
+	_, raw, err := SealSnapshot(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
 func mustBatch(t *testing.T, batches map[string][]byte) Batch {
 	t.Helper()
 	for _, raw := range batches {
@@ -184,4 +225,367 @@ func replaceReferencedBatch(t *testing.T, snapshot *Snapshot, batches map[string
 	}
 	snapshot.Batches[0].SHA256 = sealed.SHA256
 	batches[snapshot.Batches[0].BatchID] = raw
+}
+
+func TestValidateSuccessorAcceptsOnlyLegacyEpochTransitionsBeforeContinuation(t *testing.T) {
+	_, manifest, err := TaskManifest([]Task{{ID: "1", Text: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	predecessor, _, err := SealSnapshot(Snapshot{Schema: SnapshotSchema, Project: "jarvis", Change: "change", Generation: 1, Revision: 1, TaskManifestSHA256: manifest, Status: StatusPartial, Coverage: []Coverage{}, Batches: []BatchRef{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, _, err := SealBatch(Batch{Schema: EvidenceSchema, Project: "jarvis", Change: "change", BatchID: "apb-00000000000000000000000000000001", Entries: []EvidenceEntry{{EntryID: "legacy-1", TaskIDs: []string{}, CompletesTaskIDs: []string{}, Kind: EvidenceGreen, Summary: "legacy", Command: "import", Outcome: OutcomePass, Files: []string{}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacySuccessor := cloneSnapshot(predecessor)
+	legacySuccessor.Generation, legacySuccessor.Revision, legacySuccessor.PreviousDigest = 2, 2, predecessor.Digest
+	legacySuccessor.Batches = []BatchRef{{BatchID: batch.BatchID, SHA256: batch.SHA256}}
+	legacySuccessor, _, err = SealSnapshot(legacySuccessor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSuccessor(predecessor, legacySuccessor, map[string]Batch{batch.BatchID: batch}); err != nil {
+		t.Fatalf("legacy-v2 epoch transition = %v", err)
+	}
+	imported := batch
+	imported.Entries[0].Kind = EvidenceImported
+	imported, _, err = SealBatch(imported)
+	if err != nil {
+		t.Fatal(err)
+	}
+	importedSuccessor := cloneSnapshot(legacySuccessor)
+	importedSuccessor.Batches[0].SHA256 = imported.SHA256
+	importedSuccessor, _, err = SealSnapshot(importedSuccessor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSuccessor(predecessor, importedSuccessor, map[string]Batch{imported.BatchID: imported}); !errors.Is(err, ErrInvalidValue) {
+		t.Fatalf("imported v2 successor error = %v, want invalid successor", err)
+	} else {
+		var validation *ValidationError
+		if !errors.As(err, &validation) || validation.Code != CodeLegacyMigration {
+			t.Fatalf("imported v2 successor validation = %#v, want legacy migration", err)
+		}
+	}
+
+	upgraded := cloneSnapshot(legacySuccessor)
+	upgraded.Revision, upgraded.PreviousDigest = 3, legacySuccessor.Digest
+	upgraded.StreamSHA256, upgraded.NextEntryIndex, upgraded.NextEntryID = strings.Repeat("a", 64), 0, "entry-1"
+	upgraded, _, err = SealSnapshot(upgraded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSuccessor(legacySuccessor, upgraded, map[string]Batch{}); err != nil {
+		t.Fatalf("continuation upgrade after legacy epoch = %v", err)
+	}
+
+	changedEpoch := cloneSnapshot(upgraded)
+	changedEpoch.Generation, changedEpoch.Revision, changedEpoch.PreviousDigest = 3, 4, upgraded.Digest
+	changedEpoch, _, err = SealSnapshot(changedEpoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSuccessor(upgraded, changedEpoch, map[string]Batch{}); err == nil {
+		t.Fatal("accepted epoch change after continuation identity exists")
+	}
+}
+
+func TestValidateSuccessorPreservesPriorCoverageAcrossManifestOrderedInsertion(t *testing.T) {
+	tasks := []Task{{ID: "1", Text: "first"}, {ID: "2", Text: "second"}, {ID: "3", Text: "third"}}
+	entries := []EvidenceEntry{
+		planEntry("third", "3", strings.Repeat("x", 21000)),
+		planEntry("first", "1", strings.Repeat("x", 21000)),
+		planEntry("second", "2", strings.Repeat("x", 21000)),
+	}
+	first, err := PlanCheckpoint(PlanInput{Project: "jarvis", Change: "change", Tasks: tasks, Entries: entries, EntryID: "third", BatchID: planBatchID(91)})
+	if err != nil || first.Outcome != PlanContinuationRequired {
+		t.Fatalf("first checkpoint = %#v, %v", first, err)
+	}
+	second, err := PlanCheckpoint(PlanInput{Project: "jarvis", Change: "change", Base: &first.Snapshot, Tasks: tasks, Entries: entries, EntryIndex: first.NextEntryIndex, EntryID: first.NextEntryID, StreamSHA256: first.StreamSHA256, BatchID: planBatchID(92)})
+	if err != nil || second.Outcome != PlanContinuationRequired {
+		t.Fatalf("second checkpoint = %#v, %v", second, err)
+	}
+	if got, want := second.Snapshot.Coverage, []Coverage{{TaskID: "1", BatchID: second.Batch.BatchID, EntryID: "first"}, {TaskID: "3", BatchID: first.Batch.BatchID, EntryID: "third"}}; !slices.Equal(got, want) {
+		t.Fatalf("manifest-ordered coverage = %#v, want %#v", got, want)
+	}
+	if err := ValidateSuccessor(first.Snapshot, second.Snapshot, map[string]Batch{first.Batch.BatchID: first.Batch, second.Batch.BatchID: second.Batch}); err != nil {
+		t.Fatalf("manifest-ordered insertion successor = %v", err)
+	}
+
+	for _, name := range []string{"dropped", "changed", "duplicated"} {
+		t.Run(name, func(t *testing.T) {
+			invalidSuccessor := cloneSnapshot(second.Snapshot)
+			switch name {
+			case "dropped":
+				invalidSuccessor.Coverage = invalidSuccessor.Coverage[:1]
+			case "changed":
+				invalidSuccessor.Coverage[1].EntryID = "rewritten"
+			case "duplicated":
+				invalidSuccessor.Coverage = append(invalidSuccessor.Coverage, first.Snapshot.Coverage[0])
+			}
+			invalidSuccessor, _, err = SealSnapshot(invalidSuccessor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := ValidateSuccessor(first.Snapshot, invalidSuccessor, map[string]Batch{first.Batch.BatchID: first.Batch, second.Batch.BatchID: second.Batch}); !errors.Is(err, ErrInvalidValue) {
+				t.Fatalf("%s successor error = %v, want invalid successor", name, err)
+			}
+		})
+	}
+}
+
+func TestValidateSuccessorBindsCursorToAppendedEvidence(t *testing.T) {
+	tasks := []Task{{ID: "1", Text: "one"}, {ID: "2", Text: "two"}, {ID: "3", Text: "three"}}
+	entries := []EvidenceEntry{
+		planEntry("e1", "1", strings.Repeat("x", 21000)),
+		planEntry("e2", "2", strings.Repeat("x", 21000)),
+		planEntry("e3", "3", strings.Repeat("x", 21000)),
+	}
+	first, err := PlanCheckpoint(PlanInput{Project: "jarvis", Change: "change", Tasks: tasks, Entries: entries, EntryID: "e1", BatchID: planBatchID(72)})
+	if err != nil || first.Outcome != PlanContinuationRequired {
+		t.Fatalf("first checkpoint = %#v, %v", first, err)
+	}
+	second, err := PlanCheckpoint(PlanInput{Project: "jarvis", Change: "change", Base: &first.Snapshot, Tasks: tasks, Entries: entries, EntryIndex: first.NextEntryIndex, EntryID: first.NextEntryID, StreamSHA256: first.StreamSHA256, BatchID: planBatchID(73)})
+	if err != nil || second.Outcome != PlanContinuationRequired {
+		t.Fatalf("second checkpoint = %#v, %v", second, err)
+	}
+	batches := map[string]Batch{second.Batch.BatchID: second.Batch}
+	if err := ValidateSuccessor(first.Snapshot, second.Snapshot, batches); err != nil {
+		t.Fatalf("ValidateSuccessor() valid continuation error = %v", err)
+	}
+
+	for _, tt := range []struct {
+		name string
+		edit func(*Snapshot)
+	}{
+		{"cursor only", func(s *Snapshot) { s.Batches = slices.Clone(first.Snapshot.Batches) }},
+		{"over advance", func(s *Snapshot) { s.NextEntryIndex, s.NextEntryID = 3, "e3" }},
+		{"under advance", func(s *Snapshot) { s.NextEntryIndex, s.NextEntryID = 1, "e2" }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			successor := cloneSnapshot(second.Snapshot)
+			tt.edit(&successor)
+			sealed, _, err := SealSnapshot(successor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := ValidateSuccessor(first.Snapshot, sealed, batches); !errors.Is(err, ErrInvalidValue) {
+				t.Fatalf("ValidateSuccessor() error = %v, want invalid successor", err)
+			}
+		})
+	}
+
+	prior := cloneSnapshot(first.Snapshot)
+	prior.NextEntryID = "e1"
+	prior, _, err = SealSnapshot(prior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mismatched := cloneSnapshot(second.Snapshot)
+	mismatched.PreviousDigest = prior.Digest
+	mismatched, _, err = SealSnapshot(mismatched)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSuccessor(prior, mismatched, batches); !errors.Is(err, ErrInvalidValue) {
+		t.Fatalf("ValidateSuccessor() prior next ID error = %v, want invalid successor", err)
+	}
+
+	terminal, err := PlanCheckpoint(PlanInput{Project: "jarvis", Change: "change", Base: &second.Snapshot, Tasks: tasks, Entries: entries, EntryIndex: second.NextEntryIndex, EntryID: second.NextEntryID, StreamSHA256: second.StreamSHA256, BatchID: planBatchID(74)})
+	if err != nil || terminal.Outcome != PlanCommitted {
+		t.Fatalf("terminal checkpoint = %#v, %v", terminal, err)
+	}
+	if err := ValidateSuccessor(second.Snapshot, terminal.Snapshot, map[string]Batch{first.Batch.BatchID: first.Batch, second.Batch.BatchID: second.Batch, terminal.Batch.BatchID: terminal.Batch}); err != nil {
+		t.Fatalf("ValidateSuccessor() terminal successor error = %v", err)
+	}
+}
+
+func TestValidateSuccessorRejectsImmutableLifecycleMutations(t *testing.T) {
+	tasks := []Task{{ID: "1", Text: "one"}, {ID: "2", Text: "two"}, {ID: "3", Text: "three"}}
+	entries := []EvidenceEntry{
+		planEntry("e1", "1", strings.Repeat("x", 21000)),
+		planEntry("e2", "2", strings.Repeat("x", 21000)),
+		planEntry("e3", "3", strings.Repeat("x", 21000)),
+	}
+	first, err := PlanCheckpoint(PlanInput{Project: "jarvis", Change: "change", Tasks: tasks, Entries: entries, EntryID: "e1", BatchID: planBatchID(70)})
+	if err != nil || first.Outcome != PlanContinuationRequired {
+		t.Fatalf("first checkpoint = %#v, %v", first, err)
+	}
+	second, err := PlanCheckpoint(PlanInput{Project: "jarvis", Change: "change", Base: &first.Snapshot, Tasks: tasks, Entries: entries, EntryIndex: first.NextEntryIndex, EntryID: first.NextEntryID, StreamSHA256: first.StreamSHA256, BatchID: planBatchID(71)})
+	if err != nil || second.Outcome != PlanContinuationRequired {
+		t.Fatalf("second checkpoint = %#v, %v", second, err)
+	}
+
+	for _, tt := range []struct {
+		name string
+		edit func(*Snapshot)
+	}{
+		{"task manifest", func(s *Snapshot) { s.TaskManifestSHA256 = strings.Repeat("a", 64) }},
+		{"stream hash", func(s *Snapshot) { s.StreamSHA256 = strings.Repeat("b", 64) }},
+		{"prior continuation cursor", func(s *Snapshot) {
+			s.NextEntryIndex, s.NextEntryID = first.Snapshot.NextEntryIndex, first.Snapshot.NextEntryID
+		}},
+		{"batch prefix", func(s *Snapshot) { s.Batches[0].SHA256 = strings.Repeat("c", 64) }},
+		{"coverage prefix", func(s *Snapshot) { s.Coverage[0].EntryID = "other" }},
+		{"terminal partial status", func(s *Snapshot) {
+			s.Status, s.StreamSHA256, s.NextEntryIndex, s.NextEntryID = StatusComplete, "", 0, ""
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			successor := cloneSnapshot(second.Snapshot)
+			tt.edit(&successor)
+			sealed, _, err := SealSnapshot(successor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := ValidateSuccessor(first.Snapshot, sealed, map[string]Batch{second.Batch.BatchID: second.Batch}); !errors.Is(err, ErrInvalidValue) {
+				t.Fatalf("ValidateSuccessor() error = %v, want invalid successor", err)
+			}
+		})
+	}
+}
+
+func TestValidateSuccessorAllowsOnlyPreContinuationIdentityUpgrade(t *testing.T) {
+	tasks := []Task{{ID: "1.1", Text: "imported"}, {ID: "1.2", Text: "pending"}}
+	_, manifest, err := TaskManifest(tasks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, _, err := SealSnapshot(Snapshot{
+		Schema: SnapshotSchema, Project: "jarvis", Change: "change", Generation: 4, Revision: 8,
+		TaskManifestSHA256: manifest, Status: StatusPartial,
+		Coverage: []Coverage{{TaskID: "1.1", BatchID: "apb-0123456789abcdef0123456789abcdef", EntryID: "imported-1"}},
+		Batches:  []BatchRef{{BatchID: "apb-0123456789abcdef0123456789abcdef", SHA256: strings.Repeat("a", 64)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base = historicalSnapshotForTest(t, base)
+	entries := []EvidenceEntry{planEntry("entry-1", "1.2", "evidence")}
+	stream, err := StreamSHA256(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	successor, err := UpgradeLegacyContinuation(base, tasks, entries, stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSuccessor(base, successor, nil); err != nil {
+		t.Fatalf("ValidateSuccessor() valid continuation identity upgrade: %v", err)
+	}
+	if successor.Generation != base.Generation || successor.Revision != base.Revision+1 || successor.PreviousDigest != base.Digest {
+		t.Fatalf("successor CAS identity = %#v, base = %#v", successor, base)
+	}
+
+	for _, tt := range []struct {
+		name string
+		edit func(*Snapshot)
+	}{
+		{name: "appended evidence", edit: func(s *Snapshot) {
+			s.Batches = append(s.Batches, BatchRef{BatchID: "apb-0123456789abcdef0123456789abcdef", SHA256: strings.Repeat("a", 64)})
+		}},
+		{name: "coverage mutation", edit: func(s *Snapshot) {
+			s.Coverage = append(s.Coverage, Coverage{TaskID: "1.2", BatchID: "apb-0123456789abcdef0123456789abcdef", EntryID: "entry-1"})
+		}},
+		{name: "status mutation", edit: func(s *Snapshot) {
+			s.Status = StatusComplete
+			s.StreamSHA256, s.NextEntryIndex, s.NextEntryID = "", 0, ""
+		}},
+		{name: "manifest mutation", edit: func(s *Snapshot) { s.TaskManifestSHA256 = strings.Repeat("b", 64) }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			candidate := cloneSnapshot(successor)
+			tt.edit(&candidate)
+			candidate, _, err = SealSnapshot(candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := ValidateSuccessor(base, candidate, nil); !errors.Is(err, ErrInvalidValue) {
+				t.Fatalf("ValidateSuccessor() error = %v, want rejected mutation", err)
+			}
+		})
+	}
+}
+
+func TestValidateSuccessorAcceptsHistoricalMultiRevisionLegacyEpochLineage(t *testing.T) {
+	_, manifest, err := TaskManifest([]Task{{ID: "1", Text: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := func(id, entry string) Batch {
+		t.Helper()
+		sealed, _, sealErr := SealBatch(Batch{
+			Schema: EvidenceSchema, Project: "jarvis", Change: "change", BatchID: id,
+			Entries: []EvidenceEntry{{EntryID: entry, TaskIDs: []string{}, CompletesTaskIDs: []string{}, Kind: EvidenceGreen, Summary: "evidence", Command: "go test", Outcome: OutcomePass, Files: []string{}}},
+		})
+		if sealErr != nil {
+			t.Fatal(sealErr)
+		}
+		return sealed
+	}
+	first, _, err := SealSnapshot(Snapshot{Schema: SnapshotSchema, Project: "jarvis", Change: "change", Generation: 1, Revision: 1, TaskManifestSHA256: manifest, Status: StatusPartial, Coverage: []Coverage{}, Batches: []BatchRef{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondBatch := batch("apb-11111111111111111111111111111111", "legacy-2")
+	second, _, err := SealSnapshot(Snapshot{Schema: SnapshotSchema, Project: "jarvis", Change: "change", Generation: 2, Revision: 2, PreviousDigest: first.Digest, TaskManifestSHA256: manifest, Status: StatusPartial, Coverage: []Coverage{}, Batches: []BatchRef{{BatchID: secondBatch.BatchID, SHA256: secondBatch.SHA256}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thirdBatch := batch("apb-22222222222222222222222222222222", "legacy-3")
+	third, _, err := SealSnapshot(Snapshot{Schema: SnapshotSchema, Project: "jarvis", Change: "change", Generation: 3, Revision: 3, PreviousDigest: second.Digest, TaskManifestSHA256: manifest, Status: StatusPartial, Coverage: []Coverage{}, Batches: append(slices.Clone(second.Batches), BatchRef{BatchID: thirdBatch.BatchID, SHA256: thirdBatch.SHA256})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	batches := map[string]Batch{secondBatch.BatchID: secondBatch, thirdBatch.BatchID: thirdBatch}
+	if err := ValidateSuccessor(first, second, batches); err != nil {
+		t.Fatalf("first historical legacy successor = %v", err)
+	}
+	if err := ValidateSuccessor(second, third, batches); err != nil {
+		t.Fatalf("second historical legacy successor = %v", err)
+	}
+
+	badHash := cloneSnapshot(third)
+	badHash.Batches[len(badHash.Batches)-1].SHA256 = strings.Repeat("f", 64)
+	badHash, _, err = SealSnapshot(badHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSuccessor(second, badHash, batches); !errors.Is(err, ErrInvalidValue) {
+		t.Fatalf("historical successor with rewritten batch hash error = %v, want invalid transition", err)
+	}
+
+	mixed := cloneSnapshot(third)
+	mixed.Generation, mixed.Revision, mixed.PreviousDigest = third.Generation+1, third.Revision+1, third.Digest
+	mixed.StreamSHA256, mixed.NextEntryIndex, mixed.NextEntryID = strings.Repeat("a", 64), 0, "entry-1"
+	mixed, _, err = SealSnapshot(mixed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSuccessor(third, mixed, batches); !errors.Is(err, ErrInvalidValue) {
+		t.Fatalf("mixed legacy/continuation successor error = %v, want invalid transition", err)
+	}
+}
+
+func TestValidateSuccessorRejectsHistoricalLegacyEpochNoOp(t *testing.T) {
+	_, manifest, err := TaskManifest([]Task{{ID: "1", Text: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous, _, err := SealSnapshot(Snapshot{Schema: SnapshotSchema, Project: "jarvis", Change: "change", Generation: 1, Revision: 1, TaskManifestSHA256: manifest, Status: StatusPartial, Coverage: []Coverage{}, Batches: []BatchRef{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	successor := cloneSnapshot(previous)
+	successor.Generation, successor.Revision, successor.PreviousDigest = 2, 2, previous.Digest
+	successor, _, err = SealSnapshot(successor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSuccessor(previous, successor, map[string]Batch{}); !errors.Is(err, ErrInvalidValue) {
+		t.Fatalf("historical legacy no-op successor error = %v, want invalid transition", err)
+	}
 }

@@ -472,20 +472,43 @@ func TestSddArchiveCommandRejectsNoncanonicalRootBeforeArchive(t *testing.T) {
 	workspace := canonicalSddTestPath(t, t.TempDir())
 	change := "issue-653"
 	validatedRoot := filepath.Join(workspace, "openspec", "changes", change)
+	if err := os.MkdirAll(validatedRoot, 0o755); err != nil {
+		t.Fatalf("create validated change root: %v", err)
+	}
 	for name, content := range map[string]string{
-		"proposal.md":       "proposal",
-		"spec.md":           "spec",
-		"design.md":         "design",
-		"tasks.md":          "- [x] T1\n",
-		"apply-progress.md": "status: complete\n",
-		"verify-report.md":  "All checks passed.\n",
+		"proposal.md":      "proposal",
+		"spec.md":          "spec",
+		"design.md":        "design",
+		"tasks.md":         "- [x] 1.1 task\n",
+		"verify-report.md": "All checks passed.\n",
 	} {
-		if err := os.MkdirAll(validatedRoot, 0o755); err != nil {
-			t.Fatalf("create validated change root: %v", err)
-		}
 		if err := os.WriteFile(filepath.Join(validatedRoot, name), []byte(content), 0o600); err != nil {
 			t.Fatalf("write %s: %v", name, err)
 		}
+	}
+
+	request := progressRequest(t, "archive-ready", "apb-00000000000000000000000000000001", 1, "")
+	request.Batches[0].Entries[0].TaskIDs = []string{"1.1"}
+	request.Batches[0].Entries[0].CompletesTaskIDs = []string{"1.1"}
+	var err error
+	request.Batches[0], _, err = applyprogress.SealBatch(request.Batches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, manifest, err := applyprogress.TaskManifest([]applyprogress.Task{{ID: "1.1", Text: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Snapshot.Status = applyprogress.StatusComplete
+	request.Snapshot.TaskManifestSHA256 = manifest
+	request.Snapshot.Coverage = []applyprogress.Coverage{{TaskID: "1.1", BatchID: request.Batches[0].BatchID, EntryID: "entry"}}
+	request.Snapshot.Batches[0].SHA256 = request.Batches[0].SHA256
+	request.Snapshot, _, err = applyprogress.SealSnapshot(request.Snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (sddprogress.OpenSpec{Root: validatedRoot}).Advance(request); err != nil {
+		t.Fatalf("persist complete OpenSpec progress: %v", err)
 	}
 
 	noncanonicalRoot := filepath.Join(workspace, "unrelated", "other", "change")
@@ -493,13 +516,14 @@ func TestSddArchiveCommandRejectsNoncanonicalRootBeforeArchive(t *testing.T) {
 		t.Fatalf("create noncanonical change root: %v", err)
 	}
 	t.Setenv("JARVIS_SDD_STORE_MODE", "openspec")
+
 	archived := false
 	command := newSddArchiveCommand(func(string) sddArchiver {
 		return archiveFunc(func(string) error { archived = true; return nil })
 	}, archiveStatus)
-	command.SetArgs([]string{"--root", noncanonicalRoot, "--destination", filepath.Join(t.TempDir(), "archive")})
+	command.SetArgs([]string{"--root", noncanonicalRoot, "--destination", filepath.Join(workspace, "openspec", "archive", "other")})
 
-	err := command.Execute()
+	err = command.Execute()
 	if err == nil || !strings.Contains(err.Error(), "canonical OpenSpec change root") {
 		t.Fatalf("archive with noncanonical root error = %v, want canonical-root rejection", err)
 	}
@@ -510,7 +534,7 @@ func TestSddArchiveCommandRejectsNoncanonicalRootBeforeArchive(t *testing.T) {
 	command = newSddArchiveCommand(func(string) sddArchiver {
 		return archiveFunc(func(string) error { archived = true; return nil })
 	}, archiveStatus)
-	command.SetArgs([]string{"--root", validatedRoot, "--destination", filepath.Join(t.TempDir(), "archive")})
+	command.SetArgs([]string{"--root", validatedRoot, "--destination", filepath.Join(workspace, "openspec", "archive", change)})
 	if err := command.Execute(); err != nil {
 		t.Fatalf("archive with canonical root: %v", err)
 	}
