@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
 )
 
 const (
@@ -95,6 +97,48 @@ type SDDPageRequest struct {
 type SDDChangePage struct {
 	Changes    []string `json:"changes"`
 	NextCursor string   `json:"next_cursor,omitempty"`
+}
+
+type ApplyProgressState struct {
+	Generation uint64                 `json:"generation"`
+	Revision   uint64                 `json:"revision"`
+	Digest     string                 `json:"digest"`
+	Snapshot   applyprogress.Snapshot `json:"snapshot"`
+}
+
+type ApplyProgressAdvanceRequest struct {
+	Project            string                 `json:"project"`
+	Change             string                 `json:"change"`
+	RequestID          string                 `json:"request_id"`
+	ExpectedGeneration uint64                 `json:"expected_generation"`
+	ExpectedRevision   uint64                 `json:"expected_revision"`
+	ExpectedDigest     string                 `json:"expected_digest"`
+	Snapshot           applyprogress.Snapshot `json:"snapshot"`
+	Batches            []applyprogress.Batch  `json:"batches"`
+}
+
+type ApplyProgressReceipt struct {
+	RequestID     string `json:"request_id"`
+	PayloadSHA256 string `json:"payload_sha256"`
+}
+
+type ApplyProgressResult struct {
+	Outcome  string               `json:"outcome"`
+	Code     string               `json:"code,omitempty"`
+	State    ApplyProgressState   `json:"state"`
+	Receipt  ApplyProgressReceipt `json:"receipt"`
+	Recovery string               `json:"recovery,omitempty"`
+}
+
+// ApplyProgressError preserves the daemon's typed recovery envelope on a
+// non-success response instead of flattening it into an unrelated APIError.
+type ApplyProgressError struct {
+	StatusCode int
+	Result     ApplyProgressResult
+}
+
+func (e *ApplyProgressError) Error() string {
+	return fmt.Sprintf("apply progress %s (%s): status %d", e.Result.Outcome, e.Result.Code, e.StatusCode)
 }
 
 type Health struct {
@@ -579,6 +623,53 @@ func (c *Client) ListSDDChanges(ctx context.Context, project string, request SDD
 		return SDDChangePage{}, err
 	}
 	return page, nil
+}
+
+func (c *Client) GetApplyProgress(ctx context.Context, project, change string) (ApplyProgressResult, error) {
+	u := *c.baseURL
+	setURLPath(&u, "/sdd/changes/"+url.PathEscape(change)+"/apply-progress")
+	u.RawQuery = url.Values{"project": {project}}.Encode()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return ApplyProgressResult{}, err
+	}
+	return c.doApplyProgress(request)
+}
+
+// AdvanceApplyProgress preserves a 409 conflict as a typed recovery result so a
+// transport caller can retry the same request ID without losing current state.
+func (c *Client) AdvanceApplyProgress(ctx context.Context, request ApplyProgressAdvanceRequest) (ApplyProgressResult, error) {
+	body, err := json.Marshal(request)
+	if err != nil {
+		return ApplyProgressResult{}, err
+	}
+	u := *c.baseURL
+	setURLPath(&u, "/sdd/changes/"+url.PathEscape(request.Change)+"/apply-progress/advance")
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
+	if err != nil {
+		return ApplyProgressResult{}, err
+	}
+	httpRequest.Header.Set("Content-Type", "application/json")
+	return c.doApplyProgress(httpRequest)
+}
+
+func (c *Client) doApplyProgress(request *http.Request) (ApplyProgressResult, error) {
+	response, err := c.http.Do(request)
+	if err != nil {
+		return ApplyProgressResult{}, err
+	}
+	defer func() { _ = response.Body.Close() }()
+	var result ApplyProgressResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		return result, err
+	}
+	if response.StatusCode == http.StatusConflict && result.Outcome == "conflict" && result.Code == "stale" {
+		return result, nil
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return result, &ApplyProgressError{StatusCode: response.StatusCode, Result: result}
+	}
+	return result, nil
 }
 
 func (c *Client) MemoryByID(ctx context.Context, id int64) (Memory, error) {

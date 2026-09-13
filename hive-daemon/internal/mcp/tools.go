@@ -11,11 +11,13 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sanitize"
 	hivesync "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sync"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -25,6 +27,11 @@ const MaxObservationLength = 50_000
 
 // MaxRecentPrompts is the maximum number of recent user prompts to include in mem_context.
 const MaxRecentPrompts = 10
+
+type applyProgressStore interface {
+	GetApplyProgress(project, change string) (db.ApplyProgressState, error)
+	AdvanceApplyProgress(db.ApplyProgressAdvance) (db.ApplyProgressAdvanceResult, error)
+}
 
 func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime, activity *ActivityTracker, prompts PromptStore, gate *project.MigrationGate) {
 	s.AddTool(&sdkmcp.Tool{
@@ -79,6 +86,11 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 			}
 		}`),
 	}, gateTool(gate, memSaveHandler(store, syncRuntime, activity, prompts)))
+
+	if _, ok := store.(applyProgressStore); ok {
+		s.AddTool(&sdkmcp.Tool{Name: "sdd_apply_progress_get", Description: "Read the guarded v2 SDD apply-progress snapshot.", InputSchema: json.RawMessage(`{"type":"object","required":["project","change"],"properties":{"project":{"type":"string"},"change":{"type":"string"}}}`)}, gateTool(gate, sddApplyProgressGetHandler(store)))
+		s.AddTool(&sdkmcp.Tool{Name: "sdd_apply_progress_advance", Description: "Atomically advance guarded v2 SDD apply progress; retry transport loss with the same request_id.", InputSchema: json.RawMessage(`{"type":"object","required":["project","change","request_id","snapshot","batches"],"properties":{"project":{"type":"string"},"change":{"type":"string"},"request_id":{"type":"string"},"expected_generation":{"type":"integer"},"expected_revision":{"type":"integer"},"expected_digest":{"type":"string"},"snapshot":{"type":"object"},"batches":{"type":"array"}}}`)}, gateTool(gate, sddApplyProgressAdvanceHandler(store)))
+	}
 
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_suggest_topic_key",
@@ -890,6 +902,63 @@ func writeSlugHyphen(b *strings.Builder, lastWasHyphen *bool) {
 		b.WriteByte('-')
 		*lastWasHyphen = true
 	}
+}
+
+func sddApplyProgressGetHandler(store MemoryStore) sdkmcp.ToolHandler {
+	return func(_ context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+		var input struct {
+			Project string `json:"project"`
+			Change  string `json:"change"`
+		}
+		if err := json.Unmarshal(req.Params.Arguments, &input); err != nil {
+			return toolJSON(map[string]string{"outcome": "invalid", "code": "validation", "recovery": "provide string project and change arguments"})
+		}
+		progress, ok := store.(applyProgressStore)
+		if !ok {
+			return toolJSON(map[string]string{"outcome": "unavailable", "code": "unavailable"})
+		}
+		state, err := progress.GetApplyProgress(input.Project, input.Change)
+		if err != nil {
+			return applyProgressToolError(err)
+		}
+		return toolJSON(map[string]any{"outcome": "committed", "code": "ok", "state": state})
+	}
+}
+
+func sddApplyProgressAdvanceHandler(store MemoryStore) sdkmcp.ToolHandler {
+	return func(_ context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+		var input db.ApplyProgressAdvance
+		if err := json.Unmarshal(req.Params.Arguments, &input); err != nil {
+			return toolJSON(map[string]string{"outcome": "invalid", "code": "validation", "recovery": "provide a canonical apply-progress request with correct argument types"})
+		}
+		progress, ok := store.(applyProgressStore)
+		if !ok {
+			return toolJSON(map[string]string{"outcome": "unavailable", "code": "unavailable"})
+		}
+		result, err := progress.AdvanceApplyProgress(input)
+		if err != nil {
+			return applyProgressToolError(err)
+		}
+		if result.Outcome == "conflict" {
+			return toolJSON(map[string]any{"outcome": "conflict", "code": "stale", "state": result.State, "recovery": "read current state and retry"})
+		}
+		return toolJSON(map[string]any{"outcome": result.Outcome, "code": "ok", "state": result.State, "receipt": result.Receipt})
+	}
+}
+
+func applyProgressToolError(err error) (*sdkmcp.CallToolResult, error) {
+	code, recovery := "unavailable", "retry the same request ID after the daemon recovers"
+	var capacity *applyprogress.CapacityError
+	if errors.As(err, &capacity) {
+		code, recovery = "capacity", "split evidence at a complete entry boundary"
+	} else if errors.Is(err, db.ErrApplyProgressRequestConflict) {
+		code, recovery = "request_id_conflict", "use a new request ID for changed content"
+	} else if errors.Is(err, db.ErrApplyProgressBatchCollision) {
+		code, recovery = "batch_collision", "use a new immutable batch ID"
+	} else if errors.Is(err, db.ErrApplyProgressInvalid) || errors.Is(err, db.ErrApplyProgressNotFound) {
+		code, recovery = "validation", "repair progress and retry"
+	}
+	return toolJSON(map[string]string{"outcome": "invalid", "code": code, "recovery": recovery})
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
