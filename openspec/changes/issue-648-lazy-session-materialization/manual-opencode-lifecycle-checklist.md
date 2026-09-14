@@ -19,8 +19,8 @@ The source of truth is `jarvis-cli/embed/hooks/opencode/hive.ts`. Materialize it
 Use one receiver log entry per request: method, path, raw body, `Content-Type`, timestamp, and selected response. Do not log prompt content outside the disposable test record.
 
 1. Emit/create a session with project and directory evidence. Confirm the created request path, JSON body, and `client: "opencode"`.
-2. While its created request is held pending, emit/delete a different session with project, directory, and summary. Confirm deletion arrives independently.
-3. Use an ID containing a space, slash, question mark, and percent sign. Confirm the end path is percent-encoded and the body carries only applicable evidence, summary, and `client`.
+2. While its created request is held pending, emit/delete a different session with project and directory evidence. Confirm deletion arrives independently.
+3. Use an ID containing a space, slash, question mark, and percent sign. Confirm the end path is percent-encoded and the body carries only applicable evidence and `client`.
 4. Send a text prompt for the session. Confirm normal prompt capture remains usable and includes `session_id`, project/directory evidence when available, and `client: "opencode"`.
 5. Return 400, 423, and 500 separately for created, deleted, and prompt requests. Confirm OpenCode remains usable and the plugin does not turn a rejected response into a visible failure.
 6. Hold each endpoint longer than one second. Confirm the callback remains non-blocking, the loopback request is aborted or otherwise finishes fail-open, and no unrequested retry occurs.
@@ -33,12 +33,12 @@ These are source-derived Node loopback observations from `jarvis-cli/internal/ag
 
 | Scenario | Status | Observed contract |
 | --- | --- | --- |
-| Created path, method, header, body, and client | PASS | `POST /sessions`, `Content-Type: application/json`, and exactly `id`, `project`, `directory`, `dev_id`, and `client: "opencode"` for the evidenced `session-42` request. |
-| Created pending-flight behavior | PASS | Two immediate identical created callbacks produce no second request while the first is held; after the first request times out and a later created event is emitted, exactly two starts are observed. |
+| Created path, method, header, body, and client | PASS | `POST /sessions`, `Content-Type: application/json`, and exactly `id`, `project`, `directory`, and `client: "opencode"` for the documented `properties.info.id` session. No `dev_id` is sent. |
+| Created pending-flight behavior | PASS | Two immediate identical created callbacks produce no second request while the first is held; after timeout cleanup a later identical event retries. Same-ID events with distinct project/directory evidence produce independent requests. |
 | Created timeout beyond one second | PASS | The loopback handler observes the first request context cancellation; the test waits 1100 ms before emitting the later event and verifies the later start is not observed before cancellation. |
-| Created synchronous fetch setup failure | PASS | The runner makes `fetch` throw synchronously for a created event; the Node runner completes. |
-| Prompt path, method, header, body, client, and independence | PASS | While created is pending, `POST /prompts` is observed with JSON `content`, `session_id`, project, directory, and `client: "opencode"`; multipart text is `capture  \n  this prompt`. |
-| Deleted path, method, header, body, and client | PASS | Generic `session.deleted` with `properties.info` sends `POST /sessions/<encoded-id>/end`, JSON project/directory/summary/client, and no `dev_id`. |
+| Created synchronous fetch setup failure | PASS | A documented created event resolves lifecycle evidence, installs a throwing `fetch` until the deferred lifecycle microtask runs, observes exactly one attempted `/sessions` fetch, confirms the callback returns immediately, and completes with no `unhandledRejection`. |
+| Prompt path, method, header, body, client, and independence | PASS | While created is pending, `POST /prompts` is observed with JSON `content`, `session_id`, project, directory, and `client: "opencode"`; multipart text is `capture  \n  this prompt`. Environment precedence plus the legacy `ppid-`/cwd fallback are pinned; numeric text joins as `42`, while malformed non-array `parts` is caught fail-open without a request. |
+| Deleted path, method, header, body, and client | PASS | Generic `session.deleted` with documented `properties.info.id` sends `POST /sessions/<encoded-id>/end`, JSON project/directory/client only, and no `dev_id` or summary. |
 | Encoded deletion ID | PASS | `session /with?reserved%chars` becomes `/sessions/session%20%2Fwith%3Freserved%25chars/end`. |
 | Deleted independence from pending created | PASS | A held `created-pending` start request does not prevent the deletion end request. |
 | Deleted timeout beyond one second | PASS | The first end request is held until context cancellation; after 1100 ms a later deleted event causes the second observed end, after the first cancellation. |
@@ -56,7 +56,7 @@ These are source-derived Node loopback observations from `jarvis-cli/internal/ag
 | Prompt timeout beyond one second | NOT RUN | Only created and deleted handlers are deliberately held until their request contexts are cancelled. |
 | Prompt synchronous fetch setup failure | NOT RUN | Synchronous `fetch` throws are injected for created and deleted only. |
 | No retries in every failure mode | NOT RUN | The tests show immediate created coalescing and later event-driven dispatch after timeout; they do not exhaustively prove absence of retries for every endpoint/status. |
-| No unhandled failures | NOT RUN | Node completion after the two injected synchronous throws is useful evidence, but no unhandled-rejection listener/assertion is installed. |
+| No unhandled failures across all lifecycle paths | NOT RUN | Created synchronous setup failure has an `unhandledRejection` listener/assertion; deleted/prompt setup failures and every rejection/status path are not exhaustively covered. |
 | No plugin-created processes or daemon launch | NOT RUN | The test launches Node as its harness and does not inspect child processes or daemon starts. |
 | OpenCode remains usable after failure | NOT RUN | Requires the disposable live runtime procedure; no external model or authentication was invoked here. |
 

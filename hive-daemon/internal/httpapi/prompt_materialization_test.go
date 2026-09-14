@@ -75,6 +75,20 @@ func TestPostPrompts_ExplicitSessionUsesAtomicCanonicalInputAndMapsStoreValidati
 	require.Equal(t, string(project.CodeProjectSessionMismatch), body["error_code"])
 }
 
+func TestPostPrompts_ExplicitSessionDefaultsOmittedClientToUnknown(t *testing.T) {
+	var got models.PromptWrite
+	store := &mockPromptStore{savePromptWithSessionFn: func(_ context.Context, in models.PromptWrite) (*models.Prompt, error) {
+		got = in
+		return &models.Prompt{ID: 1, Project: in.Session.Project, SessionID: in.Session.ID, CreatedAt: time.Now()}, nil
+	}}
+	srv := httpapi.NewServer("127.0.0.1:0", store)
+
+	rr := postPromptMaterialization(srv, `{"content":"capture","project":"alpha","session_id":"capture"}`)
+
+	require.Equal(t, http.StatusCreated, rr.Code, rr.Body.String())
+	require.Equal(t, "unknown", got.Session.Client)
+}
+
 func TestPostPrompts_ExplicitSessionValidatesBeforeStoreAndDoesNotJoinStartFlight(t *testing.T) {
 	called := false
 	store := &mockPromptStore{savePromptWithSessionFn: func(_ context.Context, _ models.PromptWrite) (*models.Prompt, error) {

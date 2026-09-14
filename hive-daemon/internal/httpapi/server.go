@@ -679,7 +679,7 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 	} else {
 		client := body.Client
 		if strings.TrimSpace(client) == "" {
-			client = "http"
+			client = "unknown"
 		}
 		prompt, err = s.prompts.SavePromptWithSession(r.Context(), models.PromptWrite{
 			Session: models.SessionInput{ID: body.SessionID, Project: body.Project, Directory: body.Directory, Client: client},
