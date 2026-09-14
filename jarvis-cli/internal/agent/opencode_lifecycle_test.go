@@ -107,10 +107,19 @@ await new Promise((resolve) => setTimeout(resolve, 100));
 
 	cmd := exec.Command("node", "--experimental-strip-types", runner, filepath.Join("..", "..", "embed", "hooks", "opencode", "hive.ts"))
 	cmd.Env = append(os.Environ(), "HIVE_HTTP_PORT="+port, "HIVE_DEV_ID=developer-7", "HIVE_OPENCODE_SESSION_ID=", "OPENCODE_SESSION_ID=", "SESSION_ID=", "HIVE_PROJECT=", "JARVIS_PROJECT=", "HIVE_PROJECT_DIRECTORY=", "JARVIS_WORKSPACE_DIRECTORY=")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 	finished := make(chan error, 1)
 	go func() { finished <- cmd.Run() }()
 
-	firstStart := waitHiveTemplateRequest(t, startRequests, "first session start")
+	var firstStart hiveTemplateRequest
+	select {
+	case firstStart = <-startRequests:
+	case err := <-finished:
+		t.Fatalf("OpenCode Hive runner exited before first session start: %v", err)
+	case <-time.After(hiveTemplateRequestWait):
+		t.Fatal("timed out waiting for first session start")
+	}
 	prompt := waitHiveTemplateRequest(t, promptRequests, "prompt while the start request is held")
 	assertNoHiveTemplateRequest(t, startRequests, 200*time.Millisecond, "an immediate duplicate session start")
 	firstCanceled := waitHiveTemplateTime(t, firstStartCanceled, "first start timeout cancellation")
