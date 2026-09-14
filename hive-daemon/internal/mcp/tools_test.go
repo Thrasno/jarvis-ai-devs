@@ -2102,7 +2102,7 @@ func TestMemSessionSummary_WithExplicitOpenSession_SavesAndDoesNotCallEnsure(t *
 	}
 }
 
-func TestMemSessionSummary_WithEndedSession_ReturnsError(t *testing.T) {
+func TestMemSessionSummary_WithEndedSession_ReopensAndSaves(t *testing.T) {
 	endedAt := time.Date(2026, 5, 9, 10, 0, 0, 0, time.UTC)
 	store := &mockStore{
 		getSessionFn: func(id string) (*models.Session, error) {
@@ -2117,15 +2117,12 @@ func TestMemSessionSummary_WithEndedSession_ReturnsError(t *testing.T) {
 		"session_id": "sess-done",
 	})
 
-	if !res.IsError {
-		t.Error("expected IsError=true for already-ended session")
-	}
-	if !strings.Contains(textContent(t, res), "already ended") {
-		t.Errorf("error should mention 'already ended', got: %s", textContent(t, res))
+	if res.IsError {
+		t.Errorf("expected ended session capture to reopen, got: %s", textContent(t, res))
 	}
 }
 
-func TestMemSessionSummary_WithUnknownSession_ReturnsError(t *testing.T) {
+func TestMemSessionSummary_WithUnknownSession_MaterializesAndSaves(t *testing.T) {
 	store := &mockStore{
 		getSessionFn: func(id string) (*models.Session, error) {
 			return nil, errors.New("session not found")
@@ -2139,8 +2136,8 @@ func TestMemSessionSummary_WithUnknownSession_ReturnsError(t *testing.T) {
 		"session_id": "ghost-session",
 	})
 
-	if !res.IsError {
-		t.Error("expected IsError=true for unknown session")
+	if res.IsError {
+		t.Errorf("expected absent session capture to materialize, got: %s", textContent(t, res))
 	}
 }
 

@@ -76,6 +76,20 @@ func (d *DB) SaveMemoryWithManualSession(mem *models.Memory) (int64, error) {
 	})
 }
 
+// SaveMemoryWithSession atomically materializes or reopens a compatible regular
+// session and persists the attributed memory, link, and mutation journal.
+func (d *DB) SaveMemoryWithSession(ctx context.Context, mem *models.Memory, session models.SessionInput) (int64, error) {
+	return d.saveMemory(mem, func(tx *sql.Tx) error {
+		session.Project = mem.Project
+		ensured, err := d.ensureSessionInTx(ctx, tx, session, reopenForWrite)
+		if err != nil {
+			return err
+		}
+		mem.SessionID = ensured.ID
+		return nil
+	})
+}
+
 func (d *DB) saveMemory(mem *models.Memory, prepareTx func(*sql.Tx) error) (int64, error) {
 	if err := mem.Validate(); err != nil {
 		return 0, fmt.Errorf("invalid memory: %w", err)

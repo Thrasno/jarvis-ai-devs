@@ -390,7 +390,9 @@ func memSaveHandler(store MemoryStore, syncRuntime *syncRuntime, activity *Activ
 		if p.SessionID == "" {
 			id, err = store.SaveMemoryWithManualSession(mem)
 		} else {
-			id, err = store.SaveMemory(mem)
+			id, err = store.SaveMemoryWithSession(ctx, mem, models.SessionInput{
+				ID: p.SessionID, Project: p.Project, Directory: p.Directory, Client: "mcp",
+			})
 		}
 		if err != nil {
 			return toolError(fmt.Errorf("save failed: %w", err)), nil
@@ -545,7 +547,7 @@ func memGetObservationHandler(store MemoryStore, activity *ActivityTracker) sdkm
 }
 
 func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkmcp.ToolHandler {
-	return func(_ context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+	return func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
 		var p struct {
 			Content             string `json:"content"`
 			Project             string `json:"project"`
@@ -560,8 +562,6 @@ func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkm
 		if p.Content == "" {
 			return toolError(fmt.Errorf("content is required")), nil
 		}
-
-		ctx := context.Background()
 
 		resolved, err := project.ValidateWriteProject(ctx, store, project.WriteInput{
 			Project:             p.Project,
@@ -583,19 +583,8 @@ func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkm
 			)), nil
 		}
 
-		// Explicit sessions retain lifecycle validation. The store creates manual
-		// fallback sessions atomically with the memory below.
-		var effectiveSessionID string
-		if p.SessionID != "" {
-			sess, err := store.GetSession(p.SessionID)
-			if err != nil {
-				return toolError(fmt.Errorf("session %q not found", p.SessionID)), nil
-			}
-			if sess.EndedAt != nil {
-				return toolError(fmt.Errorf("session %q already ended at %s", p.SessionID, sess.EndedAt.UTC().Format(time.RFC3339))), nil
-			}
-			effectiveSessionID = p.SessionID
-		} else {
+		effectiveSessionID := p.SessionID
+		if effectiveSessionID == "" {
 			effectiveSessionID = "manual-save-" + p.Project
 		}
 
@@ -614,7 +603,9 @@ func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkm
 		if p.SessionID == "" {
 			id, err = store.SaveMemoryWithManualSession(mem)
 		} else {
-			id, err = store.SaveMemory(mem)
+			id, err = store.SaveMemoryWithSession(ctx, mem, models.SessionInput{
+				ID: p.SessionID, Project: p.Project, Directory: p.Directory, Client: "mcp",
+			})
 		}
 		if err != nil {
 			return toolError(fmt.Errorf("save failed: %w", err)), nil

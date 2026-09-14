@@ -25,6 +25,7 @@ type PromptStore interface {
 type MemoryStore interface {
 	SaveMemory(mem *models.Memory) (int64, error)
 	SaveMemoryWithManualSession(mem *models.Memory) (int64, error)
+	SaveMemoryWithSession(context.Context, *models.Memory, models.SessionInput) (int64, error)
 	GetMemory(id int64) (*models.Memory, error)
 	ListMemories(project string, limit int) ([]*models.Memory, error)
 	Search(criteria models.MemorySearchCriteria) ([]*models.Memory, error)
