@@ -2,7 +2,7 @@
 
 ## Slice 1 — API regular-session lifecycle acceptance
 
-**Status:** implementation and broad verification complete; awaiting native review and PR checkpoint.  
+**Status:** implementation and broad verification complete; awaiting native review and PR checkpoint.
 **Boundary:** PR/slice 1 only (`main <- 📍1 <- 2`). No local lifecycle producer, schema migration, push, or PR was created.
 
 ### Completed implementation tasks
@@ -441,3 +441,11 @@ All 6a, 6b, and 6c implementation rows are now complete. The parent-owned slice-
 - **RED:** `TestPostPrompts_ExplicitSessionDefaultsOmittedClientToUnknown` observed `http`; `TestMCPExplicitMemoryCaptureMapsTransactionalErrors` reached the transactional store, then observed non-JSON generic errors for `project_session_mismatch` in both `mem_save` and `mem_session_summary`.
 - **GREEN/TRIANGULATE:** Explicit HTTP prompt capture now defaults only omitted clients to `unknown`. Both MCP handlers pass store errors through `toolValidationError`, preserving structured `project_session_mismatch`; table cases retain generic `context canceled` behavior. Existing explicit caller/MCP and manual-path focused cases remain covered.
 - **Verification:** focused HTTP/MCP tests, focused `-race`, full `hive-daemon` suite, `go vet ./...`, `gofmt -l`, and `git diff --check` passed. No OpenCode changes, commit, push, PR, or review.
+
+## Final verifier remediation — OpenCode lifecycle contract
+
+- **RED:** tightening the generic event tests to `event.properties.info.id`, exact evidence-only bodies, distinct same-ID evidence, and prompt environment/PID regression behavior timed out because created used the wrong envelope and deleted missed the nested ID. The independent synchronous-fetch correction added resolved evidence plus numeric-text parsing; its focused run timed out waiting for the numeric prompt because text was narrowed to strings.
+- **GREEN:** one lifecycle resolver now accepts documented nested IDs, defensive lifecycle property spellings, then explicit session environment fallback; it never accepts an arbitrary event ID or prompt PID fallback. Shared env-first evidence requires an ID plus project or directory. Created sends only ID/client/nonempty evidence; deleted sends only client/nonempty evidence. Prompt parsing now preserves public/master `filter`/`map`/`join` coercion: numeric text stringifies, and non-array parts throws into the advisory caught handler.
+- **TRIANGULATE/REFACTOR:** created flights use exact JSON evidence tuples, install before their fetch microtask, return the shared pending promise, clean up their own entry, and retry only on a later event. The executable synchronous-failure case now resolves documented lifecycle evidence, keeps throwing `fetch` through that microtask, observes one attempted fetch, confirms immediate callback return, and asserts no unhandled rejection. Generic event delivery is fire-and-forget; deletion/prompt requests stay independent. Prompt resolution restores base environment precedence, PID/cwd fallback, and content extraction, adding only `client: "opencode"`.
+- **Verification:** focused and `-race` Node-backed creation/deletion agent tests, `cd jarvis-cli && go test ./...`, `go vet ./...`, `node --experimental-strip-types --check embed/hooks/opencode/hive.ts`, targeted `gofmt -l`, `git diff --check`, and `git diff --check public/master` all passed. The mandated committed-only `git diff --check public/master..HEAD` still reports the pre-existing committed trailing whitespace, which this uncommitted repair removes from the worktree.
+- **Accounting / residual gap:** current permitted-surface worktree accounting against `d310ac22` is **342 additions+deletions** (215 template, 100 lifecycle test, 10 apply-progress, 16 checklist, 1 task), leaving **57 lines** below 399. Live OpenCode runtime, non-OK lifecycle responses, and exhaustive unhandled-rejection/process assertions remain explicitly NOT RUN in the checklist; source-derived tests cover the documented callback and loopback contract only.

@@ -150,6 +150,7 @@ Chain strategy: stacked-to-main
 - [x] **RED:** Add executable/install tests for deleted identity/no-op, encoded end URL, exact evidence/client body, timeout/fail-open/immediate return, and independence from a pending created flight. <!-- sdd-owner: implementation -->
 - [x] **GREEN:** Add deleted-event dispatch through the established resolver/notifier using `encodeURIComponent(id)` and the exact end endpoint/body; align the existing created registration with design §6's `POST /sessions` route. <!-- sdd-owner: implementation -->
 - [x] **TRIANGULATE/REFACTOR:** Complete the temporary installer/loopback manual checklist for created/deleted/prompt continuity and failure cases, record skips/runtime, and run agent/module/vet checks. <!-- sdd-owner: implementation -->
+- [x] **Verifier remediation:** Re-pin the documented `event.properties.info.id` envelope, exact evidence-only payloads, evidence-keyed created flights, an executable deferred synchronous-fetch fail-open/no-unhandled assertion, and public/master prompt parsing semantics with additive `client: "opencode"`. <!-- sdd-owner: implementation -->
 
 ## Parent Review and Lifecycle Gates
 
