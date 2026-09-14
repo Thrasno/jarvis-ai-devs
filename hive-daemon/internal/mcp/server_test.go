@@ -36,6 +36,7 @@ type mockStore struct {
 	latestPromptForSessionFn      func(context.Context, string, string) (*models.Prompt, error)
 	listRecentPromptsFn           func(context.Context, string, int) ([]*models.Prompt, error)
 	createSessionFn               func(id, project, directory, devID, client string) error
+	ensureSessionFn               func(context.Context, models.SessionInput) (*models.Session, error)
 	endSessionFn                  func(id, summary string) error
 	getSessionFn                  func(id string) (*models.Session, error)
 	ensureManualSaveSessionFn     func(project string) (string, error)
@@ -123,6 +124,16 @@ func (m *mockStore) CreateSession(id, project, directory, devID, client string) 
 		return m.createSessionFn(id, project, directory, devID, client)
 	}
 	return nil
+}
+
+func (m *mockStore) EnsureSession(ctx context.Context, in models.SessionInput) (*models.Session, error) {
+	if m.ensureSessionFn != nil {
+		return m.ensureSessionFn(ctx, in)
+	}
+	if err := m.CreateSession(in.ID, in.Project, in.Directory, in.DevID, in.Client); err != nil {
+		return nil, err
+	}
+	return &models.Session{ID: in.ID, Project: in.Project}, nil
 }
 
 func (m *mockStore) EndSession(id, summary string) error {

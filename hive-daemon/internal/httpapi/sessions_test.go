@@ -8,10 +8,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/httpapi"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,6 +24,7 @@ import (
 
 type mockSessionStore struct {
 	createSessionFn          func(id, project, directory, devID, client string) error
+	ensureSessionFn          func(context.Context, models.SessionInput) (*models.Session, error)
 	endSessionFn             func(id, summary string) error
 	savePassiveObservationFn func(ctx context.Context, sessionID, project, source, content string) error
 }
@@ -29,6 +34,16 @@ func (m *mockSessionStore) CreateSession(id, project, directory, devID, client s
 		return m.createSessionFn(id, project, directory, devID, client)
 	}
 	return nil
+}
+
+func (m *mockSessionStore) EnsureSession(ctx context.Context, in models.SessionInput) (*models.Session, error) {
+	if m.ensureSessionFn != nil {
+		return m.ensureSessionFn(ctx, in)
+	}
+	if err := m.CreateSession(in.ID, in.Project, in.Directory, in.DevID, in.Client); err != nil {
+		return nil, err
+	}
+	return &models.Session{ID: in.ID, Project: in.Project}, nil
 }
 
 func (m *mockSessionStore) EndSession(id, summary string) error {
@@ -90,6 +105,61 @@ func TestPostSessions_DuplicateID_Returns200_Idempotent(t *testing.T) {
 
 	rr2 := postJSON(srv, "/sessions", body)
 	assert.Equal(t, http.StatusOK, rr2.Code, "duplicate id (UNIQUE constraint) should return 200 (idempotent)")
+}
+
+func TestPostSessions_ConcurrentValidStartsShareOneEnsureAndExcludeInvalidOrBlocked(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	var calls int
+	var mu sync.Mutex
+	store := &mockSessionStore{ensureSessionFn: func(ctx context.Context, in models.SessionInput) (*models.Session, error) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		close(entered)
+		select {
+		case <-release:
+			return &models.Session{ID: in.ID, Project: in.Project}, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}}
+	gate := project.NewMigrationGate(project.MigrationStatus{State: project.MigrationStateReady})
+	srv := httpapi.NewServerWithAll("127.0.0.1:0", &mockPromptStore{}, mockProjectStore{known: []project.KnownProject{{Name: "alpha"}}}, nil, nil, nil, store)
+	srv.SetMigrationGate(gate)
+	body := `{"id":"session-1","project":"alpha","directory":"/repo","dev_id":"dev","client":"hook"}`
+	results := make(chan *httptest.ResponseRecorder, 2)
+	go func() { results <- postJSON(srv, "/sessions", body) }()
+	select {
+	case <-entered:
+	case result := <-results:
+		t.Fatalf("start bypassed EnsureSession with status %d", result.Code)
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("start did not reach EnsureSession")
+	}
+	go func() { results <- postJSON(srv, "/sessions", body) }()
+	select {
+	case result := <-results:
+		t.Fatalf("start completed before release: %d", result.Code)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if result := postJSON(srv, "/sessions", `{"project":"alpha"}`); result.Code != http.StatusBadRequest {
+		t.Fatalf("invalid start status = %d, want 400", result.Code)
+	}
+	gate.Adopt(project.MigrationStatus{State: project.MigrationStateBlocked})
+	if result := postJSON(srv, "/sessions", body); result.Code != http.StatusServiceUnavailable {
+		t.Fatalf("blocked start status = %d, want 503", result.Code)
+	}
+	close(release)
+	for range 2 {
+		if result := <-results; result.Code != http.StatusOK {
+			t.Fatalf("valid start status = %d, want 200", result.Code)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("EnsureSession calls = %d, want 1", calls)
+	}
 }
 
 func TestPostSessions_EmptyDevIDAndClient_Returns200(t *testing.T) {

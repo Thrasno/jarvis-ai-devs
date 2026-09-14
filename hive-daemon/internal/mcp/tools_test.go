@@ -530,8 +530,8 @@ func TestMemSessionStart_HappyPath_ReturnsSessionID(t *testing.T) {
 	if createdDevID != "andres" {
 		t.Errorf("CreateSession called with devID=%q, want 'andres'", createdDevID)
 	}
-	if createdClient != "claude-code" {
-		t.Errorf("CreateSession called with client=%q, want 'claude-code'", createdClient)
+	if createdClient != "mcp" {
+		t.Errorf("EnsureSession called with client=%q, want %q", createdClient, "mcp")
 	}
 }
 
