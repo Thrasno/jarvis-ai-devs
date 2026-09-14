@@ -365,3 +365,16 @@ Persisted `tasks.md` slice-2 RED, GREEN, and TRIANGULATE/REFACTOR rows are visib
 - **Accounting / rollback:** **143 additions+deletions** against `7d30847f` (114 Go/test + 4 task + 12 evidence + 13 compatibility-document lines), below the 399-line cap. Revert only the hook caller/client/tests and compatibility/task/evidence records; do not alter daemon adapters or persisted session state.
 
 All 6a, 6b, and 6c implementation rows are now complete. The parent-owned slice-6 review/checkpoint remains unchecked.
+
+## Slice 7a — DB prompt foundation
+
+**Status:** DB-only foundation retained after splitting the 394-line slice-7 candidate. HTTP/MCP/hook source and mocks were restored to HEAD, and their untracked prompt-materialization tests were removed. No transport activation is claimed by this slice.
+
+- **Foundation:** `PromptWrite` and `SavePromptWithSession` share one SQLite transaction with session materialization/reopen and prompt insertion. `SavePrompt` and `SavePromptForSession` remain unchanged.
+- **DB evidence:** `prompt_write_test.go` covers absent and ended materialization, prompt-insert failure after new-session creation and after an ended-session reopen, persisted mismatch/gate rollback state, manual/empty preservation, two-handle captures, and existing-session start, sync identity, provenance, and first-writer attribution preservation.
+- **Observed verification:** focused and race `TestSavePromptWithSession` runs, the full hive-daemon suite, `go vet ./...`, targeted formatting, and `git diff --check` passed after the deferred 7b tests were removed.
+- **Accounting:** 97 tracked additions/deletions plus the 253-line DB test = **350 native lines**, below 399. Do not treat the former 394-line candidate or its transport evidence as slice-7a evidence.
+
+## Slice 7b — HTTP/MCP/hook prompt activation
+
+**Status:** deferred. Transport source/mock changes are restored to HEAD and all 7b implementation rows remain unchecked. No HTTP/MCP mapping, hook attribution, adapter race evidence, module pass, vet pass, commit, push, or PR is claimed.
