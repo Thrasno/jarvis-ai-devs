@@ -435,3 +435,9 @@ All 6a, 6b, and 6c implementation rows are now complete. The parent-owned slice-
 - **Not claimed:** live `opencode 1.18.29` envelope compatibility, 400/423/500 or generic non-OK tolerance, prompt timeout/synchronous failure, comprehensive retry absence, unhandled-failure absence, process/daemon absence, or post-failure OpenCode usability. The checklist gives the disposable procedure and rationale for every NOT RUN item.
 - **Created endpoint compliance:** source/test now use created `POST /sessions`, matching design §6. The checklist records the focused RED→GREEN correction; no obsolete created-route claim remains.
 - **Accounting:** final inclusive accounting is **235 changed lines**: template 30 additions + 1 deletion = 31; lifecycle test 94 + 4 = 98; apply-progress 21 + 1 = 22; tasks 4 + 4 = 8; and the 76-line untracked checklist. This is the exact `git diff --numstat` total plus `wc -l` for the untracked checklist, including the endpoint correction, and is below 399 (**164 lines headroom**).
+
+## Final verifier remediation — HTTP prompt and MCP memory error mapping
+
+- **RED:** `TestPostPrompts_ExplicitSessionDefaultsOmittedClientToUnknown` observed `http`; `TestMCPExplicitMemoryCaptureMapsTransactionalErrors` reached the transactional store, then observed non-JSON generic errors for `project_session_mismatch` in both `mem_save` and `mem_session_summary`.
+- **GREEN/TRIANGULATE:** Explicit HTTP prompt capture now defaults only omitted clients to `unknown`. Both MCP handlers pass store errors through `toolValidationError`, preserving structured `project_session_mismatch`; table cases retain generic `context canceled` behavior. Existing explicit caller/MCP and manual-path focused cases remain covered.
+- **Verification:** focused HTTP/MCP tests, focused `-race`, full `hive-daemon` suite, `go vet ./...`, `gofmt -l`, and `git diff --check` passed. No OpenCode changes, commit, push, PR, or review.

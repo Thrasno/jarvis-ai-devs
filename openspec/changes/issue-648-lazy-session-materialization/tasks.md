@@ -130,6 +130,11 @@ Chain strategy: stacked-to-main
 - [x] **GREEN:** Add `SaveMemoryWithSession` through the existing preparation callback and convert only explicit MCP save/summary, retaining validation, limits, manual fallback, and non-lifecycle summary-memory behavior. <!-- sdd-owner: implementation -->
 - [x] **TRIANGULATE/REFACTOR:** Cover capture-after-ended reopen and failed-summary preservation; format and run focused DB/MCP, race, module, and vet checks. <!-- sdd-owner: implementation -->
 
+#### Final verifier remediation — HTTP attribution and MCP transactional errors
+
+- [x] **RED:** Add omitted-client HTTP and transaction-time MCP mismatch cases; verify the latter reaches the transactional store rather than only prevalidation. <!-- sdd-owner: implementation -->
+- [x] **GREEN/TRIANGULATE:** Default explicit HTTP prompt client to `unknown`; map transactional `*project.ValidationError` through `toolValidationError` for save/summary while retaining generic store errors. <!-- sdd-owner: implementation -->
+
 ### 10. OpenCode coalesced creation and prompt attribution — 280–380 native lines
 
 **Dependency / finish:** slice 9 → embedded source sends fail-open coalesced `session.created` registration and prompt client attribution; deletion remains absent until slice 11. **Paths:** `jarvis-cli/embed/hooks/opencode/hive.ts`, source-derived/installer tests under `jarvis-cli/internal/agent/`, `openspec/changes/issue-648-lazy-session-materialization/manual-opencode-lifecycle-checklist.md`. **Rollback:** revert source template behavior through installer regeneration only.
