@@ -92,13 +92,25 @@ Chain strategy: stacked-to-main
 
 - [x] **RED/GREEN/TRIANGULATE:** Add encoded-path/exact-evidence/client hook receiver coverage and the native caller; update end-evidence compatibility documentation. <!-- sdd-owner: implementation -->
 
-### 7. Atomic prompts — 280–375 native lines
+### 7. Atomic prompts — split into 7a/7b
 
-**Dependency / finish:** slice 6 → explicit HTTP/MCP prompt capture ensures/reopens in its own transaction while manual/empty behavior stays unchanged. **Paths:** `hive-daemon/internal/models/session_write.go`, `hive-daemon/internal/db/prompt.go` and prompt tests, HTTP/MCP prompt paths/tests, `jarvis-cli/internal/hook/client.go` and tests. **Rollback:** revert explicit prompt activation only.
+**Split boundary:** the former prompt unit exceeded the review budget at 394 lines and lacked complete transport mappings and DB evidence. Slice **7a** retains only the DB foundation; slice **7b** will activate HTTP/MCP/hook callers and their mocks/tests. No transport behavior is part of 7a.
 
-- [ ] **RED:** Add absent/ended/mismatch, insert/update/prompt failure rollback, caller attribution, manual/empty, gate, and independent concurrent prompt tests. <!-- sdd-owner: implementation -->
-- [ ] **GREEN:** Add `PromptWrite` and transactional `SavePromptWithSession`; activate it only for explicit HTTP/MCP requests and add hook client attribution while retaining wrappers/fallbacks. <!-- sdd-owner: implementation -->
-- [ ] **TRIANGULATE/REFACTOR:** Cover canonical/provenance variants and failed capture after reopen; format and run focused DB/HTTP/MCP/hook, race, module, and vet checks. <!-- sdd-owner: implementation -->
+#### Slice 7a — DB prompt foundation
+
+**Dependency / finish:** slice 6 → `PromptWrite` and transactional `SavePromptWithSession` materialize/reopen a regular session and insert its prompt atomically. Existing manual/empty wrappers remain unchanged. **Paths:** `hive-daemon/internal/models/session_write.go`, `hive-daemon/internal/db/prompt.go`, `hive-daemon/internal/db/prompt_write_test.go`. **Rollback:** revert only the DB input, transaction, helper extraction, and DB tests.
+
+- [x] **DB foundation:** Add `PromptWrite` and transactional `SavePromptWithSession`, retaining `SavePromptForSession` and `SavePrompt` behavior. <!-- sdd-owner: implementation -->
+- [x] **DB evidence:** Cover absent/ended materialization, prompt-insert rollback after session creation and ended-session reopen, mismatch/gate persisted rollback state, manual/empty preservation, concurrency, and existing-session start/identity/provenance preservation. <!-- sdd-owner: implementation -->
+- [x] **DB broad verification:** Focused/race DB prompt tests, full daemon, vet, formatting, and diff checks pass after removing the deferred 7b adapter tests. <!-- sdd-owner: implementation -->
+
+#### Slice 7b — HTTP/MCP/hook prompt activation
+
+**Dependency / finish:** slice 7a → explicit HTTP/MCP captures call the DB foundation with validated attribution; hook sends caller attribution. **Paths:** HTTP/MCP/hook prompt sources, mocks, and tests. **Rollback:** revert only transport activation.
+
+- [ ] **Transport RED:** Add adapter tests for HTTP/MCP mappings, validation failures, and hook payload attribution. <!-- sdd-owner: implementation -->
+- [ ] **Transport GREEN:** Activate `SavePromptWithSession` only for explicit HTTP/MCP captures and add hook client attribution while retaining manual/empty fallbacks. <!-- sdd-owner: implementation -->
+- [ ] **Transport TRIANGULATE/REFACTOR:** Run focused HTTP/MCP/hook and race evidence, then verify mappings and fallback behavior. <!-- sdd-owner: implementation -->
 
 ### 8. Atomic passive observations — 220–330 native lines
 
