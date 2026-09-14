@@ -223,11 +223,15 @@ func (c *DaemonClient) PostSessionStart(ctx context.Context, sessionID, project,
 	})
 }
 
-// PostSessionEnd notifies the daemon that a session has ended.
-// A 404 response is treated as non-fatal (session was never created).
-func (c *DaemonClient) PostSessionEnd(ctx context.Context, sessionID string) error {
-	return c.post(ctx, "/sessions/"+sessionID+"/end", map[string]string{
-		"summary": "",
+// PostSessionEnd notifies the daemon that a session has ended with the canonical
+// project and directory evidence derived from the hook payload. A 404 response is
+// treated as non-fatal (session was never created).
+func (c *DaemonClient) PostSessionEnd(ctx context.Context, sessionID, project, directory string) error {
+	return c.post(ctx, "/sessions/"+url.PathEscape(sessionID)+"/end", map[string]string{
+		"summary":   "",
+		"project":   project,
+		"directory": directory,
+		"client":    "hook",
 	}, http.StatusNotFound)
 }
 

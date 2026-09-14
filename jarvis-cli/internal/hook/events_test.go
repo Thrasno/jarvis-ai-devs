@@ -742,8 +742,9 @@ func TestRunSubagentStop_DaemonDown_OutputsEmpty(t *testing.T) {
 
 // --- RunSessionStop ---
 
-func TestRunSessionStop_PreservesMarkerAndPostsEnd(t *testing.T) {
+func TestRunSessionStop_PreservesMarkerAndForwardsCanonicalEvidence(t *testing.T) {
 	dir := t.TempDir()
+	projectDir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 	t.Setenv("HIVE_CLAUDE_SESSION_ID", "stop-session-1")
 
@@ -753,14 +754,26 @@ func TestRunSessionStop_PreservesMarkerAndPostsEnd(t *testing.T) {
 	}
 
 	var receivedPath string
+	var received map[string]string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
+	payload, err := json.Marshal(map[string]string{
+		"session_id": "stop-session-1",
+		"directory":  projectDir,
+		"project":    "raw-project-must-not-forward",
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
 	var out bytes.Buffer
-	RunSessionStop(context.Background(), strings.NewReader(`{"session_id":"stop-session-1"}`), &out, srv.URL)
+	RunSessionStop(context.Background(), bytes.NewReader(payload), &out, srv.URL)
 
 	if out.String() != "{}" {
 		t.Errorf("session-stop should output {}, got: %q", out.String())
@@ -772,6 +785,47 @@ func TestRunSessionStop_PreservesMarkerAndPostsEnd(t *testing.T) {
 	}
 	if receivedPath != "/sessions/stop-session-1/end" {
 		t.Errorf("should POST to /sessions/{id}/end, got: %q", receivedPath)
+	}
+	want := map[string]string{
+		"summary":   "",
+		"project":   filepath.Base(projectDir),
+		"directory": projectDir,
+		"client":    "hook",
+	}
+	if !reflect.DeepEqual(received, want) {
+		t.Errorf("end evidence: got %#v, want %#v", received, want)
+	}
+}
+
+func TestRunSessionStop_ForwardsCWDEvidence(t *testing.T) {
+	projectDir := t.TempDir()
+	var received map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	payload, err := json.Marshal(map[string]string{
+		"session_id": "stop-cwd-evidence",
+		"cwd":        projectDir,
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	var out bytes.Buffer
+	RunSessionStop(context.Background(), bytes.NewReader(payload), &out, srv.URL)
+
+	if out.String() != "{}" {
+		t.Errorf("session-stop should output {}, got: %q", out.String())
+	}
+	if received["directory"] != projectDir {
+		t.Errorf("directory: got %q, want %q", received["directory"], projectDir)
+	}
+	if received["project"] != filepath.Base(projectDir) {
+		t.Errorf("project: got %q, want %q", received["project"], filepath.Base(projectDir))
 	}
 }
 

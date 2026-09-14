@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -111,21 +112,40 @@ func TestDaemonClient_PostSessionStart_ServerDown_ReturnsError(t *testing.T) {
 	}
 }
 
-func TestDaemonClient_PostSessionEnd_HappyPath(t *testing.T) {
+func TestDaemonClient_PostSessionEnd_EncodesIDAndSendsEvidence(t *testing.T) {
 	var receivedPath string
+	var received map[string]string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedPath = r.URL.Path
+		receivedPath = r.URL.EscapedPath()
+		if r.Method != http.MethodPost {
+			t.Errorf("method: got %q, want POST", r.Method)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type: got %q, want application/json", got)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
 	c := &DaemonClient{BaseURL: srv.URL, Timeout: 5 * time.Second}
-	err := c.PostSessionEnd(context.Background(), "session-abc")
+	err := c.PostSessionEnd(context.Background(), "session/with space?", "canonical-project", "/work directory")
 	if err != nil {
 		t.Errorf("expected nil error, got: %v", err)
 	}
-	if receivedPath != "/sessions/session-abc/end" {
-		t.Errorf("path: got %q, want %q", receivedPath, "/sessions/session-abc/end")
+	if receivedPath != "/sessions/session%2Fwith%20space%3F/end" {
+		t.Errorf("path: got %q", receivedPath)
+	}
+	want := map[string]string{
+		"summary":   "",
+		"project":   "canonical-project",
+		"directory": "/work directory",
+		"client":    "hook",
+	}
+	if !reflect.DeepEqual(received, want) {
+		t.Errorf("body: got %#v, want %#v", received, want)
 	}
 }
 
@@ -136,7 +156,7 @@ func TestDaemonClient_PostSessionEnd_404_ReturnsNil(t *testing.T) {
 	defer srv.Close()
 
 	c := &DaemonClient{BaseURL: srv.URL, Timeout: 5 * time.Second}
-	err := c.PostSessionEnd(context.Background(), "ghost-session")
+	err := c.PostSessionEnd(context.Background(), "ghost-session", "project", "/directory")
 	// 404 must be treated as non-fatal
 	if err != nil {
 		t.Errorf("expected nil for 404 (non-fatal), got: %v", err)
@@ -145,7 +165,7 @@ func TestDaemonClient_PostSessionEnd_404_ReturnsNil(t *testing.T) {
 
 func TestDaemonClient_PostSessionEnd_ServerDown_ReturnsNil(t *testing.T) {
 	c := &DaemonClient{BaseURL: "http://127.0.0.1:19999", Timeout: 200 * time.Millisecond}
-	err := c.PostSessionEnd(context.Background(), "sid")
+	err := c.PostSessionEnd(context.Background(), "sid", "project", "/directory")
 	if err != nil {
 		t.Errorf("expected nil (non-fatal), got: %v", err)
 	}
