@@ -18,6 +18,31 @@ func (d *DB) SavePrompt(ctx context.Context, project, content string) (*models.P
 	return d.SavePromptForSession(ctx, project, "", content)
 }
 
+// SavePromptWithSession atomically materializes a regular session and persists its prompt.
+func (d *DB) SavePromptWithSession(ctx context.Context, in models.PromptWrite) (*models.Prompt, error) {
+	if strings.TrimSpace(in.Content) == "" {
+		return nil, errors.New("content is required")
+	}
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin save prompt with session: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	session, err := d.ensureSessionInTx(ctx, tx, in.Session, reopenForWrite)
+	if err != nil {
+		return nil, err
+	}
+	prompt, err := savePrompt(ctx, tx, session.Project, in.Session.ID, in.Content)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit save prompt with session: %w", err)
+	}
+	return prompt, nil
+}
+
 func (d *DB) SavePromptForSession(ctx context.Context, project, sessionID, content string) (*models.Prompt, error) {
 	if strings.TrimSpace(content) == "" {
 		return nil, errors.New("content is required")
@@ -34,36 +59,29 @@ func (d *DB) SavePromptForSession(ctx context.Context, project, sessionID, conte
 		return nil, err
 	}
 
-	syncID := uuid.NewString()
+	return savePrompt(ctx, d.sqlDB, project, sessionID, content)
+}
 
+type promptWriter interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func savePrompt(ctx context.Context, writer promptWriter, project, sessionID, content string) (*models.Prompt, error) {
+	syncID := uuid.NewString()
 	const q = `
 INSERT INTO user_prompts (sync_id, project, session_id, content)
 VALUES (?, ?, ?, ?)
 RETURNING id, created_at`
-
-	var (
-		id           int64
-		createdAtStr string
-	)
-	err = d.sqlDB.QueryRowContext(ctx, q, syncID, project, sessionID, content).Scan(&id, &createdAtStr)
-	if err != nil {
+	var id int64
+	var createdAtStr string
+	if err := writer.QueryRowContext(ctx, q, syncID, project, sessionID, content).Scan(&id, &createdAtStr); err != nil {
 		return nil, fmt.Errorf("save prompt: %w", err)
 	}
-
 	createdAt, ok := parseDBTimestamp("created_at", createdAtStr)
 	if !ok {
 		return nil, fmt.Errorf("save prompt: could not parse created_at %q", createdAtStr)
 	}
-
-	return &models.Prompt{
-		ID:        id,
-		SyncID:    syncID,
-		Project:   project,
-		SessionID: sessionID,
-		Content:   content,
-		CreatedAt: createdAt,
-		SyncedAt:  nil,
-	}, nil
+	return &models.Prompt{ID: id, SyncID: syncID, Project: project, SessionID: sessionID, Content: content, CreatedAt: createdAt}, nil
 }
 
 func (d *DB) LatestPromptForSession(ctx context.Context, project, sessionID string) (*models.Prompt, error) {
