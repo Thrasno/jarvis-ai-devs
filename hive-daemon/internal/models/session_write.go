@@ -8,3 +8,10 @@ type SessionInput struct {
 	DevID     string
 	Client    string
 }
+
+// SessionEndInput carries the attribution and end semantics for a regular session.
+type SessionEndInput struct {
+	Session            SessionInput
+	Summary            string
+	RejectAlreadyEnded bool
+}
