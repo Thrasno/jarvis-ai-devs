@@ -1384,3 +1384,28 @@ func TestSyncService_Push_LegacyRequestDoesNotCallMutationRepository(t *testing.
 	mockRepo.AssertNotCalled(t, "ApplyMemoryMutation", mock.Anything, mock.Anything)
 	mockRepo.AssertNotCalled(t, "ListMemoryMutations", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
+
+func TestSyncService_Push_ForwardsNullableRegularSessionLifecycle(t *testing.T) {
+	svc, _, _, sessionRepo := newTestSyncServiceWithSession(t)
+	ctx := context.Background()
+	summary := "reopened by delayed capture"
+	payload := model.SyncSessionPayload{
+		ID: "regular-session", SyncID: "a1000000-0000-0000-0000-000000000006",
+		Project: "jarvis-dev", Directory: "/work/jarvis", DevID: "developer", Client: "mcp",
+		StartedAt: time.Date(2026, 8, 9, 10, 11, 12, 0, time.UTC), EndedAt: nil, Summary: &summary,
+	}
+
+	sessionRepo.On("UpsertSession", ctx, mock.MatchedBy(func(got *model.Session) bool {
+		return got.ID == payload.ID && got.SyncID == payload.SyncID &&
+			got.Project == payload.Project && got.Directory == payload.Directory &&
+			got.DevID == payload.DevID && got.Client == payload.Client &&
+			got.StartedAt.Equal(payload.StartedAt) && got.EndedAt == nil &&
+			got.Summary != nil && *got.Summary == summary
+	})).Return(nil).Once()
+
+	resp, err := svc.Push(ctx, model.SyncRequest{Project: "jarvis-dev", Sessions: []model.SyncSessionPayload{payload}}, "user-1")
+
+	require.NoError(t, err)
+	assert.Equal(t, 0, resp.Pushed)
+	sessionRepo.AssertExpectations(t)
+}
