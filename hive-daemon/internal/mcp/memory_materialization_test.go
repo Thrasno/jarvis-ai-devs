@@ -47,6 +47,48 @@ func TestMCPExplicitMemoryCapturesMaterializeAndReopen(t *testing.T) {
 	}
 }
 
+func TestMCPExplicitMemoryCaptureMapsTransactionalErrors(t *testing.T) {
+	for _, tool := range []string{"mem_save", "mem_session_summary"} {
+		for _, tt := range []struct {
+			name       string
+			err        error
+			structured bool
+		}{
+			{name: "validation", err: &project.ValidationError{Code: project.CodeProjectSessionMismatch, Message: "mismatch"}, structured: true},
+			{name: "store", err: context.Canceled},
+		} {
+			t.Run(tool+"/"+tt.name, func(t *testing.T) {
+				transactionCalled := false
+				store := &mockStore{
+					knownProjectsFn: func(context.Context) ([]project.KnownProject, error) {
+						return []project.KnownProject{{Name: "alpha"}}, nil
+					},
+					saveMemoryWithSessionFn: func(context.Context, *models.Memory, models.SessionInput) (int64, error) {
+						transactionCalled = true
+						return 0, tt.err
+					},
+				}
+				args := map[string]any{"project": "alpha", "session_id": "capture"}
+				if tool == "mem_save" {
+					args["title"], args["content"], args["type"] = "capture", "content", "decision"
+				} else {
+					args["content"] = "## Goal\ncapture"
+				}
+
+				result := callTool(t, connectTestServer(t, store), tool, args)
+
+				require.True(t, transactionCalled, "transactional store must run after prevalidation")
+				require.True(t, result.IsError)
+				if tt.structured {
+					require.Equal(t, string(project.CodeProjectSessionMismatch), decodeJSONResponse(t, result)["error_code"])
+				} else {
+					require.Contains(t, textContent(t, result), "save failed: context canceled")
+				}
+			})
+		}
+	}
+}
+
 func TestMCPExplicitMemoryCaptureDoesNotJoinStartFlight(t *testing.T) {
 	for _, tool := range []string{"mem_save", "mem_session_summary"} {
 		t.Run(tool, func(t *testing.T) {

@@ -395,7 +395,7 @@ func memSaveHandler(store MemoryStore, syncRuntime *syncRuntime, activity *Activ
 			})
 		}
 		if err != nil {
-			return toolError(fmt.Errorf("save failed: %w", err)), nil
+			return toolValidationError(fmt.Errorf("save failed: %w", err)), nil
 		}
 
 		// CRIT-6: per-session save counter mirrors the project counter so callers
@@ -608,7 +608,7 @@ func memSessionSummaryHandler(store MemoryStore, activity *ActivityTracker) sdkm
 			})
 		}
 		if err != nil {
-			return toolError(fmt.Errorf("save failed: %w", err)), nil
+			return toolValidationError(fmt.Errorf("save failed: %w", err)), nil
 		}
 
 		// CRIT-6: per-session save counter for mem_session_summary.
