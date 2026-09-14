@@ -193,6 +193,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 			"properties": {
 				"content":    {"type": "string", "description": "The user prompt text to persist"},
 				"project":    {"type": "string", "description": "Project identifier"},
+				"directory":  {"type": "string", "description": "Working directory identity evidence for an explicit session prompt"},
 				"session_id": {"type": "string", "description": "Optional session ID; absent triggers lazy manual-save fallback"},
 				"recovery_token": {"type": "string", "description": "Recovery token returned by an ambiguous project response"},
 				"project_choice_reason": {"type": "string", "description": "Original ambiguous project/context used when retrying with recovery_token"}
@@ -707,6 +708,7 @@ func memSavePromptHandler(store MemoryStore, prompts PromptStore, activity *Acti
 		var p struct {
 			Content             string `json:"content"`
 			Project             string `json:"project"`
+			Directory           string `json:"directory"`
 			SessionID           string `json:"session_id"`
 			RecoveryToken       string `json:"recovery_token"`
 			ProjectChoiceReason string `json:"project_choice_reason"`
@@ -727,23 +729,34 @@ func memSavePromptHandler(store MemoryStore, prompts PromptStore, activity *Acti
 			)), nil
 		}
 
-		resolved, err := project.ValidateWriteProject(ctx, store, project.WriteInput{Project: p.Project, SessionID: p.SessionID, RecoveryToken: p.RecoveryToken, ProjectChoiceReason: p.ProjectChoiceReason})
+		resolved, err := project.ValidateWriteProject(ctx, store, project.WriteInput{Project: p.Project, Directory: p.Directory, SessionID: p.SessionID, RecoveryToken: p.RecoveryToken, ProjectChoiceReason: p.ProjectChoiceReason})
 		if err != nil {
 			return toolValidationError(err), nil
 		}
 		p.Project = resolved.Project
 
-		// Lazy session fallback — same pattern as memSaveHandler.
-		sessionID, err := resolveSessionID(p.SessionID, p.Project, store)
-		if err != nil {
-			return toolError(fmt.Errorf("resolve session: %w", err)), nil
-		}
-
 		// Strip private tags from content at the handler boundary.
 		contentRes := sanitize.Strip(p.Content)
-
-		prompt, err := prompts.SavePromptForSession(ctx, p.Project, sessionID, contentRes.Clean)
+		var sessionID string
+		var prompt *models.Prompt
+		if strings.TrimSpace(p.SessionID) == "" {
+			sessionID, err = resolveSessionID(p.SessionID, p.Project, store)
+			if err != nil {
+				return toolError(fmt.Errorf("resolve session: %w", err)), nil
+			}
+			prompt, err = prompts.SavePromptForSession(ctx, p.Project, sessionID, contentRes.Clean)
+		} else {
+			sessionID = p.SessionID
+			prompt, err = prompts.SavePromptWithSession(ctx, models.PromptWrite{
+				Session: models.SessionInput{ID: sessionID, Project: p.Project, Directory: p.Directory, Client: "mcp"},
+				Content: contentRes.Clean,
+			})
+		}
 		if err != nil {
+			var validationErr *project.ValidationError
+			if errors.As(err, &validationErr) {
+				return toolValidationError(err), nil
+			}
 			return toolError(fmt.Errorf("save failed: %w", err)), nil
 		}
 		// CRIT-6: per-session prompt capture so CurrentPromptForSession works.

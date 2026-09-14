@@ -16,6 +16,7 @@ import (
 type PromptStore interface {
 	SavePrompt(ctx context.Context, project, content string) (*models.Prompt, error)
 	SavePromptForSession(ctx context.Context, project, sessionID, content string) (*models.Prompt, error)
+	SavePromptWithSession(ctx context.Context, in models.PromptWrite) (*models.Prompt, error)
 	LatestPromptForSession(ctx context.Context, project, sessionID string) (*models.Prompt, error)
 	ListRecentPrompts(ctx context.Context, project string, limit int) ([]*models.Prompt, error)
 }

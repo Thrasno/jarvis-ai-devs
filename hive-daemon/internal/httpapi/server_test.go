@@ -25,9 +25,10 @@ import (
 )
 
 type mockPromptStore struct {
-	savePromptFn           func(ctx context.Context, project, content string) (*models.Prompt, error)
-	savePromptForSessionFn func(ctx context.Context, project, sessionID, content string) (*models.Prompt, error)
-	called                 bool
+	savePromptFn            func(ctx context.Context, project, content string) (*models.Prompt, error)
+	savePromptForSessionFn  func(ctx context.Context, project, sessionID, content string) (*models.Prompt, error)
+	savePromptWithSessionFn func(ctx context.Context, in models.PromptWrite) (*models.Prompt, error)
+	called                  bool
 }
 
 type mockProjectStore struct {
@@ -90,6 +91,14 @@ func (m *mockPromptStore) SavePromptForSession(ctx context.Context, project, ses
 		return m.savePromptFn(ctx, project, content)
 	}
 	return &models.Prompt{ID: 42, Project: project, SessionID: sessionID, Content: content, CreatedAt: time.Now()}, nil
+}
+
+func (m *mockPromptStore) SavePromptWithSession(ctx context.Context, in models.PromptWrite) (*models.Prompt, error) {
+	m.called = true
+	if m.savePromptWithSessionFn != nil {
+		return m.savePromptWithSessionFn(ctx, in)
+	}
+	return &models.Prompt{ID: 42, Project: in.Session.Project, SessionID: in.Session.ID, Content: in.Content, CreatedAt: time.Now()}, nil
 }
 
 func newTestServer(store *mockPromptStore) *httpapi.Server {
@@ -541,9 +550,9 @@ func TestPostPrompts_WithProjectOrDirectoryAndSessionID_PersistsPromptForSession
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			var gotProject, gotSessionID, gotContent string
-			store := &mockPromptStore{savePromptForSessionFn: func(_ context.Context, projectName, sessionID, content string) (*models.Prompt, error) {
-				gotProject, gotSessionID, gotContent = projectName, sessionID, content
-				return &models.Prompt{ID: 8, Project: projectName, SessionID: sessionID, Content: content, CreatedAt: time.Now()}, nil
+			store := &mockPromptStore{savePromptWithSessionFn: func(_ context.Context, in models.PromptWrite) (*models.Prompt, error) {
+				gotProject, gotSessionID, gotContent = in.Session.Project, in.Session.ID, in.Content
+				return &models.Prompt{ID: 8, Project: in.Session.Project, SessionID: in.Session.ID, Content: in.Content, CreatedAt: time.Now()}, nil
 			}}
 			srv := httpapi.NewServerWithProjectStore("127.0.0.1:0", store, mockProjectStore{known: []project.KnownProject{{Name: "jarvis-dev", Directory: "/work/jarvis-dev"}}})
 			req := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewBufferString(tt.body))

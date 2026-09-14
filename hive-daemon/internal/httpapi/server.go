@@ -37,6 +37,7 @@ const (
 type PromptStore interface {
 	SavePrompt(ctx context.Context, project, content string) (*models.Prompt, error)
 	SavePromptForSession(ctx context.Context, project, sessionID, content string) (*models.Prompt, error)
+	SavePromptWithSession(ctx context.Context, in models.PromptWrite) (*models.Prompt, error)
 }
 
 // MemoryStore is the minimal interface httpapi needs to expose the most recent
@@ -617,6 +618,7 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 		Project             string `json:"project"`
 		Directory           string `json:"directory"`
 		SessionID           string `json:"session_id"`
+		Client              string `json:"client"`
 		RecoveryToken       string `json:"recovery_token"`
 		ProjectChoiceReason string `json:"project_choice_reason"`
 	}
@@ -669,16 +671,33 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 	// Strip private tags from content at the handler boundary.
 	contentRes := sanitize.Strip(body.Content)
 
-	prompt, err := s.prompts.SavePromptForSession(r.Context(), body.Project, body.SessionID, contentRes.Clean)
+	var prompt *models.Prompt
+	var err error
+	if strings.TrimSpace(body.SessionID) == "" {
+		prompt, err = s.prompts.SavePromptForSession(r.Context(), body.Project, body.SessionID, contentRes.Clean)
+	} else {
+		client := body.Client
+		if strings.TrimSpace(client) == "" {
+			client = "http"
+		}
+		prompt, err = s.prompts.SavePromptWithSession(r.Context(), models.PromptWrite{
+			Session: models.SessionInput{ID: body.SessionID, Project: body.Project, Directory: body.Directory, Client: client},
+			Content: contentRes.Clean,
+		})
+	}
 	if err != nil {
-		if errors.Is(err, db.ErrProjectBlocked) {
+		var validationErr *project.ValidationError
+		switch {
+		case errors.As(err, &validationErr):
+			writeProjectValidationError(w, err)
+		case errors.Is(err, db.ErrProjectBlocked):
 			w.WriteHeader(http.StatusLocked)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": db.ErrProjectBlocked.Error()})
-			return
+		default:
+			logger.Log.Printf("save prompt: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "internal error"})
 		}
-		logger.Log.Printf("save prompt: %v", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "internal error"})
 		return
 	}
 

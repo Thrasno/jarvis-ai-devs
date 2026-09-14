@@ -377,4 +377,9 @@ All 6a, 6b, and 6c implementation rows are now complete. The parent-owned slice-
 
 ## Slice 7b — HTTP/MCP/hook prompt activation
 
-**Status:** deferred. Transport source/mock changes are restored to HEAD and all 7b implementation rows remain unchecked. No HTTP/MCP mapping, hook attribution, adapter race evidence, module pass, vet pass, commit, push, or PR is claimed.
+**Status:** implementation complete; aggregate slice 7 is complete. Parent review/checkpoint remains pending.
+
+- **RED:** HTTP/MCP explicit-session tests failed before activation: absent sessions were not materialized, ended sessions stayed closed, and atomic capture mocks were not called. Hook receiver test observed no client attribution.
+- **GREEN:** Explicit non-empty HTTP/MCP captures now call `SavePromptWithSession` with validated canonical project/directory evidence; HTTP uses its supplied client or `http`, MCP uses `mcp`, and the hook sends `client: "hook"`. Empty/manual paths retain legacy wrappers.
+- **TRIANGULATE/REFACTOR:** HTTP/MCP tests cover absent/ended materialization, store-returned typed validation mapping, validation-before-store, and independence from a held start flight. Focused and `-race` adapter/hook tests, both module suites, both vets, gofmt, and `git diff --check` passed.
+- **Accounting / rollback:** 113 tracked additions/deletions plus 234 lines across the two untracked adapter tests = **347 native lines**, below 399. Revert only transport interfaces/handlers, hook payload attribution, adapter tests, and this 7b record; retain the 7a DB foundation. No commit, push, or PR was created.
