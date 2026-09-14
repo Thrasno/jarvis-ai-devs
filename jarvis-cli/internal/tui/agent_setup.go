@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"context"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -11,7 +10,6 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agentapply"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
-	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/projectregistry"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
@@ -36,8 +34,6 @@ const claudeRestartGuidance = agentapply.ClaudeRestartGuidance
 const mcpReplacementAcknowledgement = "I ACKNOWLEDGE"
 
 const mcpReplacementWarning = "WARNING: Manually configured MCPs with a Jarvis-managed name at the user level will be replaced. Prior same-name configuration cannot be guaranteed restored. A failure may leave that MCP absent or partial. The operation stops; fix the cause and rerun. Do not edit the managed user-level MCP configuration while this operation runs."
-
-var refreshProjectSkillRegistry = projectregistry.Refresh
 
 // wizardMCPExecutor is the production boundary for the wizard's managed-MCP
 // handoff. Production uses the concrete executor; tests can drive the same
@@ -219,22 +215,4 @@ func verifyConfiguredAgentRuntime(a agent.Agent, models *state.PhaseModels) erro
 	}
 
 	return fmt.Errorf("runtime verification failed [%s] contract=%s checks=%s", report.Agent, report.ContractVersion, strings.Join(failures, "; "))
-}
-
-func refreshProjectRegistryForApply(ctx context.Context, cwd string) ([]string, error) {
-	if strings.TrimSpace(cwd) == "" {
-		return nil, nil
-	}
-	result, err := refreshProjectSkillRegistry(ctx, projectregistry.RefreshOptions{CWD: cwd})
-	if err != nil {
-		if projectregistry.IsNonProjectError(err) {
-			return []string{"Project skill registry warning: " + projectregistry.ErrNotGitWorktree.Error()}, nil
-		}
-		return nil, err
-	}
-	return projectRegistryWarningLines(result.Warnings), nil
-}
-
-func projectRegistryWarningLines(warnings []projectregistry.Warning) []string {
-	return projectregistry.FormatWarningLines("Project skill registry warning: ", warnings)
 }

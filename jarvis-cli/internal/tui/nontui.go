@@ -2,7 +2,6 @@ package tui
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"io"
 	"io/fs"
@@ -444,14 +443,6 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 	if saveErr := config.Save(cfg); saveErr != nil {
 		return fmt.Errorf("save config: %w", saveErr)
 	}
-	registryWarnings, registryErr := refreshProjectRegistryForApply(context.Background(), wcfg.ProjectCWD)
-	if registryErr != nil {
-		return fmt.Errorf("project skill registry refresh failed: %w", registryErr)
-	}
-	for _, warning := range registryWarnings {
-		fmt.Fprintln(noTUIStdout, warning)
-	}
-
 	fmt.Println("\nConfiguration applied successfully!")
 	fmt.Println("Existing choices were updated safely and persisted atomically.")
 	fmt.Println("Next: restart Claude Code or OpenCode.")

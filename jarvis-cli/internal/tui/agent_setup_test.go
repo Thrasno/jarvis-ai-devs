@@ -1,10 +1,10 @@
 package tui
 
 import (
-	"context"
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -16,7 +16,6 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
-	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/projectregistry"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 	syncplan "github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sync"
@@ -606,104 +605,60 @@ func TestConfigureWizardAgent_PrefersConfigAwareSkillInstallation(t *testing.T) 
 	}
 }
 
-func TestRunAgentConfigSequence_RefreshesProjectRegistryAfterSuccessfulApplyAndReportsWarnings(t *testing.T) {
-	tmpHome := isolateTestHome(t)
-	projectRoot := t.TempDir()
-
-	called := false
-	originalRefresh := refreshProjectSkillRegistry
-	refreshProjectSkillRegistry = func(ctx context.Context, opts projectregistry.RefreshOptions) (projectregistry.Result, error) {
-		called = true
-		if opts.CWD != projectRoot {
-			t.Fatalf("refresh cwd = %q, want %q", opts.CWD, projectRoot)
-		}
-		if _, err := os.Stat(filepath.Join(tmpHome, ".jarvis", "config.yaml")); err != nil {
-			t.Fatalf("project registry refresh should run after config save, got stat err=%v", err)
-		}
-		return projectregistry.Result{Warnings: []projectregistry.Warning{{Message: "legacy registry imported"}}}, nil
-	}
-	t.Cleanup(func() { refreshProjectSkillRegistry = originalRefresh })
-
-	m := Model{
-		Step:       StepAgentConfig,
-		Selected:   make(map[string]bool),
-		cfg:        &config.AppConfig{APIURL: config.DefaultAPIURL},
-		ProjectCWD: projectRoot,
+func TestRunAgentConfigSequence_DoesNotRefreshProjectRegistryForLaunchDirectory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires git to create a launch-directory fixture")
 	}
 
-	msg := runAgentConfigSequence(m)()
-	progress, ok := msg.(agentProgressMsg)
-	if !ok {
-		t.Fatalf("expected agentProgressMsg, got %T", msg)
-	}
-	if !progress.done || progress.failed {
-		t.Fatalf("expected successful completion despite registry warning, got %+v", progress)
-	}
-	if !called {
-		t.Fatal("expected project registry refresh to run after TUI apply")
-	}
-	if !strings.Contains(progress.line, "Project skill registry warning: legacy registry imported") {
-		t.Fatalf("expected registry warning in progress line, got %q", progress.line)
+	for _, tt := range []struct {
+		name              string
+		gitRoot           bool
+		preserveArtifacts bool
+	}{
+		{name: "Git launch directory preserves project-owned files", gitRoot: true, preserveArtifacts: true},
+		{name: "non-Git launch directory creates no project artifacts"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			isolateTestHome(t)
+			launchDir := t.TempDir()
+			if tt.gitRoot {
+				initTestGitRepository(t, launchDir)
+			}
+			if tt.preserveArtifacts {
+				seedProjectLocalInstallerSentinels(t, launchDir)
+			}
+
+			m := Model{
+				Step:       StepAgentConfig,
+				Selected:   make(map[string]bool),
+				cfg:        &config.AppConfig{APIURL: config.DefaultAPIURL},
+				ProjectCWD: launchDir,
+			}
+
+			msg := runAgentConfigSequence(m)()
+			progress, ok := msg.(agentProgressMsg)
+			if !ok {
+				t.Fatalf("expected agentProgressMsg, got %T", msg)
+			}
+			if !progress.done || progress.failed {
+				t.Fatalf("expected successful completion, got %+v", progress)
+			}
+			if strings.Contains(progress.line, "Project skill registry warning") {
+				t.Fatalf("installer reported a project registry result: %q", progress.line)
+			}
+			if tt.preserveArtifacts {
+				assertProjectLocalInstallerSentinelsPreserved(t, launchDir)
+				return
+			}
+			assertProjectLocalInstallerArtifactsAbsent(t, launchDir)
+		})
 	}
 }
 
-func TestRunAgentConfigSequence_ProjectRegistryNonProjectFailureIsWarningOnly(t *testing.T) {
-	isolateTestHome(t)
-	projectRoot := t.TempDir()
-
-	originalRefresh := refreshProjectSkillRegistry
-	refreshProjectSkillRegistry = func(context.Context, projectregistry.RefreshOptions) (projectregistry.Result, error) {
-		return projectregistry.Result{}, projectregistry.ErrNotGitWorktree
-	}
-	t.Cleanup(func() { refreshProjectSkillRegistry = originalRefresh })
-
-	m := Model{
-		Step:       StepAgentConfig,
-		Selected:   make(map[string]bool),
-		cfg:        &config.AppConfig{APIURL: config.DefaultAPIURL},
-		ProjectCWD: projectRoot,
-	}
-
-	msg := runAgentConfigSequence(m)()
-	progress, ok := msg.(agentProgressMsg)
-	if !ok {
-		t.Fatalf("expected agentProgressMsg, got %T", msg)
-	}
-	if !progress.done || progress.failed {
-		t.Fatalf("expected successful completion despite registry refresh failure, got %+v", progress)
-	}
-	if !strings.Contains(progress.line, "Project skill registry warning: not a git worktree") {
-		t.Fatalf("expected refresh failure warning in progress line, got %q", progress.line)
-	}
-}
-
-func TestRunAgentConfigSequence_ProjectRegistryWriteFailureIsBlocking(t *testing.T) {
-	isolateTestHome(t)
-	projectRoot := t.TempDir()
-
-	originalRefresh := refreshProjectSkillRegistry
-	refreshProjectSkillRegistry = func(context.Context, projectregistry.RefreshOptions) (projectregistry.Result, error) {
-		return projectregistry.Result{}, errors.New("write skill registry: finalize registry: permission denied")
-	}
-	t.Cleanup(func() { refreshProjectSkillRegistry = originalRefresh })
-
-	m := Model{
-		Step:       StepAgentConfig,
-		Selected:   make(map[string]bool),
-		cfg:        &config.AppConfig{APIURL: config.DefaultAPIURL},
-		ProjectCWD: projectRoot,
-	}
-
-	msg := runAgentConfigSequence(m)()
-	progress, ok := msg.(agentProgressMsg)
-	if !ok {
-		t.Fatalf("expected agentProgressMsg, got %T", msg)
-	}
-	if !progress.done || !progress.failed {
-		t.Fatalf("expected registry write failure to block successful completion, got %+v", progress)
-	}
-	if !strings.Contains(progress.line, "Project skill registry refresh failed") || !strings.Contains(progress.line, "permission denied") {
-		t.Fatalf("expected blocking registry failure in progress line, got %q", progress.line)
+func initTestGitRepository(t *testing.T, dir string) {
+	t.Helper()
+	if output, err := exec.Command("git", "init", "-q", dir).CombinedOutput(); err != nil {
+		t.Fatalf("initialize Git launch directory: %v\n%s", err, output)
 	}
 }
 

@@ -3,7 +3,6 @@ package tui
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -20,7 +19,6 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/config"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
-	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/projectregistry"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/skills"
 	"gopkg.in/yaml.v3"
@@ -143,92 +141,105 @@ func TestSelectedSkillIDsFreshV0SelectionIsDeterministic(t *testing.T) {
 	}
 }
 
-func TestRunNoTUI_RefreshesProjectRegistryAfterSuccessfulApplyAndPrintsWarnings(t *testing.T) {
-	tmpHome := isolateTestHome(t)
-	t.Setenv("PATH", "")
-	projectRoot := t.TempDir()
-
-	called := false
-	originalRefresh := refreshProjectSkillRegistry
-	refreshProjectSkillRegistry = func(ctx context.Context, opts projectregistry.RefreshOptions) (projectregistry.Result, error) {
-		called = true
-		if opts.CWD != projectRoot {
-			t.Fatalf("refresh cwd = %q, want %q", opts.CWD, projectRoot)
-		}
-		if _, err := os.Stat(filepath.Join(tmpHome, ".jarvis", "config.yaml")); err != nil {
-			t.Fatalf("project registry refresh should run after config save, got stat err=%v", err)
-		}
-		return projectregistry.Result{Warnings: []projectregistry.Warning{{Message: "legacy registry imported", Path: filepath.Join(projectRoot, ".atl", "skill-registry.md")}}}, nil
-	}
-	t.Cleanup(func() { refreshProjectSkillRegistry = originalRefresh })
-
-	var output bytes.Buffer
-	previousStdout := noTUIStdout
-	noTUIStdout = &output
-	t.Cleanup(func() { noTUIStdout = previousStdout })
-
-	wcfg := testWizardConfig()
-	wcfg.ProjectCWD = projectRoot
-	if err := runNoTUI(wcfg, strings.NewReader("\n\nyes\n")); err != nil {
-		t.Fatalf("runNoTUI: %v", err)
+func TestRunNoTUI_DoesNotRefreshProjectRegistryForLaunchDirectory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires git to create a launch-directory fixture")
 	}
 
-	if !called {
-		t.Fatal("expected project registry refresh to run after no-TUI apply")
-	}
-	if !strings.Contains(output.String(), "Project skill registry warning: legacy registry imported") {
-		t.Fatalf("expected non-blocking project registry warning in output, got:\n%s", output.String())
+	for _, tt := range []struct {
+		name              string
+		gitRoot           bool
+		preserveArtifacts bool
+	}{
+		{name: "Git launch directory preserves project-owned files", gitRoot: true, preserveArtifacts: true},
+		{name: "non-Git launch directory creates no project artifacts"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			isolateTestHome(t)
+			launchDir := t.TempDir()
+			if tt.gitRoot {
+				initTestGitRepository(t, launchDir)
+			}
+			if tt.preserveArtifacts {
+				seedProjectLocalInstallerSentinels(t, launchDir)
+			}
+			t.Setenv("PATH", "")
+
+			var output bytes.Buffer
+			previousStdout := noTUIStdout
+			noTUIStdout = &output
+			t.Cleanup(func() { noTUIStdout = previousStdout })
+
+			wcfg := testWizardConfig()
+			wcfg.ProjectCWD = launchDir
+			if err := runNoTUI(wcfg, strings.NewReader("\n\nyes\n")); err != nil {
+				t.Fatalf("runNoTUI: %v", err)
+			}
+			if strings.Contains(output.String(), "Project skill registry warning") {
+				t.Fatalf("installer reported a project registry result:\n%s", output.String())
+			}
+			if tt.preserveArtifacts {
+				assertProjectLocalInstallerSentinelsPreserved(t, launchDir)
+				return
+			}
+			assertProjectLocalInstallerArtifactsAbsent(t, launchDir)
+		})
 	}
 }
 
-func TestRunNoTUI_ProjectRegistryNonProjectFailureIsWarningOnly(t *testing.T) {
-	isolateTestHome(t)
-	t.Setenv("PATH", "")
-	projectRoot := t.TempDir()
+var projectLocalInstallerSentinels = map[string][]byte{
+	".jarvis/skill-registry.md":          []byte("# Project-owned registry sentinel\n"),
+	".jarvis/skills/project-sentinel.md": []byte("# Project-owned skill sentinel\n"),
+	".gitignore":                         []byte("# Project-owned gitignore sentinel\nlocal-only.txt\n"),
+}
 
-	originalRefresh := refreshProjectSkillRegistry
-	refreshProjectSkillRegistry = func(context.Context, projectregistry.RefreshOptions) (projectregistry.Result, error) {
-		return projectregistry.Result{}, projectregistry.ErrNotGitWorktree
+func seedProjectLocalInstallerSentinels(t *testing.T, launchDir string) {
+	t.Helper()
+	for relativePath, content := range projectLocalInstallerSentinels {
+		path := filepath.Join(launchDir, filepath.FromSlash(relativePath))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("create project-owned sentinel directory %q: %v", relativePath, err)
+		}
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			t.Fatalf("write project-owned sentinel %q: %v", relativePath, err)
+		}
 	}
-	t.Cleanup(func() { refreshProjectSkillRegistry = originalRefresh })
+}
 
-	var output bytes.Buffer
-	previousStdout := noTUIStdout
-	noTUIStdout = &output
-	t.Cleanup(func() { noTUIStdout = previousStdout })
+func assertProjectLocalInstallerSentinelsPreserved(t *testing.T, launchDir string) {
+	t.Helper()
+	for relativePath, want := range projectLocalInstallerSentinels {
+		path := filepath.Join(launchDir, filepath.FromSlash(relativePath))
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read project-owned sentinel %q after install: %v", relativePath, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("project-owned sentinel %q changed:\nwant: %q\ngot:  %q", relativePath, want, got)
+		}
+	}
 
-	wcfg := testWizardConfig()
-	wcfg.ProjectCWD = projectRoot
-	err := runNoTUI(wcfg, strings.NewReader("\n\nyes\n"))
-
+	skillsDir := filepath.Join(launchDir, ".jarvis", "skills")
+	entries, err := os.ReadDir(skillsDir)
 	if err != nil {
-		t.Fatalf("runNoTUI returned error for non-project refresh failure: %v", err)
+		t.Fatalf("read project-owned skills directory after install: %v", err)
 	}
-	if !strings.Contains(output.String(), "Project skill registry warning: not a git worktree") {
-		t.Fatalf("expected non-project registry warning in output, got:\n%s", output.String())
+	if len(entries) != 1 || entries[0].Name() != "project-sentinel.md" {
+		t.Fatalf("project-owned skills directory changed: entries = %v, want [project-sentinel.md]", entries)
 	}
 }
 
-func TestRunNoTUI_ProjectRegistryWriteFailureIsBlocking(t *testing.T) {
-	isolateTestHome(t)
-	t.Setenv("PATH", "")
-	projectRoot := t.TempDir()
-
-	originalRefresh := refreshProjectSkillRegistry
-	refreshProjectSkillRegistry = func(context.Context, projectregistry.RefreshOptions) (projectregistry.Result, error) {
-		return projectregistry.Result{}, errors.New("write skill registry: finalize registry: permission denied")
-	}
-	t.Cleanup(func() { refreshProjectSkillRegistry = originalRefresh })
-
-	wcfg := testWizardConfig()
-	wcfg.ProjectCWD = projectRoot
-	err := runNoTUI(wcfg, strings.NewReader("\n\nyes\n"))
-
-	if err == nil {
-		t.Fatal("expected blocking registry write failure from runNoTUI")
-	}
-	if !strings.Contains(err.Error(), "project skill registry refresh failed") || !strings.Contains(err.Error(), "permission denied") {
-		t.Fatalf("expected blocking registry failure error, got: %v", err)
+func assertProjectLocalInstallerArtifactsAbsent(t *testing.T, launchDir string) {
+	t.Helper()
+	for _, relativePath := range []string{
+		".jarvis/skill-registry.md",
+		".jarvis/skills",
+		".gitignore",
+	} {
+		path := filepath.Join(launchDir, filepath.FromSlash(relativePath))
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("installer created project-local artifact %q: %v", relativePath, err)
+		}
 	}
 }
 
