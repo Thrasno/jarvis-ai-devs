@@ -28,6 +28,13 @@ func TestOpenCodeAgent_InstallPromptHookWarnsForRejectedPromptCapture(t *testing
 	if err != nil {
 		t.Fatalf("read installed hook: %v", err)
 	}
+	template, err := os.ReadFile(filepath.Join("..", "..", "embed", "hooks", "opencode", "hive.ts"))
+	if err != nil {
+		t.Fatalf("read source-of-truth hook template: %v", err)
+	}
+	if string(content) != string(template) {
+		t.Fatal("installed hook differs from the source-of-truth template")
+	}
 	source := string(content)
 	for _, required := range []string{"if (!response.ok)", "console.warn", "HIVE_URL", "response.status"} {
 		if !strings.Contains(source, required) {
