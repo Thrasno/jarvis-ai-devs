@@ -136,15 +136,15 @@ Chain strategy: stacked-to-main
 
 - [x] **RED:** Extend source-derived executable and installer tests for actual lifecycle ID/evidence, no PID fallback, exact request/body/header, shared pending created promise and cleanup/retry/isolation, timeout/fail-open/immediate return, and unchanged prompt behavior except client; explicitly skip Node execution when unavailable/short. <!-- sdd-owner: implementation -->
 - [x] **GREEN:** Add the shared lifecycle resolver/evidence helper, caught notifier, created-flight map, fire-and-forget created dispatch, and prompt `client: "opencode"` in the embedded template only. <!-- sdd-owner: implementation -->
-- [ ] **TRIANGULATE/REFACTOR:** Add installer-byte and created/prompt independence tests plus the creation/prompt manual checklist subset; run agent/module/vet checks. Automated verifier remediation covers prompt joining and timeout-flight sequencing; manual checklist remains deferred. <!-- sdd-owner: implementation -->
+- [x] **TRIANGULATE/REFACTOR:** Add installer-byte and created/prompt independence tests plus the creation/prompt manual checklist subset; run agent/module/vet checks. Automated verifier remediation covers prompt joining and timeout-flight sequencing; the checklist records the unrun live-runtime subset and its rationale. <!-- sdd-owner: implementation -->
 
 ### 11. OpenCode deletion delivery — 120–200 native lines
 
 **Dependency / finish:** slice 10 → the tested resolver/notifier sends independent fail-open `session.deleted` closure evidence and the manual checklist is complete. **Paths:** `jarvis-cli/embed/hooks/opencode/hive.ts`, the same `jarvis-cli/internal/agent/` source-derived/installer tests, `openspec/changes/issue-648-lazy-session-materialization/manual-opencode-lifecycle-checklist.md`. **Rollback:** revert deletion independently, then slice 10 if necessary; never edit installed plugin files.
 
-- [ ] **RED:** Add executable/install tests for deleted identity/no-op, encoded end URL, exact evidence/client body, timeout/fail-open/immediate return, and independence from a pending created flight. <!-- sdd-owner: implementation -->
-- [ ] **GREEN:** Add only deleted-event dispatch through the established resolver/notifier using `encodeURIComponent(id)` and the exact end endpoint/body. <!-- sdd-owner: implementation -->
-- [ ] **TRIANGULATE/REFACTOR:** Complete the temporary installer/loopback manual checklist for created/deleted/prompt continuity and failure cases, record skips/runtime, and run agent/module/vet checks. <!-- sdd-owner: implementation -->
+- [x] **RED:** Add executable/install tests for deleted identity/no-op, encoded end URL, exact evidence/client body, timeout/fail-open/immediate return, and independence from a pending created flight. <!-- sdd-owner: implementation -->
+- [x] **GREEN:** Add deleted-event dispatch through the established resolver/notifier using `encodeURIComponent(id)` and the exact end endpoint/body; align the existing created registration with design §6's `POST /sessions` route. <!-- sdd-owner: implementation -->
+- [x] **TRIANGULATE/REFACTOR:** Complete the temporary installer/loopback manual checklist for created/deleted/prompt continuity and failure cases, record skips/runtime, and run agent/module/vet checks. <!-- sdd-owner: implementation -->
 
 ## Parent Review and Lifecycle Gates
 

@@ -15,11 +15,13 @@ import (
 	"time"
 )
 
-func TestOpenCodeHiveTemplate_DeclaresBoundedCreatedLifecycleContract(t *testing.T) {
+func TestOpenCodeHiveTemplate_DeclaresBoundedLifecycleContract(t *testing.T) {
 	source := readOpenCodeHiveTemplate(t)
 	for _, required := range []string{
 		`"session.created"`,
-		`/sessions/start`,
+		`"session.deleted"`,
+		"SESSION_START: `${HIVE_URL}/sessions`,",
+		`/sessions/${encodeURIComponent(id)}/end`,
 		`dev_id`,
 		`client: HIVE_CLIENT`,
 		`createdFlights`,
@@ -30,7 +32,7 @@ func TestOpenCodeHiveTemplate_DeclaresBoundedCreatedLifecycleContract(t *testing
 			t.Fatalf("OpenCode Hive template missing lifecycle contract %q", required)
 		}
 	}
-	for _, forbidden := range []string{"ppid-", "Core", "autostart", "idempotency", "session.deleted"} {
+	for _, forbidden := range []string{"ppid-", "process.ppid", "Core", "autostart", "idempotency"} {
 		if strings.Contains(source, forbidden) {
 			t.Fatalf("OpenCode Hive template contains deferred lifecycle behavior %q", forbidden)
 		}
@@ -55,7 +57,7 @@ func TestOpenCodeHiveTemplate_CoalescesCreatedAndKeepsPromptIndependent(t *testi
 		case "/governance/project-identity/status":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{}`))
-		case "/sessions/start":
+		case "/sessions":
 			startRequests <- readHiveTemplateRequest(r)
 			if starts.Add(1) == 1 {
 				select {
@@ -150,6 +152,92 @@ await new Promise((resolve) => setTimeout(resolve, 100));
 	})
 }
 
+func TestOpenCodeHiveTemplate_EndsDeletedSessionFromGenericEvent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires Node to execute the source-of-truth OpenCode template")
+	}
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("Node is unavailable: source execution test skipped")
+	}
+
+	createdRequests := make(chan hiveTemplateRequest, 1)
+	endRequests := make(chan hiveTemplateRequest, 2)
+	firstEndCanceled := make(chan time.Time, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/governance/project-identity/status":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+		case "/sessions":
+			createdRequests <- readHiveTemplateRequest(r)
+			<-r.Context().Done()
+		case "/sessions/session /with?reserved%chars/end":
+			endRequests <- readHiveTemplateRequest(r)
+			select {
+			case <-r.Context().Done():
+				firstEndCanceled <- time.Now()
+			case <-time.After(3 * time.Second):
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	port := hiveTemplatePort(t, server.URL)
+	runner := filepath.Join(t.TempDir(), "run-hive-deletion-template.mjs")
+	if err := os.WriteFile(runner, []byte(`
+import { pathToFileURL } from "node:url";
+const { Hive } = await import(pathToFileURL(process.argv[2]).href);
+const plugin = await Hive();
+const created = { event: { type: "session.created", properties: { id: "created-pending" } } };
+const deleted = { event: { type: "session.deleted", properties: { info: {
+  id: "session /with?reserved%chars", project: "jarvis-dev", directory: "/workspace/jarvis-dev", summary: "finished"
+} } } };
+plugin["event"](created);
+plugin["event"](deleted);
+await new Promise((resolve) => setTimeout(resolve, 1100));
+plugin["event"](deleted);
+const originalFetch = globalThis.fetch;
+globalThis.fetch = () => { throw new Error("synchronous end setup failure"); };
+plugin["event"]({ event: { type: "session.deleted", properties: { info: { id: "unavailable-end" } } } });
+globalThis.fetch = originalFetch;
+plugin["event"]({ event: { type: "session.deleted", properties: { info: {} } } });
+await new Promise((resolve) => setTimeout(resolve, 100));
+`), 0600); err != nil {
+		t.Fatalf("write Node deletion runner: %v", err)
+	}
+
+	cmd := exec.Command("node", "--experimental-strip-types", runner, filepath.Join("..", "..", "embed", "hooks", "opencode", "hive.ts"))
+	cmd.Env = append(os.Environ(), "HIVE_HTTP_PORT="+port, "HIVE_OPENCODE_SESSION_ID=", "OPENCODE_SESSION_ID=", "SESSION_ID=")
+	finished := make(chan error, 1)
+	go func() { finished <- cmd.Run() }()
+
+	_ = waitHiveTemplateRequest(t, createdRequests, "pending session creation")
+	firstEnd := waitHiveTemplateRequest(t, endRequests, "first deleted-session end")
+	firstCanceled := waitHiveTemplateTime(t, firstEndCanceled, "first end timeout cancellation")
+	secondEnd := waitHiveTemplateRequest(t, endRequests, "repeat deleted-session end")
+	if secondEnd.observedAt.Before(firstCanceled) {
+		t.Fatalf("repeat end observed at %s before first timeout cleanup at %s", secondEnd.observedAt, firstCanceled)
+	}
+	if err := <-finished; err != nil {
+		t.Fatalf("execute OpenCode Hive deletion template: %v", err)
+	}
+	assertNoHiveTemplateRequest(t, endRequests, 200*time.Millisecond, "session end without an event ID")
+
+	for _, request := range []hiveTemplateRequest{firstEnd, secondEnd} {
+		if request.method != http.MethodPost || request.contentType != "application/json" {
+			t.Fatalf("session end request = %s content-type %q, want POST application/json", request.method, request.contentType)
+		}
+		if request.requestURI != "/sessions/session%20%2Fwith%3Freserved%25chars/end" {
+			t.Fatalf("session end request URI = %q, want encoded ID", request.requestURI)
+		}
+		assertHiveTemplateJSON(t, request, map[string]string{
+			"project": "jarvis-dev", "directory": "/workspace/jarvis-dev", "summary": "finished", "client": "opencode",
+		})
+	}
+}
+
 func readOpenCodeHiveTemplate(t *testing.T) string {
 	t.Helper()
 	content, err := os.ReadFile(filepath.Join("..", "..", "embed", "hooks", "opencode", "hive.ts"))
@@ -172,6 +260,7 @@ type hiveTemplateRequest struct {
 	method      string
 	contentType string
 	path        string
+	requestURI  string
 	body        []byte
 	err         error
 	observedAt  time.Time
@@ -183,6 +272,7 @@ func readHiveTemplateRequest(request *http.Request) hiveTemplateRequest {
 		method:      request.Method,
 		contentType: request.Header.Get("Content-Type"),
 		path:        request.URL.Path,
+		requestURI:  request.RequestURI,
 		body:        body,
 		err:         err,
 		observedAt:  time.Now(),
