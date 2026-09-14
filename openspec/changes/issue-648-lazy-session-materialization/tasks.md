@@ -126,17 +126,17 @@ Chain strategy: stacked-to-main
 
 **Dependency / finish:** slice 8 → explicit MCP save/summary materializes in the existing memory transaction; manual and project-unknown recovery stay intact. **Paths:** `hive-daemon/internal/db/memory.go` and tests, MCP memory interfaces/schema/mocks/tests under `hive-daemon/internal/mcp/`, reuse of `hive-daemon/internal/models/session_write.go` only if needed. **Rollback:** revert explicit MCP activation only.
 
-- [ ] **RED:** Extend memory transaction fixtures for session/memory/link/journal abort triggers; test explicit save/summary absent/ended/mismatch rollback, independent capture while a start flight is held, and manual/project_unknown/recovery/migration/quarantine regressions. <!-- sdd-owner: implementation -->
-- [ ] **GREEN:** Add `SaveMemoryWithSession` through the existing preparation callback and convert only explicit MCP save/summary, retaining validation, limits, manual fallback, and non-lifecycle summary-memory behavior. <!-- sdd-owner: implementation -->
-- [ ] **TRIANGULATE/REFACTOR:** Cover capture-after-ended reopen and failed-summary preservation; format and run focused DB/MCP, race, module, and vet checks. <!-- sdd-owner: implementation -->
+- [x] **RED:** Extend memory transaction fixtures for session/memory/journal abort triggers and a real prompt-link foreign-key rejection; test explicit save/summary absent/ended/mismatch rollback, independent capture while a start flight is held, and manual/project_unknown/recovery/migration/quarantine regressions. <!-- sdd-owner: implementation -->
+- [x] **GREEN:** Add `SaveMemoryWithSession` through the existing preparation callback and convert only explicit MCP save/summary, retaining validation, limits, manual fallback, and non-lifecycle summary-memory behavior. <!-- sdd-owner: implementation -->
+- [x] **TRIANGULATE/REFACTOR:** Cover capture-after-ended reopen and failed-summary preservation; format and run focused DB/MCP, race, module, and vet checks. <!-- sdd-owner: implementation -->
 
 ### 10. OpenCode coalesced creation and prompt attribution — 280–380 native lines
 
 **Dependency / finish:** slice 9 → embedded source sends fail-open coalesced `session.created` registration and prompt client attribution; deletion remains absent until slice 11. **Paths:** `jarvis-cli/embed/hooks/opencode/hive.ts`, source-derived/installer tests under `jarvis-cli/internal/agent/`, `openspec/changes/issue-648-lazy-session-materialization/manual-opencode-lifecycle-checklist.md`. **Rollback:** revert source template behavior through installer regeneration only.
 
-- [ ] **RED:** Extend source-derived executable and installer tests for actual lifecycle ID/evidence, no PID fallback, exact request/body/header, shared pending created promise and cleanup/retry/isolation, timeout/fail-open/immediate return, and unchanged prompt behavior except client; explicitly skip Node execution when unavailable/short. <!-- sdd-owner: implementation -->
-- [ ] **GREEN:** Add the shared lifecycle resolver/evidence helper, caught notifier, created-flight map, fire-and-forget created dispatch, and prompt `client: "opencode"` in the embedded template only. <!-- sdd-owner: implementation -->
-- [ ] **TRIANGULATE/REFACTOR:** Add installer-byte and created/prompt independence tests plus the creation/prompt manual checklist subset; run agent/module/vet checks. <!-- sdd-owner: implementation -->
+- [x] **RED:** Extend source-derived executable and installer tests for actual lifecycle ID/evidence, no PID fallback, exact request/body/header, shared pending created promise and cleanup/retry/isolation, timeout/fail-open/immediate return, and unchanged prompt behavior except client; explicitly skip Node execution when unavailable/short. <!-- sdd-owner: implementation -->
+- [x] **GREEN:** Add the shared lifecycle resolver/evidence helper, caught notifier, created-flight map, fire-and-forget created dispatch, and prompt `client: "opencode"` in the embedded template only. <!-- sdd-owner: implementation -->
+- [ ] **TRIANGULATE/REFACTOR:** Add installer-byte and created/prompt independence tests plus the creation/prompt manual checklist subset; run agent/module/vet checks. Automated verifier remediation covers prompt joining and timeout-flight sequencing; manual checklist remains deferred. <!-- sdd-owner: implementation -->
 
 ### 11. OpenCode deletion delivery — 120–200 native lines
 

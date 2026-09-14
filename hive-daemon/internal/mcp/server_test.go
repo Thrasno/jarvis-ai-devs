@@ -28,6 +28,7 @@ var _ hivemcp.MemoryStore = (*mockStore)(nil)
 type mockStore struct {
 	saveMemoryFn                  func(*models.Memory) (int64, error)
 	saveMemoryWithManualSessionFn func(*models.Memory) (int64, error)
+	saveMemoryWithSessionFn       func(context.Context, *models.Memory, models.SessionInput) (int64, error)
 	getMemoryFn                   func(int64) (*models.Memory, error)
 	listMemoriesFn                func(string, int) ([]*models.Memory, error)
 	searchFn                      func(models.MemorySearchCriteria) ([]*models.Memory, error)
@@ -67,6 +68,14 @@ func (m *mockStore) SaveMemoryWithManualSession(mem *models.Memory) (int64, erro
 		return m.saveMemoryFn(mem)
 	}
 	return 1, nil
+}
+
+func (m *mockStore) SaveMemoryWithSession(ctx context.Context, mem *models.Memory, session models.SessionInput) (int64, error) {
+	if m.saveMemoryWithSessionFn != nil {
+		return m.saveMemoryWithSessionFn(ctx, mem, session)
+	}
+	mem.SessionID = session.ID
+	return m.SaveMemory(mem)
 }
 
 func (m *mockStore) GetMemory(id int64) (*models.Memory, error) {
