@@ -126,9 +126,9 @@ Chain strategy: stacked-to-main
 
 **Dependency / finish:** slice 8 → explicit MCP save/summary materializes in the existing memory transaction; manual and project-unknown recovery stay intact. **Paths:** `hive-daemon/internal/db/memory.go` and tests, MCP memory interfaces/schema/mocks/tests under `hive-daemon/internal/mcp/`, reuse of `hive-daemon/internal/models/session_write.go` only if needed. **Rollback:** revert explicit MCP activation only.
 
-- [ ] **RED:** Extend memory transaction fixtures for session/memory/link/journal abort triggers; test explicit save/summary absent/ended/mismatch rollback, independent capture while a start flight is held, and manual/project_unknown/recovery/migration/quarantine regressions. <!-- sdd-owner: implementation -->
-- [ ] **GREEN:** Add `SaveMemoryWithSession` through the existing preparation callback and convert only explicit MCP save/summary, retaining validation, limits, manual fallback, and non-lifecycle summary-memory behavior. <!-- sdd-owner: implementation -->
-- [ ] **TRIANGULATE/REFACTOR:** Cover capture-after-ended reopen and failed-summary preservation; format and run focused DB/MCP, race, module, and vet checks. <!-- sdd-owner: implementation -->
+- [x] **RED:** Extend memory transaction fixtures for session/memory/journal abort triggers and a real prompt-link foreign-key rejection; test explicit save/summary absent/ended/mismatch rollback, independent capture while a start flight is held, and manual/project_unknown/recovery/migration/quarantine regressions. <!-- sdd-owner: implementation -->
+- [x] **GREEN:** Add `SaveMemoryWithSession` through the existing preparation callback and convert only explicit MCP save/summary, retaining validation, limits, manual fallback, and non-lifecycle summary-memory behavior. <!-- sdd-owner: implementation -->
+- [x] **TRIANGULATE/REFACTOR:** Cover capture-after-ended reopen and failed-summary preservation; format and run focused DB/MCP, race, module, and vet checks. <!-- sdd-owner: implementation -->
 
 ### 10. OpenCode coalesced creation and prompt attribution — 280–380 native lines
 
