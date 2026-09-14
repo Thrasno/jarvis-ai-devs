@@ -51,6 +51,7 @@ type MemoryStore interface {
 // passive-observation endpoints. *db.DB satisfies this structurally.
 type SessionStore interface {
 	EnsureSession(context.Context, models.SessionInput) (*models.Session, error)
+	EnsureAndEndSession(context.Context, models.SessionEndInput) (*models.Session, error)
 	CreateSession(id, project, directory, devID, client string) error
 	EndSession(id, summary string) error
 	SavePassiveObservation(ctx context.Context, sessionID, project, source, content string) error
@@ -1371,7 +1372,7 @@ func (s *Server) handleProjectLastSave(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSessionsEnd handles POST /sessions/{id}/end.
-// Passes an empty summary — the hook has no summary context to provide.
+// The caller must supply bounded project evidence; HTTP duplicate ends are no-ops.
 func (s *Server) handleSessionsEnd(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
 		return
@@ -1385,14 +1386,45 @@ func (s *Server) handleSessionsEnd(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session store not configured"})
 		return
 	}
-	err := s.sessions.EndSession(id, "")
+	if s.projects == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "project store not configured"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body struct {
+		Project   string `json:"project"`
+		Directory string `json:"directory"`
+		DevID     string `json:"dev_id"`
+		Client    string `json:"client"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	resolved, err := project.ValidateWriteProject(r.Context(), s.projects, project.WriteInput{
+		Project: body.Project, Directory: body.Directory, SessionID: id,
+	})
 	if err != nil {
-		if errors.Is(err, db.ErrSessionNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
-			return
+		writeProjectValidationError(w, err)
+		return
+	}
+	_, err = s.sessions.EnsureAndEndSession(r.Context(), models.SessionEndInput{
+		Session: models.SessionInput{
+			ID: id, Project: resolved.Project, Directory: body.Directory, DevID: body.DevID, Client: body.Client,
+		},
+		RejectAlreadyEnded: false,
+	})
+	if err != nil {
+		var validationErr *project.ValidationError
+		switch {
+		case errors.As(err, &validationErr):
+			writeProjectValidationError(w, err)
+		case errors.Is(err, db.ErrProjectBlocked):
+			writeJSON(w, http.StatusLocked, map[string]string{"error": db.ErrProjectBlocked.Error()})
+		default:
+			logger.Log.Printf("ensure and end session %q: %v", id, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		}
-		logger.Log.Printf("end session %q: %v", id, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})

@@ -25,6 +25,7 @@ import (
 type mockSessionStore struct {
 	createSessionFn          func(id, project, directory, devID, client string) error
 	ensureSessionFn          func(context.Context, models.SessionInput) (*models.Session, error)
+	ensureAndEndSessionFn    func(context.Context, models.SessionEndInput) (*models.Session, error)
 	endSessionFn             func(id, summary string) error
 	savePassiveObservationFn func(ctx context.Context, sessionID, project, source, content string) error
 }
@@ -46,6 +47,13 @@ func (m *mockSessionStore) EnsureSession(ctx context.Context, in models.SessionI
 	return &models.Session{ID: in.ID, Project: in.Project}, nil
 }
 
+func (m *mockSessionStore) EnsureAndEndSession(ctx context.Context, in models.SessionEndInput) (*models.Session, error) {
+	if m.ensureAndEndSessionFn != nil {
+		return m.ensureAndEndSessionFn(ctx, in)
+	}
+	return m.EnsureSession(ctx, in.Session)
+}
+
 func (m *mockSessionStore) EndSession(id, summary string) error {
 	if m.endSessionFn != nil {
 		return m.endSessionFn(id, summary)
@@ -65,6 +73,12 @@ func (m *mockSessionStore) SavePassiveObservation(ctx context.Context, sessionID
 func newServerWithSessions(sessions *mockSessionStore) *httpapi.Server {
 	prompts := &mockPromptStore{}
 	return httpapi.NewServerWithSessions("127.0.0.1:0", prompts, sessions)
+}
+
+func newServerWithEndEvidence(sessions *mockSessionStore) *httpapi.Server {
+	return httpapi.NewServerWithAll("127.0.0.1:0", &mockPromptStore{}, mockProjectStore{
+		known: []project.KnownProject{{Name: "jarvis-dev"}},
+	}, nil, nil, nil, sessions)
 }
 
 func postJSON(srv *httpapi.Server, path, body string) *httptest.ResponseRecorder {
@@ -237,9 +251,9 @@ func TestPostSessions_WrongMethod_Returns405(t *testing.T) {
 
 func TestPostSessionsEnd_ExistingSession_Returns200(t *testing.T) {
 	store := &mockSessionStore{}
-	srv := newServerWithSessions(store)
+	srv := newServerWithEndEvidence(store)
 
-	rr := postJSON(srv, "/sessions/sess-1/end", "")
+	rr := postJSON(srv, "/sessions/sess-1/end", `{"project":"jarvis-dev"}`)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 	var resp map[string]any
@@ -247,28 +261,15 @@ func TestPostSessionsEnd_ExistingSession_Returns200(t *testing.T) {
 	assert.Equal(t, true, resp["ok"])
 }
 
-func TestPostSessionsEnd_NotFound_Returns404(t *testing.T) {
-	store := &mockSessionStore{
-		endSessionFn: func(id, summary string) error {
-			return db.ErrSessionNotFound
-		},
-	}
-	srv := newServerWithSessions(store)
-
-	rr := postJSON(srv, "/sessions/ghost/end", "")
-
-	assert.Equal(t, http.StatusNotFound, rr.Code)
-}
-
 func TestPostSessionsEnd_DBError_Returns500(t *testing.T) {
 	store := &mockSessionStore{
-		endSessionFn: func(id, summary string) error {
-			return errors.New("database locked")
+		ensureAndEndSessionFn: func(context.Context, models.SessionEndInput) (*models.Session, error) {
+			return nil, errors.New("database locked")
 		},
 	}
-	srv := newServerWithSessions(store)
+	srv := newServerWithEndEvidence(store)
 
-	rr := postJSON(srv, "/sessions/sess-1/end", "")
+	rr := postJSON(srv, "/sessions/sess-1/end", `{"project":"jarvis-dev"}`)
 
 	assert.Equal(t, http.StatusInternalServerError, rr.Code)
 }
@@ -276,14 +277,14 @@ func TestPostSessionsEnd_DBError_Returns500(t *testing.T) {
 func TestPostSessionsEnd_PassesSummaryAsEmpty(t *testing.T) {
 	var capturedSummary string
 	store := &mockSessionStore{
-		endSessionFn: func(id, summary string) error {
-			capturedSummary = summary
-			return nil
+		ensureAndEndSessionFn: func(_ context.Context, in models.SessionEndInput) (*models.Session, error) {
+			capturedSummary = in.Summary
+			return &models.Session{ID: in.Session.ID, Project: in.Session.Project}, nil
 		},
 	}
-	srv := newServerWithSessions(store)
+	srv := newServerWithEndEvidence(store)
 
-	postJSON(srv, "/sessions/sess-1/end", "")
+	postJSON(srv, "/sessions/sess-1/end", `{"project":"jarvis-dev"}`)
 
 	assert.Equal(t, "", capturedSummary, "hook-initiated end must pass empty summary")
 }
