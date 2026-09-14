@@ -62,9 +62,9 @@ Chain strategy: stacked-to-main
 
 **Dependency / finish:** slice 4 → validated HTTP/MCP starts share one in-flight `EnsureSession` result per canonical project/exact ID; captures and ends do not join the group. **Paths:** `hive-daemon/internal/sessioninit/group.go`, `group_test.go`, `hive-daemon/internal/httpapi/server.go` plus start interfaces/mocks/tests, and `hive-daemon/internal/mcp/{server.go,tools.go}` plus start interfaces/mocks/tests. **Rollback:** revert start activation and group together.
 
-- [ ] **RED:** Add channel-controlled group tests for one invocation, shared detached snapshots/errors, cleanup/retry, key isolation, alias sharing, cancellation, panic cleanup, and snapshot isolation; add real HTTP/MCP blocking-store wiring tests proving invalid or blocked callers never join. <!-- sdd-owner: implementation -->
-- [ ] **GREEN:** Implement the mutex/map flight group without holding its lock during SQL/waiting, give each HTTP/MCP server lifetime-owned state, and route only independently validated start calls through `Group.Do` and `EnsureSession`. <!-- sdd-owner: implementation -->
-- [ ] **TRIANGULATE/REFACTOR:** Cover absent/active/ended starts, typed mismatch mapping, first-writer provenance, migration exclusion, and capture non-use; format and run sessioninit/HTTP/MCP/race/module/vet checks. <!-- sdd-owner: implementation -->
+- [x] **RED:** Add channel-controlled group tests for one invocation, shared detached snapshots/errors, cleanup/retry, key isolation, alias sharing, cancellation, panic cleanup, and snapshot isolation; add real HTTP/MCP blocking-store wiring tests proving invalid or blocked callers never join. <!-- sdd-owner: implementation -->
+- [x] **GREEN:** Implement the mutex/map flight group without holding its lock during SQL/waiting, give each HTTP/MCP server lifetime-owned state, and route only independently validated start calls through `Group.Do` and `EnsureSession`. <!-- sdd-owner: implementation -->
+- [x] **TRIANGULATE/REFACTOR:** Cover absent/active/ended starts, typed mismatch mapping, first-writer provenance, migration exclusion, and capture non-use; format and run sessioninit/HTTP/MCP/race/module/vet checks. <!-- sdd-owner: implementation -->
 
 #### Slice 5a — standalone `sessioninit.Group` foundation (no adapters)
 
