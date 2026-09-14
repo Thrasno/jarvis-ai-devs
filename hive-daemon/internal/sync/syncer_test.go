@@ -51,6 +51,8 @@ type mockSyncStore struct {
 	unsyncedSessionsErr           error
 	markedSessionSynced           []string
 	markSessionSyncedErr          error
+	ackedSessionSnapshots         []*models.Session
+	ackSessionSnapshotFn          func(context.Context, *models.Session, time.Time) (bool, error)
 	savedSessionsFromRemote       []*models.Session
 	pendingMutations              []db.MutationEnvelope
 	markedMutationsSynced         []string
@@ -433,6 +435,17 @@ func (m *mockSyncStore) MarkSessionSynced(id string, at time.Time) error {
 	}
 	m.markedSessionSynced = append(m.markedSessionSynced, id)
 	return nil
+}
+
+func (m *mockSyncStore) AckSessionSnapshot(ctx context.Context, sent *models.Session, at time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ackedSessionSnapshots = append(m.ackedSessionSnapshots, sent)
+	if m.ackSessionSnapshotFn != nil {
+		return m.ackSessionSnapshotFn(ctx, sent, at)
+	}
+	m.markedSessionSynced = append(m.markedSessionSynced, sent.ID)
+	return true, nil
 }
 
 func (m *mockSyncStore) SaveSessionFromRemote(s *models.Session) error {
@@ -3206,13 +3219,108 @@ func TestDrain_TriggerManual_PagesThroughLargeBacklogWithoutFalsePositiveGuard(t
 	assert.Len(t, store.markedSynced, 5, "every record marked synced across all batches must sum to the pushed total")
 }
 
+func TestSyncer_SyncBatchStep_StaleSessionSnapshotDoesNotCountAsProgress(t *testing.T) {
+	baseNow := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	sess := &models.Session{ID: "stale-session", Project: "test-project"}
+	store := &mockSyncStore{
+		jwt:              "valid-token",
+		unsyncedSessions: []*models.Session{sess},
+		ackSessionSnapshotFn: func(context.Context, *models.Session, time.Time) (bool, error) {
+			return false, nil
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/sync", r.URL.Path)
+		w.WriteHeader(http.StatusOK)
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 0, Pulled: []apiMemory{}, Conflicts: 0}))
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, store, syncDeps{
+		now:    func() time.Time { return baseNow },
+		jitter: func(max time.Duration) time.Duration { return 0 },
+	})
+
+	batch, err := syncer.syncBatchStep(context.Background(), "test-project", "valid-token")
+	require.NoError(t, err)
+	assert.Equal(t, 0, batch.RecordsMarkedSynced)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	require.Len(t, store.ackedSessionSnapshots, 1)
+	assert.Same(t, sess, store.ackedSessionSnapshots[0])
+	assert.Empty(t, store.markedSessionSynced)
+}
+
+func TestSyncer_SessionPushAcknowledgementLeavesNewerDBStateDirty(t *testing.T) {
+	database, err := db.Open(t.TempDir() + "/hive.db")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, database.Close()) })
+	require.NoError(t, database.CreateSession("interleaved-session", "test-project", "", "dev", "client"))
+
+	requestStarted := make(chan struct{})
+	releaseResponse := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/sync", r.URL.Path)
+		close(requestStarted)
+		<-releaseResponse
+		require.NoError(t, json.NewEncoder(w).Encode(syncResponse{Pushed: 1, Pulled: []apiMemory{}}))
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, database, syncDeps{
+		now:    time.Now,
+		jitter: func(time.Duration) time.Duration { return 0 },
+	})
+	result := make(chan batchResult, 1)
+	errs := make(chan error, 1)
+	go func() {
+		batch, err := syncer.syncBatchStep(context.Background(), "test-project", "valid-token")
+		result <- batch
+		errs <- err
+	}()
+
+	<-requestStarted
+	require.NoError(t, database.EndSession("interleaved-session", "ended after snapshot"))
+	close(releaseResponse)
+	require.NoError(t, <-errs)
+	assert.Equal(t, 0, (<-result).RecordsMarkedSynced)
+
+	session, err := database.GetSession("interleaved-session")
+	require.NoError(t, err)
+	assert.NotNil(t, session.EndedAt)
+	assert.Nil(t, session.SyncedAt)
+}
+
+func TestSyncer_SessionPushFailureLeavesDatabasePending(t *testing.T) {
+	database, err := db.Open(t.TempDir() + "/hive.db")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, database.Close()) })
+	require.NoError(t, database.CreateSession("failed-session", "test-project", "", "dev", "client"))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(&Config{APIURL: server.URL, Email: "test@example.com", Password: "password123"}, database, syncDeps{now: time.Now})
+	_, err = syncer.syncBatchStep(context.Background(), "test-project", "valid-token")
+	require.Error(t, err)
+
+	session, err := database.GetSession("failed-session")
+	require.NoError(t, err)
+	assert.Nil(t, session.SyncedAt)
+}
+
 func TestSyncer_SyncBatchStep_DoesNotCountFailedSessionMarkAsProgress(t *testing.T) {
 	baseNow := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
 	sess := &models.Session{ID: "missing-session", Project: "test-project"}
 	store := &mockSyncStore{
-		jwt:                  "valid-token",
-		unsyncedSessions:     []*models.Session{sess},
-		markSessionSyncedErr: db.ErrSessionNotFound,
+		jwt:              "valid-token",
+		unsyncedSessions: []*models.Session{sess},
+		ackSessionSnapshotFn: func(context.Context, *models.Session, time.Time) (bool, error) {
+			return false, db.ErrSessionNotFound
+		},
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3487,6 +3595,13 @@ func (s *fkOrderingStore) MarkSessionSynced(id string, at time.Time) error {
 		}
 	}
 	return nil
+}
+
+func (s *fkOrderingStore) AckSessionSnapshot(ctx context.Context, sent *models.Session, at time.Time) (bool, error) {
+	if err := s.MarkSessionSynced(sent.ID, at); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *fkOrderingStore) MarkSynced(syncID string, at time.Time) error {
