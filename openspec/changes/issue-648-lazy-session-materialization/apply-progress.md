@@ -191,3 +191,35 @@ Persisted `tasks.md` slice-2 RED, GREEN, and TRIANGULATE/REFACTOR rows are visib
 - `actionContext.mode`: `repo-local`
 - `actionContext.workspaceRoot`: `/home/andres/Desarrollo/Proyectos/jarvis-dev-issue-648`
 - `actionContext` warning: operate only in the supplied worktree and allowed edit surfaces; satisfied.
+
+## Slice 2 — delivery-boundary reset
+
+**Status:** retained and revalidated. The authorized reset split the former combined lifecycle candidate: this worktree now contains slice 2 only (`main <- 1 <- 📍2 <- 3`); its PR checkpoint is open.
+
+- Retained `SessionInput`, transaction-owned `EnsureSession`, regular create/replay/reopen, canonical mismatch, provenance/default-client/developer-ID healing, sync reset, project writable/quarantine gates, rollback, and compatible two-handle convergence.
+- Removed all slice-3 code and tests: `SessionEndInput`, `ErrSessionAlreadyEnded`, `EnsureAndEndSession`, the end mode, end mutation/rollback, duplicate-end behavior, and end concurrency coverage. Legacy `CreateSession` and `EndSession` are unchanged.
+- Renamed the cohesive regular-session test file to `hive-daemon/internal/db/session_ensure_test.go`; `session_lifecycle_test.go` is absent.
+- Reset the three slice-3 implementation checkboxes to `- [ ]`; slice-2 implementation rows remain visibly `- [x]`. Parent-owned rows remain byte-for-byte unchanged.
+
+### TDD Cycle Evidence
+
+| Task | Test file | Layer | Safety net | RED | GREEN | TRIANGULATE | REFACTOR |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Slice-2 delivery-boundary refactor | `hive-daemon/internal/db/session_ensure_test.go` | SQLite DB | Focused seven-scenario EnsureSession suite passed before removal | Pre-recorded RED/GREEN retained from the earlier slice-2 cycle; no new product behavior was added | Focused suite passed after removing slice 3 | Absent, active, ended-reopen, mismatch, healing, gate/rollback, and two-handle cases passed | Removed end-only API/mode/tests and renamed the cohesive test file; no behavior change to slice 2 |
+
+### Verification
+
+| Command | Result |
+| --- | --- |
+| `cd hive-daemon && go test ./internal/db -run '^(TestEnsureSession_...)$' -count=1` | Passed before and after the delivery-boundary refactor. |
+| `cd hive-daemon && go test -race ./internal/db -run '^(TestEnsureSession_...)$' -count=1` | Passed. |
+| `cd hive-daemon && go test ./...` | Passed. |
+| `cd hive-daemon && go vet ./...` | Passed. |
+| `gofmt -l internal/models/session_write.go internal/db/session.go internal/db/session_ensure_test.go`; `git diff --check` | Passed clean. |
+| Slice-3 symbol/file check | Passed: no `SessionEndInput`, `EnsureAndEndSession`, `ErrSessionAlreadyEnded`, or `preserveForEnd`; no `session_lifecycle_test.go`. |
+
+### Remaining work and boundary
+
+- Slice 2 has no end API, end-mode, end rollback, duplicate-end, or end concurrency behavior. Those three slice-3 implementation rows are intentionally unchecked for a later worktree/candidate.
+- Deferred parent lifecycle action: review the slice-2 native-accounting receipt, DB/race evidence, exclusions, rollback, and `main <- 1 <- 📍2 <- 3` context before any commit/PR checkpoint.
+- Structured status consumed: `changeName=issue-648-lazy-session-materialization`, `applyState=ready`, `artifactStore=openspec`, `actionContext.mode=repo-local`, workspace `/home/andres/Desarrollo/Proyectos/jarvis-dev-issue-648`; no action-context warnings.
