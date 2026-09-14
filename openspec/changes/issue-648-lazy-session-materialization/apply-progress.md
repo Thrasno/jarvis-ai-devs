@@ -407,7 +407,7 @@ All 6a, 6b, and 6c implementation rows are now complete. The parent-owned slice-
 
 ## Slice 10 — OpenCode created lifecycle and prompt attribution
 
-**Status:** embedded-template implementation and automated evidence, including independent-verifier remediation, complete; deletion is absent. The permitted edit surfaces exclude the manual lifecycle checklist, so its subset and the TRIANGULATE/REFACTOR checkbox remain deferred.
+**Status:** embedded-template implementation and automated evidence, including independent-verifier remediation, complete; deletion is absent. The manual lifecycle checklist now records the creation/prompt subset, its unrun live-runtime status, and rationale; the TRIANGULATE/REFACTOR checkbox is complete under the design's explicit skip/runtime-record allowance.
 
 - **RED:** Original source-execution RED found no created lifecycle contract. Verifier remediation added multi-part text evidence, which failed with `content = "capture\nthis prompt"` rather than preserving per-part whitespace; the synchronous-fetch setup variant failed before the local catch with no observed start.
 - **GREEN:** the template resolves only event/environment session evidence (no PID fallback), sends bounded fail-open created registration, catches synchronous fetch setup errors, and clears a process-local flight in `finally`. Prompt joining now preserves individual text-part whitespace and trims only the final content; prompt client attribution remains independent.
@@ -415,3 +415,23 @@ All 6a, 6b, and 6c implementation rows are now complete. The parent-owned slice-
 - **Verification:** focused/race/full CLI tests, vet, gofmt, diff check, and `node --experimental-strip-types --check embed/hooks/opencode/hive.ts` passed. `tsc` is unavailable and this module has no TypeScript project configuration, so no semantic TypeScript type check was available without adding tooling.
 - **Rollback:** revert `embed/hooks/opencode/hive.ts` and the two agent test changes together, then regenerate through the existing installer; do not edit an installed user plugin.
 - **Accounting / scope:** final permitted-surface diff is 384 additions+deletions, below 399. No deletion endpoint/event, resident core, autostart, idempotency key, inactivity close, commit, push, or PR was added.
+
+## Slice 11 — OpenCode deleted-session delivery
+
+**Status:** implementation and automated evidence complete; the manual checklist now records the full procedure, automated observations, and unrun live-runtime status/rationale, so its TRIANGULATE/REFACTOR task is complete under the design's explicit skip/runtime-record allowance.
+
+- **RED:** the new source-of-truth Node loopback test timed out waiting for `/sessions/{id}/end` before deletion dispatch existed.
+- **GREEN:** generic `session.deleted` reads OpenCode's `properties.info`, requires an event ID, URL-escapes it, and POSTs optional summary plus canonical project/directory evidence and `client: "opencode"` with a one-second fail-open timeout.
+- **Endpoint correction (STRICT TDD):** changed the source-derived created-request expectation to `POST /sessions`; it failed before the template correction by timing out waiting for the first created request. Changing only the template's obsolete created endpoint to `/sessions` made the same focused test pass and aligns the source with design §6.
+- **TRIANGULATE:** loopback execution proves the nested event shape, encoded reserved ID, exact body, missing-ID no-op, synchronous-fetch failure, timeout/retry without permanent dedupe, and independence from a pending creation. Existing source/install and creation/prompt tests remain green; no inactivity close was added.
+- **Verification:** focused and race agent tests, `go test ./...`, `go vet ./...`, Node syntax, gofmt, and diff check passed.
+- **Accounting / rollback:** the final inclusive receipt below accounts for the endpoint correction as well as the pre-existing slice-11 work. Revert the template, lifecycle test, checklist, and slice-11 records together. Never edit an installed plugin.
+
+## Slices 10/11 — OpenCode manual lifecycle checklist
+
+**Status:** complete as an artifact; live OpenCode execution is explicitly **NOT RUN**. Design §6 and the slice-11 task allow a temporary installer/loopback procedure with actual runtime and skipped steps recorded. This work records that procedure and the current source-derived Node observations without invoking OpenCode, external models, authentication, or user configuration.
+
+- **Automated evidence recorded:** created, deleted, and prompt requests; exact method/path/body/client/evidence; encoded deletion ID; created/deleted timeout cancellation beyond one second; synchronous fetch setup failures for created/deleted; missing deleted-ID no-op; created-flight coalescing; and deletion independence from a pending creation.
+- **Not claimed:** live `opencode 1.18.29` envelope compatibility, 400/423/500 or generic non-OK tolerance, prompt timeout/synchronous failure, comprehensive retry absence, unhandled-failure absence, process/daemon absence, or post-failure OpenCode usability. The checklist gives the disposable procedure and rationale for every NOT RUN item.
+- **Created endpoint compliance:** source/test now use created `POST /sessions`, matching design §6. The checklist records the focused RED→GREEN correction; no obsolete created-route claim remains.
+- **Accounting:** final inclusive accounting is **235 changed lines**: template 30 additions + 1 deletion = 31; lifecycle test 94 + 4 = 98; apply-progress 21 + 1 = 22; tasks 4 + 4 = 8; and the 76-line untracked checklist. This is the exact `git diff --numstat` total plus `wc -l` for the untracked checklist, including the endpoint correction, and is below 399 (**164 lines headroom**).
