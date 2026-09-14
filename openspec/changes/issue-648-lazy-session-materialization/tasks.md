@@ -74,7 +74,7 @@ Chain strategy: stacked-to-main
 
 ### 6. Atomic lifecycle end and shipped callers — split into 6a/6b/6c
 
-**Split boundary:** the former 250–350-line transport/caller unit is three independent delivery slices: **6a HTTP adapter**, **6b MCP adapter**, and **6c native hook caller**. Only 6a is complete here; 6b/6c stay unchecked and must not be inferred from HTTP coverage. Roll back each adapter/caller independently; never undo persisted closures/summaries.
+**Split boundary:** the former 250–350-line transport/caller unit is three independent delivery slices: **6a HTTP adapter**, **6b MCP adapter**, and **6c native hook caller**. All 6a/6b/6c implementation rows are complete; each remains independently rollbackable. Never undo persisted closures/summaries.
 
 #### Slice 6a — HTTP atomic end adapter
 
@@ -90,7 +90,7 @@ Chain strategy: stacked-to-main
 
 #### Slice 6c — Native hook end caller
 
-- [ ] **RED/GREEN/TRIANGULATE:** Add encoded-path/exact-evidence/client hook receiver coverage and the native caller; update end-evidence compatibility documentation. <!-- sdd-owner: implementation -->
+- [x] **RED/GREEN/TRIANGULATE:** Add encoded-path/exact-evidence/client hook receiver coverage and the native caller; update end-evidence compatibility documentation. <!-- sdd-owner: implementation -->
 
 ### 7. Atomic prompts — 280–375 native lines
 
