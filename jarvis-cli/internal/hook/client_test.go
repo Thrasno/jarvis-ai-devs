@@ -206,6 +206,9 @@ func TestDaemonClient_PostPassiveObservation_HappyPath(t *testing.T) {
 	if received["directory"] != "/work/dir" {
 		t.Errorf("directory: got %q", received["directory"])
 	}
+	if received["client"] != "hook" {
+		t.Errorf("client: got %q, want hook", received["client"])
+	}
 }
 
 func TestDaemonClient_PostPassiveObservation_ServerDown_ReturnsNil(t *testing.T) {

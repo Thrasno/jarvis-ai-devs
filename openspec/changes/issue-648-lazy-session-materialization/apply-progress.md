@@ -383,3 +383,13 @@ All 6a, 6b, and 6c implementation rows are now complete. The parent-owned slice-
 - **GREEN:** Explicit non-empty HTTP/MCP captures now call `SavePromptWithSession` with validated canonical project/directory evidence; HTTP uses its supplied client or `http`, MCP uses `mcp`, and the hook sends `client: "hook"`. Empty/manual paths retain legacy wrappers.
 - **TRIANGULATE/REFACTOR:** HTTP/MCP tests cover absent/ended materialization, store-returned typed validation mapping, validation-before-store, and independence from a held start flight. Focused and `-race` adapter/hook tests, both module suites, both vets, gofmt, and `git diff --check` passed.
 - **Accounting / rollback:** 113 tracked additions/deletions plus 234 lines across the two untracked adapter tests = **347 native lines**, below 399. Revert only transport interfaces/handlers, hook payload attribution, adapter tests, and this 7b record; retain the 7a DB foundation. No commit, push, or PR was created.
+
+## Slice 8 — Atomic passive observations
+
+**Status:** implementation complete; parent review/checkpoint remains pending.
+
+- **RED:** focused DB tests failed to compile because `PassiveObservationWrite` and `SavePassiveObservationWithSession` were absent; HTTP tests then proved explicit IDs still used the legacy raw writer.
+- **GREEN:** attributed captures now materialize/reopen through one transaction; explicit HTTP IDs validate canonical evidence and map typed validation/gates, default to `unknown`, and hooks send `client: "hook"`. Empty/NULL IDs retain the raw writer.
+- **TRIANGULATE/REFACTOR:** DB coverage proves absent/ended identity preservation, mismatch/gate, session-trigger rollback, observation-trigger rollback after both session creation and ended-session reopen, and two-handle independence; HTTP covers atomic routing/mappings and empty/NULL fallback. `gofmt` retained the focused paths.
+- **Verification:** focused DB/HTTP and `-race` runs passed; `cd hive-daemon && go test ./... && go vet ./...` passed; focused/full hook tests and `cd jarvis-cli && go vet ./...` passed; `git diff --check` and targeted `gofmt -l` passed.
+- **Accounting / rollback:** **384 native lines** (368 Go/test diff + 6 task checkbox lines + 10 evidence lines) against `609bce9d`, below 399. Revert the passive write/input, HTTP activation, hook attribution, tests, and this evidence together; raw empty/NULL behavior is retained. No commit, push, or PR was created.

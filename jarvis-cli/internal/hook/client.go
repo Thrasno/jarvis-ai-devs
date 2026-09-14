@@ -246,5 +246,6 @@ func (c *DaemonClient) PostPassiveObservation(ctx context.Context, sessionID, pr
 		"source":     source,
 		"content":    content,
 		"directory":  directory,
+		"client":     "hook",
 	})
 }
