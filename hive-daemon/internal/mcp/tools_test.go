@@ -613,83 +613,38 @@ func TestMemSessionStart_DuplicateID_ReturnsError(t *testing.T) {
 // ─── mem_session_end ──────────────────────────────────────────────────────
 
 func TestMemSessionEnd_HappyPath_ReturnsEndedAt(t *testing.T) {
-	endedAt := time.Now().Add(-1 * time.Second)
-	var endedID, endedSummary string
-	store := &mockStore{
-		getSessionFn: func(id string) (*models.Session, error) {
-			return &models.Session{ID: id, Project: "jarvis-dev", EndedAt: nil}, nil
-		},
-		endSessionFn: func(id, summary string) error {
-			endedID = id
-			endedSummary = summary
-			return nil
-		},
-	}
-	_ = endedAt
+	var ended models.SessionEndInput
+	store := &mockStore{ensureAndEndSessionFn: func(_ context.Context, in models.SessionEndInput) (*models.Session, error) {
+		ended = in
+		return &models.Session{ID: in.Session.ID, Project: in.Session.Project}, nil
+	}}
 	session := connectTestServer(t, store)
 
 	res := callTool(t, session, "mem_session_end", map[string]any{
-		"id":      "sess-abc",
-		"summary": "all done",
+		"id": "sess-abc", "project": "jarvis-dev", "summary": "all done",
 	})
 
 	if res.IsError {
 		t.Fatalf("expected success, got error: %s", textContent(t, res))
 	}
 	body := decodeJSONResponse(t, res)
-	if body["ended_at"] == nil {
-		t.Error("response must contain ended_at")
+	if body["ended_at"] == nil || body["session_id"] != "sess-abc" {
+		t.Errorf("response = %v, want ended sess-abc", body)
 	}
-	if body["session_id"] != "sess-abc" {
-		t.Errorf("session_id = %v, want 'sess-abc'", body["session_id"])
-	}
-	if endedID != "sess-abc" {
-		t.Errorf("EndSession called with id=%q, want 'sess-abc'", endedID)
-	}
-	if endedSummary != "all done" {
-		t.Errorf("EndSession called with summary=%q, want 'all done'", endedSummary)
-	}
-}
-
-func TestMemSessionEnd_UnknownSession_ReturnsError(t *testing.T) {
-	store := &mockStore{
-		getSessionFn: func(id string) (*models.Session, error) {
-			return nil, errors.New("session not found")
-		},
-	}
-	session := connectTestServer(t, store)
-
-	res := callTool(t, session, "mem_session_end", map[string]any{
-		"id": "ghost-session",
-	})
-
-	if !res.IsError {
-		t.Error("expected IsError=true for unknown session")
-	}
-	if !strings.Contains(textContent(t, res), "not found") {
-		t.Errorf("error should mention 'not found', got: %s", textContent(t, res))
+	if ended.Session.ID != "sess-abc" || ended.Summary != "all done" || !ended.RejectAlreadyEnded {
+		t.Errorf("EnsureAndEndSession input = %#v", ended)
 	}
 }
 
 func TestMemSessionEnd_AlreadyEnded_ReturnsError(t *testing.T) {
-	endedAt := time.Date(2026, 5, 9, 10, 0, 0, 0, time.UTC)
-	store := &mockStore{
-		getSessionFn: func(id string) (*models.Session, error) {
-			return &models.Session{ID: id, EndedAt: &endedAt}, nil
-		},
-	}
+	store := &mockStore{ensureAndEndSessionFn: func(context.Context, models.SessionEndInput) (*models.Session, error) {
+		return nil, hivedb.ErrSessionAlreadyEnded
+	}}
 	session := connectTestServer(t, store)
 
-	res := callTool(t, session, "mem_session_end", map[string]any{
-		"id": "sess-old",
-	})
-
-	if !res.IsError {
-		t.Error("expected IsError=true for already-ended session")
-	}
-	body := textContent(t, res)
-	if !strings.Contains(body, "already ended") {
-		t.Errorf("error should mention 'already ended', got: %s", body)
+	res := callTool(t, session, "mem_session_end", map[string]any{"id": "sess-old", "project": "jarvis-dev"})
+	if !res.IsError || !strings.Contains(textContent(t, res), "already ended") {
+		t.Errorf("duplicate end = error:%v body:%s", res.IsError, textContent(t, res))
 	}
 }
 
@@ -707,16 +662,13 @@ func TestMemSessionEnd_MissingID_ReturnsError(t *testing.T) {
 }
 
 func TestMemSessionEnd_ClearsActivityTracker(t *testing.T) {
-	store := &mockStore{
-		getSessionFn: func(id string) (*models.Session, error) {
-			return &models.Session{ID: id, Project: "proj", EndedAt: nil}, nil
-		},
-		endSessionFn: func(_, _ string) error { return nil },
-	}
+	store := &mockStore{ensureAndEndSessionFn: func(_ context.Context, in models.SessionEndInput) (*models.Session, error) {
+		return &models.Session{ID: in.Session.ID, Project: in.Session.Project}, nil
+	}}
 	session := connectTestServer(t, store)
 
 	// End the session — after this the activity for the sessionID should be cleared.
-	res := callTool(t, session, "mem_session_end", map[string]any{"id": "sess-tracked"})
+	res := callTool(t, session, "mem_session_end", map[string]any{"id": "sess-tracked", "project": "proj"})
 
 	if res.IsError {
 		t.Fatalf("expected success: %s", textContent(t, res))
@@ -3404,8 +3356,7 @@ func TestE2E_FullSessionLifecycle(t *testing.T) {
 
 	// ── Step 5: mem_session_end → session closed ─────────────────────────────
 	endRes := callTool(t, session, "mem_session_end", map[string]any{
-		"id":      "e2e-sess-001",
-		"summary": "all done",
+		"id": "e2e-sess-001", "project": "e2e-project", "summary": "all done",
 	})
 	if endRes.IsError {
 		t.Fatalf("mem_session_end failed: %s", textContent(t, endRes))
@@ -3426,7 +3377,7 @@ func TestE2E_FullSessionLifecycle(t *testing.T) {
 
 	// ── Step 6: second mem_session_end → "already ended" error ───────────────
 	end2Res := callTool(t, session, "mem_session_end", map[string]any{
-		"id": "e2e-sess-001",
+		"id": "e2e-sess-001", "project": "e2e-project",
 	})
 	if !end2Res.IsError {
 		t.Error("second mem_session_end must return IsError=true for already-ended session")

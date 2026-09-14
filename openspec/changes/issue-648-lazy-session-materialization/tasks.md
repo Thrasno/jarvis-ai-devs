@@ -86,7 +86,7 @@ Chain strategy: stacked-to-main
 
 #### Slice 6b — MCP atomic end adapter
 
-- [ ] **RED/GREEN/TRIANGULATE:** Add MCP-only evidence, duplicate-rejection, typed mapping, rollback, and focused/race coverage. <!-- sdd-owner: implementation -->
+- [x] **RED/GREEN/TRIANGULATE:** Add MCP-only evidence, duplicate-rejection, typed mapping, rollback, and focused/race coverage. <!-- sdd-owner: implementation -->
 
 #### Slice 6c — Native hook end caller
 

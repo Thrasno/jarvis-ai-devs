@@ -31,6 +31,7 @@ type MemoryStore interface {
 	// Session lifecycle — added in Slice 2
 	CreateSession(id, project, directory, devID, client string) error
 	EnsureSession(context.Context, models.SessionInput) (*models.Session, error)
+	EnsureAndEndSession(context.Context, models.SessionEndInput) (*models.Session, error)
 	EndSession(id, summary string) error
 	GetSession(id string) (*models.Session, error)
 	EnsureManualSaveSession(project string) (string, error)
