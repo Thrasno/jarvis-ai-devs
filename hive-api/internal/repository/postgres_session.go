@@ -28,24 +28,34 @@ func newPostgresSessionRepositoryWithQuerier(db pgxQuerier) SessionRepository {
 	return &postgresSessionRepository{db: db}
 }
 
-// sessionCorrectionConflict is the sync_id conflict clause shared by
-// CreateSession and UpsertSession. See UpsertSession for the full rationale;
-// $10 is the from-project precondition.
-const sessionCorrectionConflict = `
+// sessionCreateCorrectionConflict preserves CreateSession's correction-only
+// behavior. $10 is the from-project precondition.
+const sessionCreateCorrectionConflict = `
 	ON CONFLICT (sync_id) DO UPDATE
 	  SET project = EXCLUDED.project, synced_at = now()
 	  WHERE sessions.project = $10`
 
+// sessionLifecycleConflict accepts regular lifecycle updates from the sync wire.
+// It deliberately preserves identity and provenance while applying nullable
+// ended_at and summary so a reopened session becomes visible to pull clients.
+const sessionLifecycleConflict = `
+	ON CONFLICT (sync_id) DO UPDATE
+	  SET project = EXCLUDED.project,
+	      ended_at = CASE WHEN sessions.project = EXCLUDED.project THEN EXCLUDED.ended_at ELSE sessions.ended_at END,
+	      summary = CASE WHEN sessions.project = EXCLUDED.project THEN EXCLUDED.summary ELSE sessions.summary END,
+	      synced_at = now()
+	  WHERE sessions.project = $10`
+
 // CreateSession inserts a new session. A conflict on sync_id means "this is the
 // same session, resent": everything stays idempotent except project, the one
-// column the daemon is authority over (see UpsertSession).
+// column the daemon is authority over.
 func (r *postgresSessionRepository) CreateSession(ctx context.Context, s *model.Session) error {
 	if err := r.rejectRelocationEnds(ctx, s); err != nil {
 		return err
 	}
 	const q = `
 		INSERT INTO sessions (id, sync_id, project, directory, dev_id, client, started_at, ended_at, summary)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)` + sessionCorrectionConflict
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)` + sessionCreateCorrectionConflict
 
 	_, err := r.db.Exec(ctx, q,
 		s.ID, s.SyncID, s.Project, s.Directory, s.DevID, s.Client,
@@ -63,21 +73,22 @@ func (r *postgresSessionRepository) CreateSession(ctx context.Context, s *model.
 // under the corrected literal; without accepting that, the server would keep the
 // old spelling forever and the same session would live under two project names.
 // So on a sync_id conflict — "this is the same row, resent" — `project` is taken
-// from EXCLUDED. Nothing else is: every other column stays first-write-wins, so
-// the correction cannot rewrite content, attribution or timestamps.
+// from EXCLUDED. The incoming lifecycle state is also authoritative: ended_at
+// (including NULL for reopen) and summary are applied, while identity and
+// provenance remain first-write-wins.
 //
 // # The from-project precondition
 //
-// Taking EXCLUDED.project is gated on `WHERE sessions.project = FromProject`.
-// Without that gate the branch was not a correction, it was a relocation of
-// whatever row the sync_id happened to hit, out of whatever project it happened
-// to sit in — and the quarantine precheck could not see it, because
-// syncRequestProjects only collects the projects a REQUEST names, never the one
-// a row currently holds. The very flow this branch exists for (fold "Foo.Bar" ->
-// "foo-bar", re-push) therefore carried every quarantined session out of its
-// quarantine. The gate is the exact counterpart of applyReprojectMutation's
-// `AND project = $3`: name the literal the row holds, or move nothing. An empty
-// FromProject matches nothing, so a caller that asks for no move gets none.
+// Taking EXCLUDED.project is gated on `WHERE sessions.project = $10`. Ordinary
+// pushes bind their current project, so their lifecycle fields update in place.
+// Explicit relocations bind FromProject; the lifecycle assignments compare the
+// stored and excluded projects, so a true relocation moves only project and its
+// watermark. A self-relocation retains its empty no-op predicate. Without the
+// source gate an explicit correction could relocate whichever row the sync_id
+// happened to hit, including one that the quarantine precheck cannot see because
+// syncRequestProjects only collects projects named by the request, not the row's
+// current project. The gate is the counterpart of applyReprojectMutation's
+// `AND project = $3`: name the literal the row holds, or move nothing.
 //
 // The source end is checked against the quarantine too (rejectRelocationEnds),
 // which is the other half of the memory path's guarantee — there it comes from
@@ -107,8 +118,8 @@ func (r *postgresSessionRepository) CreateSession(ctx context.Context, s *model.
 //     created the canonical row; daemons re-pushing the same id must not
 //     overwrite it (and the LEAST semantics do not apply because each daemon's
 //     local sentinel is independently backfilled to MIN(memories.created_at)).
-//   - Regular sessions (UUID-style id): conflict on (sync_id), and the project
-//     column follows the daemon.
+//   - Regular sessions (UUID-style id): conflict on (sync_id); project and
+//     lifecycle state follow the daemon, while identity and provenance do not.
 func (r *postgresSessionRepository) UpsertSession(ctx context.Context, s *model.Session) error {
 	if err := r.rejectRelocationEnds(ctx, s); err != nil {
 		return err
@@ -152,11 +163,18 @@ func (r *postgresSessionRepository) UpsertSession(ctx context.Context, s *model.
 
 	const q = `
 		INSERT INTO sessions (id, sync_id, project, directory, dev_id, client, started_at, ended_at, summary)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)` + sessionCorrectionConflict
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)` + sessionLifecycleConflict
+
+	predicateProject := s.Project
+	if s.FromProject != "" {
+		// Preserve an explicit relocation source, including relocationSource's
+		// empty no-op sentinel for a self-move.
+		predicateProject = relocationSource(s.Project, s.FromProject)
+	}
 
 	_, err := r.db.Exec(ctx, q,
 		s.ID, s.SyncID, s.Project, s.Directory, s.DevID, s.Client,
-		s.StartedAt, s.EndedAt, s.Summary, relocationSource(s.Project, s.FromProject),
+		s.StartedAt, s.EndedAt, s.Summary, predicateProject,
 	)
 	return wrapPgError(err, "UpsertSession")
 }
