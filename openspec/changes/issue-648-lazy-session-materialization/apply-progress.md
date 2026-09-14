@@ -353,3 +353,15 @@ Persisted `tasks.md` slice-2 RED, GREEN, and TRIANGULATE/REFACTOR rows are visib
 - **TRIANGULATE/REFACTOR:** temporary SQLite coverage proves missing and active materialization, duplicate-summary preservation, abort-trigger rollback, and canonical directory-evidence mismatch without materialization. Mock coverage pins the exact atomic input, duplicate rejection, no-project and unresolved-directory validation rejection, unknown-project rejection, and typed store-mismatch mapping. The existing migration-gate suite retains blocked MCP mapping coverage. `gofmt` kept one handler path.
 - **Verification:** focused MCP end/migration test command and its `-race` variant passed; `cd hive-daemon && go test ./...`; `go vet ./...`; targeted `gofmt -l`; and `git diff --check` passed.
 - **Accounting / rollback:** against `e6808b71`, **356 additions+deletions** (149 tracked MCP code/test + 195 new MCP end-materialization test + 12 task/evidence) is below 399. Revert only the MCP interface, schema/handler, MCP mocks/tests, and this 6b task/evidence record. Do not modify persisted ended rows. Slice 6c remains unchecked.
+
+## Slice 6c — Native hook end caller compatibility
+
+**Status:** implementation complete for the native hook caller only. No daemon HTTP/MCP, prompt, passive observation, memory, OpenCode, commit, push, or PR work occurred.
+
+- **RED:** focused hook tests failed to compile because `PostSessionEnd` accepted only a session ID while the new receiver contract supplied canonical project and directory evidence.
+- **GREEN:** `RunSessionStop` now derives `directory` from `directory`/`cwd`, derives the canonical project with `project.DetectProject`, and forwards both with the session ID. `PostSessionEnd` path-escapes the ID and sends the exact summary/project/directory/hook-client body.
+- **TRIANGULATE/REFACTOR:** receiver coverage pins escaped IDs, POST/content-type, exact JSON, 404 and transport fail-open behavior; event coverage pins canonical directory forwarding and the `cwd` fallback. `end-evidence-compatibility.md` records the internal signature and legacy-receiver implications.
+- **Verification:** focused hook end tests and their `-race` variant passed; `cd jarvis-cli && go test ./... && go vet ./...` passed; targeted `gofmt -l` and `git diff --check` passed.
+- **Accounting / rollback:** **143 additions+deletions** against `7d30847f` (114 Go/test + 4 task + 12 evidence + 13 compatibility-document lines), below the 399-line cap. Revert only the hook caller/client/tests and compatibility/task/evidence records; do not alter daemon adapters or persisted session state.
+
+All 6a, 6b, and 6c implementation rows are now complete. The parent-owned slice-6 review/checkpoint remains unchecked.

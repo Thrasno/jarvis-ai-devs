@@ -181,8 +181,8 @@ func RunSubagentStop(ctx context.Context, r io.Reader, w io.Writer, baseURL stri
 // RunSessionStop handles the Claude Code Stop hook event.
 //
 // It:
-//  1. Resolves the session ID
-//  2. POSTs to /sessions/{id}/end (404 is non-fatal)
+//  1. Resolves the session ID, directory, and canonical project
+//  2. POSTs end evidence to /sessions/{id}/end (404 is non-fatal)
 //  3. Outputs {}
 //
 // Note: the first-prompt marker is intentionally NOT deleted here.
@@ -194,10 +194,12 @@ func RunSubagentStop(ctx context.Context, r io.Reader, w io.Writer, baseURL stri
 func RunSessionStop(ctx context.Context, r io.Reader, w io.Writer, baseURL string) {
 	payload, _ := ParsePayload(r)
 	sessionID := ResolveSessionID(payload)
+	directory := coalesce(payload.Directory, payload.CWD)
+	canonical := project.DetectProject(directory)
 
 	// Notify daemon — non-fatal
 	client := &DaemonClient{BaseURL: baseURL, Timeout: 2 * time.Second}
-	_ = client.PostSessionEnd(ctx, sessionID)
+	_ = client.PostSessionEnd(ctx, sessionID, canonical, directory)
 
 	WriteEmpty(w)
 }
