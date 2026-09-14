@@ -66,6 +66,12 @@ Chain strategy: stacked-to-main
 - [ ] **GREEN:** Implement the mutex/map flight group without holding its lock during SQL/waiting, give each HTTP/MCP server lifetime-owned state, and route only independently validated start calls through `Group.Do` and `EnsureSession`. <!-- sdd-owner: implementation -->
 - [ ] **TRIANGULATE/REFACTOR:** Cover absent/active/ended starts, typed mismatch mapping, first-writer provenance, migration exclusion, and capture non-use; format and run sessioninit/HTTP/MCP/race/module/vet checks. <!-- sdd-owner: implementation -->
 
+#### Slice 5a — standalone `sessioninit.Group` foundation (no adapters)
+
+- [x] **RED:** Add channel-controlled group tests for one canonical-project/exact-ID invocation, detached shared snapshots/errors, key isolation, alias-key sharing, cancellation, panic cleanup, and retry. <!-- sdd-owner: implementation -->
+- [x] **GREEN:** Implement the standalone mutex/map flight group with cleanup and pointer-safe result snapshots; do not hold its lock during initialization or waiting. <!-- sdd-owner: implementation -->
+- [x] **TRIANGULATE/REFACTOR:** Prove failure/success/panic retries and cancellation under `-race`; format and retain no HTTP/MCP wiring. <!-- sdd-owner: implementation -->
+
 ### 6. Atomic lifecycle end and shipped callers — 250–350 native lines
 
 **Dependency / finish:** slice 5 → HTTP/MCP ends validate evidence and atomically materialize/close missing sessions; native hook end calls carry encoded ID, evidence, and `client: hook`. **Paths:** HTTP/MCP end handlers/interfaces/mocks/tests under `hive-daemon/internal/{httpapi,mcp}/`, `jarvis-cli/internal/hook/client.go` and tests, `openspec/changes/issue-648-lazy-session-materialization/end-evidence-compatibility.md`. **Rollback:** revert adapters and hook caller together, never undo persisted closures/summaries.
