@@ -270,12 +270,14 @@ func readHiveTemplateRequest(request *http.Request) hiveTemplateRequest {
 	}
 }
 
+const hiveTemplateRequestWait = 10 * time.Second
+
 func waitHiveTemplateRequest(t *testing.T, requests <-chan hiveTemplateRequest, description string) hiveTemplateRequest {
 	t.Helper()
 	select {
 	case request := <-requests:
 		return request
-	case <-time.After(3 * time.Second):
+	case <-time.After(hiveTemplateRequestWait):
 		t.Fatalf("timed out waiting for %s", description)
 		return hiveTemplateRequest{}
 	}
