@@ -61,8 +61,11 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 			"type": "object",
 			"required": ["id"],
 			"properties": {
-				"id":      {"type": "string", "description": "Session ID to close"},
-				"summary": {"type": "string", "description": "Optional final session summary"}
+				"id":        {"type": "string", "description": "Session ID to close"},
+				"project":   {"type": "string", "description": "Project identity evidence; provide this or directory"},
+				"directory": {"type": "string", "description": "Working directory identity evidence; provide this or project"},
+				"dev_id":    {"type": "string", "description": "Optional developer identity for a missing session"},
+				"summary":   {"type": "string", "description": "Optional final session summary"}
 			}
 		}`),
 	}, gateTool(gate, memSessionEndHandler(store, activity)))
@@ -257,37 +260,47 @@ func memSessionStartHandler(store MemoryStore, activity *ActivityTracker, sessio
 }
 
 func memSessionEndHandler(store MemoryStore, activity *ActivityTracker) sdkmcp.ToolHandler {
-	return func(_ context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+	return func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
 		var p struct {
-			ID      string `json:"id"`
-			Summary string `json:"summary"`
+			ID        string `json:"id"`
+			Project   string `json:"project"`
+			Directory string `json:"directory"`
+			DevID     string `json:"dev_id"`
+			Summary   string `json:"summary"`
 		}
 		if err := json.Unmarshal(req.Params.Arguments, &p); err != nil {
 			return toolError(fmt.Errorf("invalid params: %w", err)), nil
 		}
-		if p.ID == "" {
+		if strings.TrimSpace(p.ID) == "" {
 			return toolError(fmt.Errorf("id is required")), nil
 		}
+		if strings.TrimSpace(p.Project) == "" && strings.TrimSpace(p.Directory) == "" {
+			return toolError(fmt.Errorf("project or directory is required")), nil
+		}
 
-		// Validate session exists and is open before ending it.
-		sess, err := store.GetSession(p.ID)
+		resolved, err := project.ValidateWriteProject(ctx, store, project.WriteInput{
+			Project: p.Project, Directory: p.Directory, SessionID: p.ID,
+		})
 		if err != nil {
-			return toolError(fmt.Errorf("session %q not found", p.ID)), nil
+			return toolValidationError(err), nil
 		}
-		if sess.EndedAt != nil {
-			return toolError(fmt.Errorf("session %q already ended at %s", p.ID, sess.EndedAt.UTC().Format(time.RFC3339))), nil
-		}
-
-		if err := store.EndSession(p.ID, p.Summary); err != nil {
+		if _, err := store.EnsureAndEndSession(ctx, models.SessionEndInput{
+			Session: models.SessionInput{
+				ID: p.ID, Project: resolved.Project, Directory: p.Directory, DevID: p.DevID, Client: "mcp",
+			},
+			Summary: p.Summary, RejectAlreadyEnded: true,
+		}); err != nil {
+			var validationErr *project.ValidationError
+			if errors.As(err, &validationErr) {
+				return toolValidationError(err), nil
+			}
 			return toolError(fmt.Errorf("end session failed: %w", err)), nil
 		}
 
 		activity.ClearSession(p.ID)
-
-		endedAt := time.Now().UTC().Format(time.RFC3339)
 		return toolJSON(map[string]any{
 			"session_id": p.ID,
-			"ended_at":   endedAt,
+			"ended_at":   time.Now().UTC().Format(time.RFC3339),
 		})
 	}
 }
