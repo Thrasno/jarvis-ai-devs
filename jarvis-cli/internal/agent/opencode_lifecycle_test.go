@@ -49,8 +49,9 @@ func TestOpenCodeHiveTemplate_CoalescesCreatedAndKeepsPromptIndependent(t *testi
 
 	startRequests := make(chan hiveTemplateRequest, 2)
 	promptRequests := make(chan hiveTemplateRequest, 3)
-	firstStartCanceled := make(chan time.Time, 1)
-	releaseFirstStart := make(chan struct{})
+	primaryStartCanceled := make(chan time.Time, 1)
+	releasePrimaryStart := make(chan struct{})
+	var primaryStartHeld atomic.Bool
 	var starts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -58,12 +59,14 @@ func TestOpenCodeHiveTemplate_CoalescesCreatedAndKeepsPromptIndependent(t *testi
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{}`))
 		case "/sessions":
-			startRequests <- readHiveTemplateRequest(r)
-			if starts.Add(1) == 1 {
+			request := readHiveTemplateRequest(r)
+			startRequests <- request
+			starts.Add(1)
+			if isPrimaryOpenCodeStart(request) && primaryStartHeld.CompareAndSwap(false, true) {
 				select {
 				case <-r.Context().Done():
-					firstStartCanceled <- time.Now()
-				case <-releaseFirstStart:
+					primaryStartCanceled <- time.Now()
+				case <-releasePrimaryStart:
 				}
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -77,7 +80,7 @@ func TestOpenCodeHiveTemplate_CoalescesCreatedAndKeepsPromptIndependent(t *testi
 		}
 	}))
 	defer func() {
-		close(releaseFirstStart)
+		close(releasePrimaryStart)
 		server.Close()
 	}()
 
@@ -149,18 +152,42 @@ if (unhandled.length !== 0) throw new Error("lifecycle callback produced an unha
 	finished := make(chan error, 1)
 	go func() { finished <- cmd.Run() }()
 
-	firstStart := waitHiveTemplateRequest(t, startRequests, "first session start")
-	distinctStart := waitHiveTemplateRequest(t, startRequests, "distinct-evidence session start")
-	environmentStart := waitHiveTemplateRequest(t, startRequests, "environment-fallback session start")
-	prompt := waitHiveTemplateRequest(t, promptRequests, "prompt while the start request is held")
+	var primaryStart, distinctStart, environmentStart hiveTemplateRequest
+	var primaryStartSeen, distinctStartSeen, environmentStartSeen bool
+	for range 3 {
+		request := waitHiveTemplateRequest(t, startRequests, "initial session start")
+		switch hiveTemplateStartEvidence(t, request) {
+		case "session-42/jarvis-dev":
+			if primaryStartSeen {
+				t.Fatalf("received duplicate primary session start")
+			}
+			primaryStart, primaryStartSeen = request, true
+		case "session-42/other-project":
+			if distinctStartSeen {
+				t.Fatalf("received duplicate distinct-evidence session start")
+			}
+			distinctStart, distinctStartSeen = request, true
+		case "environment-session/environment-project":
+			if environmentStartSeen {
+				t.Fatalf("received duplicate environment-fallback session start")
+			}
+			environmentStart, environmentStartSeen = request, true
+		default:
+			t.Fatalf("received unexpected initial session start: %s", hiveTemplateStartEvidence(t, request))
+		}
+	}
+	if !primaryStartSeen || !distinctStartSeen || !environmentStartSeen {
+		t.Fatalf("initial session starts missing evidence: primary=%t distinct=%t environment=%t", primaryStartSeen, distinctStartSeen, environmentStartSeen)
+	}
+	prompt := waitHiveTemplateRequest(t, promptRequests, "prompt while the primary start request is held")
 	fallbackPrompt := waitHiveTemplateRequest(t, promptRequests, "prompt PID fallback")
 	numericPrompt := waitHiveTemplateRequest(t, promptRequests, "numeric text prompt")
 	assertNoHiveTemplateRequest(t, promptRequests, 200*time.Millisecond, "a malformed non-array prompt request")
 	assertNoHiveTemplateRequest(t, startRequests, 200*time.Millisecond, "an immediate duplicate or no-evidence session start")
-	firstCanceled := waitHiveTemplateTime(t, firstStartCanceled, "first start timeout cancellation")
-	secondStart := waitHiveTemplateRequest(t, startRequests, "retry after start timeout")
-	if secondStart.observedAt.Before(firstCanceled) {
-		t.Fatalf("second start observed at %s before first timeout cleanup at %s", secondStart.observedAt, firstCanceled)
+	primaryCanceled := waitHiveTemplateTime(t, primaryStartCanceled, "primary start timeout cancellation")
+	secondStart := waitHiveTemplateRequest(t, startRequests, "retry after primary start timeout")
+	if secondStart.observedAt.Before(primaryCanceled) {
+		t.Fatalf("retry start observed at %s before primary timeout cleanup at %s", secondStart.observedAt, primaryCanceled)
 	}
 	if err := <-finished; err != nil {
 		t.Fatalf("execute OpenCode Hive template: %v", err)
@@ -169,7 +196,7 @@ if (unhandled.length !== 0) throw new Error("lifecycle callback produced an unha
 	if starts.Load() != 4 {
 		t.Fatalf("session start count = %d, want exactly 4", starts.Load())
 	}
-	for _, request := range []hiveTemplateRequest{firstStart, secondStart} {
+	for _, request := range []hiveTemplateRequest{primaryStart, secondStart} {
 		if request.method != http.MethodPost || request.contentType != "application/json" {
 			t.Fatalf("session start request = %s content-type %q, want POST application/json", request.method, request.contentType)
 		}
@@ -332,6 +359,29 @@ func readHiveTemplateRequest(request *http.Request) hiveTemplateRequest {
 		err:         err,
 		observedAt:  time.Now(),
 	}
+}
+
+func isPrimaryOpenCodeStart(request hiveTemplateRequest) bool {
+	var payload struct {
+		ID      string `json:"id"`
+		Project string `json:"project"`
+	}
+	return request.err == nil && json.Unmarshal(request.body, &payload) == nil && payload.ID == "session-42" && payload.Project == "jarvis-dev"
+}
+
+func hiveTemplateStartEvidence(t *testing.T, request hiveTemplateRequest) string {
+	t.Helper()
+	if request.err != nil {
+		t.Fatalf("read %s request: %v", request.path, request.err)
+	}
+	var payload struct {
+		ID      string `json:"id"`
+		Project string `json:"project"`
+	}
+	if err := json.Unmarshal(request.body, &payload); err != nil {
+		t.Fatalf("decode %s request: %v", request.path, err)
+	}
+	return payload.ID + "/" + payload.Project
 }
 
 const hiveTemplateRequestWait = 10 * time.Second
