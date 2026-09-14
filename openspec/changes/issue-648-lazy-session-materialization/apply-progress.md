@@ -223,3 +223,38 @@ Persisted `tasks.md` slice-2 RED, GREEN, and TRIANGULATE/REFACTOR rows are visib
 - Slice 2 has no end API, end-mode, end rollback, duplicate-end, or end concurrency behavior. Those three slice-3 implementation rows are intentionally unchecked for a later worktree/candidate.
 - Deferred parent lifecycle action: review the slice-2 native-accounting receipt, DB/race evidence, exclusions, rollback, and `main <- 1 <- 📍2 <- 3` context before any commit/PR checkpoint.
 - Structured status consumed: `changeName=issue-648-lazy-session-materialization`, `applyState=ready`, `artifactStore=openspec`, `actionContext.mode=repo-local`, workspace `/home/andres/Desarrollo/Proyectos/jarvis-dev-issue-648`; no action-context warnings.
+
+## Slice 3 — EnsureAndEndSession end rollback + concurrency extension
+
+**Status:** implementation complete; native review/checkpoint remains pending.
+**Boundary:** `main <- 1 <- 2 <- 📍3 <- 4`, starting at user-supplied `795b62de`. Only the approved DB/models/tests and SDD artifacts changed; no adapter, sync, later slice, commit, push, or PR was created.
+
+### Completed implementation tasks
+
+- [x] RED — new `session_end_test.go` failed to compile before production work: `SessionEndInput`, `EnsureAndEndSession`, and `ErrSessionAlreadyEnded` were undefined.
+- [x] GREEN — added additive `SessionEndInput` and `ErrSessionAlreadyEnded`; the new transaction-owned end method materializes missing rows, closes active rows with `synced_at = NULL`, and uses private `preserveForEnd` mode so duplicate ends never reopen or overwrite state.
+- [x] TRIANGULATE/REFACTOR — exercised missing/active/already-ended/mismatch/gate paths, rejection versus no-op duplicates, summary preservation, abort-trigger rollback for missing and active rows, and two-handle serialized ends. The private mode keeps legacy `EnsureSession`, `CreateSession`, and `EndSession` unchanged.
+- Re-read `tasks.md`: all three slice-3 implementation rows are visibly `- [x]`. Parent-owned rows are byte-for-byte unchanged.
+
+### TDD Cycle Evidence
+
+| Task | Test file | Layer | Safety net | RED | GREEN | TRIANGULATE | REFACTOR |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Slice 3 end primitive | `hive-daemon/internal/db/session_end_test.go` | SQLite DB | Slice-2 DB/module/race/vet evidence was green at the supplied baseline | `go test ./internal/db -run '^TestEnsureAndEndSession' -count=1` failed with the three missing symbols | Same focused command passed after the minimal transaction/mode implementation | Added duplicate/no-op, typed mismatch, gates, rollback, and two-handle cases; focused and race runs passed | Kept one private two-value mode and formatted; no behavioral refactor needed |
+
+### Verification
+
+| Command | Result |
+| --- | --- |
+| `cd hive-daemon && go test ./internal/db -run '^TestEnsureAndEndSession' -count=1` | RED compile failure, then GREEN and triangulation pass. |
+| `cd hive-daemon && go test -race ./internal/db -run '^TestEnsureAndEndSession' -count=1` | Passed. |
+| `cd hive-daemon && go test ./...` | Passed. |
+| `cd hive-daemon && go vet ./...` | Passed. |
+| `gofmt -l` on the three changed Go files; `git diff --check` | Passed clean. |
+
+### Workload, remaining work, and risks
+
+- Native-accounted diff from `795b62de`: **252 product/test lines** (58 tracked DB/models additions+deletions plus 194 new test lines, counted as additions) + **6 tasks bookkeeping lines** + **35 apply-progress lines** = **293 total changed lines**, below 399.
+- Deferred parent lifecycle action (unchanged): `- [ ] Review slice 3's EnsureAndEndSession extension; confirm end rollback/concurrency receipts, separate native-accounting result, rollback, and \`main <- 1 <- 2 <- 📍3 <- 4\` context before merge. <!-- sdd-owner: parent -->`
+- Remaining implementation work is deliberately outside slice 3, beginning with slice 4. Risk: transport-level end evidence, HTTP/MCP duplicate mapping, and snapshot sync acknowledgement remain unactivated and unverified by this DB-only unit.
+- Structured status consumed: `changeName=issue-648-lazy-session-materialization`; `applyState=ready`; `artifactStore=openspec`; `actionContext.mode=repo-local`; allowed root `/home/andres/Desarrollo/Proyectos/jarvis-dev-issue-648`; warnings none. Skill resolution: `paths-injected`.

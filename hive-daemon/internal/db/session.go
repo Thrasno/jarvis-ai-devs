@@ -17,6 +17,9 @@ import (
 // Callers use errors.Is for comparison.
 var ErrSessionNotFound = errors.New("session not found")
 
+// ErrSessionAlreadyEnded is returned when a caller rejects a duplicate end.
+var ErrSessionAlreadyEnded = errors.New("session already ended")
+
 // CreateSession inserts a new session row.
 // Returns an error if the id already exists (use EnsureManualSaveSession for idempotent inserts).
 // BUG-DEVID-EMPTY: an empty devID (after trimming) falls back to resolveDevID()
@@ -54,7 +57,7 @@ func (d *DB) EnsureSession(ctx context.Context, in models.SessionInput) (*models
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	session, err := d.ensureSessionInTx(ctx, tx, in)
+	session, err := d.ensureSessionInTx(ctx, tx, in, reopenForWrite)
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +67,49 @@ func (d *DB) EnsureSession(ctx context.Context, in models.SessionInput) (*models
 	return session, nil
 }
 
-func (d *DB) ensureSessionInTx(ctx context.Context, tx *sql.Tx, in models.SessionInput) (*models.Session, error) {
+type sessionEnsureMode uint8
+
+const (
+	reopenForWrite sessionEnsureMode = iota
+	preserveForEnd
+)
+
+func (d *DB) EnsureAndEndSession(ctx context.Context, in models.SessionEndInput) (*models.Session, error) {
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin ensure and end session: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	session, err := d.ensureSessionInTx(ctx, tx, in.Session, preserveForEnd)
+	if err != nil {
+		return nil, err
+	}
+	if session.EndedAt != nil {
+		if in.RejectAlreadyEnded {
+			return nil, ErrSessionAlreadyEnded
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("commit duplicate session end: %w", err)
+		}
+		return session, nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE sessions SET ended_at = CURRENT_TIMESTAMP, summary = ?, synced_at = NULL
+		WHERE id = ?`, emptyToNil(in.Summary), in.Session.ID); err != nil {
+		return nil, fmt.Errorf("end ensured session: %w", err)
+	}
+	session, err = readSessionInTx(ctx, tx, in.Session.ID)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit ensure and end session: %w", err)
+	}
+	return session, nil
+}
+
+func (d *DB) ensureSessionInTx(ctx context.Context, tx *sql.Tx, in models.SessionInput, mode sessionEnsureMode) (*models.Session, error) {
 	if strings.TrimSpace(in.ID) == "" {
 		return nil, fmt.Errorf("session id is required")
 	}
@@ -112,7 +157,7 @@ func (d *DB) ensureSessionInTx(ctx context.Context, tx *sql.Tx, in models.Sessio
 			return nil, fmt.Errorf("heal session developer id: %w", err)
 		}
 	}
-	if session.EndedAt != nil {
+	if session.EndedAt != nil && mode == reopenForWrite {
 		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET ended_at = NULL, synced_at = NULL WHERE id = ?`, in.ID); err != nil {
 			return nil, fmt.Errorf("reopen ensured session: %w", err)
 		}
