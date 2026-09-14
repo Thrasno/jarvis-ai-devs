@@ -21,8 +21,8 @@ func TestOpenCodeHiveTemplate_DeclaresBoundedLifecycleContract(t *testing.T) {
 		`"session.created"`,
 		`"session.deleted"`,
 		"SESSION_START: `${HIVE_URL}/sessions`,",
-		`/sessions/${encodeURIComponent(id)}/end`,
-		`dev_id`,
+		`/sessions/${encodeURIComponent(notification.id)}/end`,
+		`properties["info"]`,
 		`client: HIVE_CLIENT`,
 		`createdFlights`,
 		`finally`,
@@ -32,7 +32,7 @@ func TestOpenCodeHiveTemplate_DeclaresBoundedLifecycleContract(t *testing.T) {
 			t.Fatalf("OpenCode Hive template missing lifecycle contract %q", required)
 		}
 	}
-	for _, forbidden := range []string{"ppid-", "process.ppid", "Core", "autostart", "idempotency"} {
+	for _, forbidden := range []string{"Core", "autostart", "idempotency"} {
 		if strings.Contains(source, forbidden) {
 			t.Fatalf("OpenCode Hive template contains deferred lifecycle behavior %q", forbidden)
 		}
@@ -48,7 +48,7 @@ func TestOpenCodeHiveTemplate_CoalescesCreatedAndKeepsPromptIndependent(t *testi
 	}
 
 	startRequests := make(chan hiveTemplateRequest, 2)
-	promptRequests := make(chan hiveTemplateRequest, 1)
+	promptRequests := make(chan hiveTemplateRequest, 3)
 	firstStartCanceled := make(chan time.Time, 1)
 	releaseFirstStart := make(chan struct{})
 	var starts atomic.Int32
@@ -87,34 +87,76 @@ func TestOpenCodeHiveTemplate_CoalescesCreatedAndKeepsPromptIndependent(t *testi
 import { pathToFileURL } from "node:url";
 const { Hive } = await import(pathToFileURL(process.argv[2]).href);
 const plugin = await Hive();
+process.env.PWD = "";
 const originalFetch = globalThis.fetch;
-globalThis.fetch = () => { throw new Error("synchronous setup failure"); };
-plugin["event"]({ event: { type: "session.created", properties: { id: "synchronous-fetch-error" } } });
-globalThis.fetch = originalFetch;
+const unhandled = [];
+const onUnhandled = (reason) => unhandled.push(reason);
+process.on("unhandledRejection", onUnhandled);
+let synchronousCreatedFetches = 0;
+globalThis.fetch = (url) => {
+  if (String(url).endsWith("/sessions")) synchronousCreatedFetches += 1;
+  throw new Error("synchronous setup failure");
+};
+const synchronousCreated = { event: { type: "session.created", properties: { info: {
+  id: "synchronous-fetch-error", project: "jarvis-dev", directory: "/workspace/jarvis-dev"
+} } } };
+if (plugin["event"](synchronousCreated) !== undefined) throw new Error("event callback awaited synchronous lifecycle failure");
+queueMicrotask(() => { globalThis.fetch = originalFetch; });
+await Promise.resolve();
+if (synchronousCreatedFetches !== 1) throw new Error("synchronous lifecycle fetches = " + synchronousCreatedFetches);
+if (unhandled.length !== 0) throw new Error("synchronous lifecycle failure was unhandled");
 const evidence = { id: "session-42", project: "jarvis-dev", directory: "/workspace/jarvis-dev" };
-const created = { event: { type: "session.created", properties: evidence } };
+const created = { event: { type: "session.created", id: "envelope-id", properties: { id: "unrelated-id", info: evidence } } };
+if (plugin["event"](created) !== undefined) throw new Error("event callback awaited lifecycle delivery");
 plugin["event"](created);
-plugin["event"](created);
+plugin["event"]({ event: { type: "session.created", properties: { info: {
+  id: "session-42", project: "other-project", directory: "/workspace/other-project"
+} } } });
+process.env.HIVE_OPENCODE_SESSION_ID = "environment-session";
+plugin["event"]({ event: { type: "session.created", properties: { info: {
+  project: "environment-project", directory: "/environment-directory"
+} } } });
+process.env.HIVE_OPENCODE_SESSION_ID = "";
+process.env.HIVE_PROJECT = "prompt-project";
+process.env.HIVE_PROJECT_DIRECTORY = "/prompt-directory";
+process.env.HIVE_OPENCODE_SESSION_ID = "prompt-session";
 await plugin["chat.message"](evidence, { parts: [
   { type: "text", text: "  capture  " },
   { type: "tool", text: "ignored" },
   { type: "text", text: "  this prompt  " },
 ] });
+process.env.HIVE_PROJECT = "";
+process.env.HIVE_PROJECT_DIRECTORY = "";
+process.env.HIVE_OPENCODE_SESSION_ID = "";
+await plugin["chat.message"]({}, { parts: [{ type: "text", text: "fallback prompt" }] });
+await plugin["chat.message"]({}, { parts: [{ type: "text", text: 42 }] });
+await plugin["chat.message"]({}, { parts: {} });
+const originalCwd = process.cwd;
+process.cwd = () => "";
+plugin["event"]({ event: { type: "session.created", properties: { info: { id: "without-evidence" } } } });
+process.cwd = originalCwd;
 await new Promise((resolve) => setTimeout(resolve, 1100));
 plugin["event"](created);
 await new Promise((resolve) => setTimeout(resolve, 100));
+process.off("unhandledRejection", onUnhandled);
+if (unhandled.length !== 0) throw new Error("lifecycle callback produced an unhandled rejection");
 `), 0600); err != nil {
 		t.Fatalf("write Node runner: %v", err)
 	}
 
 	cmd := exec.Command("node", "--experimental-strip-types", runner, filepath.Join("..", "..", "embed", "hooks", "opencode", "hive.ts"))
-	cmd.Env = append(os.Environ(), "HIVE_HTTP_PORT="+port, "HIVE_DEV_ID=developer-7", "HIVE_OPENCODE_SESSION_ID=", "OPENCODE_SESSION_ID=", "SESSION_ID=", "HIVE_PROJECT=", "JARVIS_PROJECT=", "HIVE_PROJECT_DIRECTORY=", "JARVIS_WORKSPACE_DIRECTORY=")
+	cmd.Env = append(os.Environ(), "HIVE_HTTP_PORT="+port, "HIVE_OPENCODE_SESSION_ID=", "OPENCODE_SESSION_ID=", "SESSION_ID=", "HIVE_PROJECT=", "JARVIS_PROJECT=", "HIVE_PROJECT_DIRECTORY=", "JARVIS_WORKSPACE_DIRECTORY=", "PWD=")
 	finished := make(chan error, 1)
 	go func() { finished <- cmd.Run() }()
 
 	firstStart := waitHiveTemplateRequest(t, startRequests, "first session start")
+	distinctStart := waitHiveTemplateRequest(t, startRequests, "distinct-evidence session start")
+	environmentStart := waitHiveTemplateRequest(t, startRequests, "environment-fallback session start")
 	prompt := waitHiveTemplateRequest(t, promptRequests, "prompt while the start request is held")
-	assertNoHiveTemplateRequest(t, startRequests, 200*time.Millisecond, "an immediate duplicate session start")
+	fallbackPrompt := waitHiveTemplateRequest(t, promptRequests, "prompt PID fallback")
+	numericPrompt := waitHiveTemplateRequest(t, promptRequests, "numeric text prompt")
+	assertNoHiveTemplateRequest(t, promptRequests, 200*time.Millisecond, "a malformed non-array prompt request")
+	assertNoHiveTemplateRequest(t, startRequests, 200*time.Millisecond, "an immediate duplicate or no-evidence session start")
 	firstCanceled := waitHiveTemplateTime(t, firstStartCanceled, "first start timeout cancellation")
 	secondStart := waitHiveTemplateRequest(t, startRequests, "retry after start timeout")
 	if secondStart.observedAt.Before(firstCanceled) {
@@ -124,22 +166,41 @@ await new Promise((resolve) => setTimeout(resolve, 100));
 		t.Fatalf("execute OpenCode Hive template: %v", err)
 	}
 
-	if starts.Load() != 2 {
-		t.Fatalf("session start count = %d, want exactly 2", starts.Load())
+	if starts.Load() != 4 {
+		t.Fatalf("session start count = %d, want exactly 4", starts.Load())
 	}
 	for _, request := range []hiveTemplateRequest{firstStart, secondStart} {
 		if request.method != http.MethodPost || request.contentType != "application/json" {
 			t.Fatalf("session start request = %s content-type %q, want POST application/json", request.method, request.contentType)
 		}
 		assertHiveTemplateJSON(t, request, map[string]string{
-			"id": "session-42", "project": "jarvis-dev", "directory": "/workspace/jarvis-dev", "dev_id": "developer-7", "client": "opencode",
+			"id": "session-42", "project": "jarvis-dev", "directory": "/workspace/jarvis-dev", "client": "opencode",
 		})
 	}
+	assertHiveTemplateJSON(t, distinctStart, map[string]string{
+		"id": "session-42", "project": "other-project", "directory": "/workspace/other-project", "client": "opencode",
+	})
+	assertHiveTemplateJSON(t, environmentStart, map[string]string{
+		"id": "environment-session", "project": "environment-project", "directory": "/environment-directory", "client": "opencode",
+	})
 	if prompt.method != http.MethodPost || prompt.contentType != "application/json" {
 		t.Fatalf("prompt request = %s content-type %q, want POST application/json", prompt.method, prompt.contentType)
 	}
 	assertHiveTemplateJSON(t, prompt, map[string]string{
-		"content": "capture  \n  this prompt", "session_id": "session-42", "project": "jarvis-dev", "directory": "/workspace/jarvis-dev", "client": "opencode",
+		"content": "capture  \n  this prompt", "session_id": "prompt-session", "project": "prompt-project", "directory": "/prompt-directory", "client": "opencode",
+	})
+	var fallbackPayload map[string]string
+	if err := json.Unmarshal(fallbackPrompt.body, &fallbackPayload); err != nil {
+		t.Fatalf("decode fallback prompt: %v", err)
+	}
+	if fallbackPayload["content"] != "fallback prompt" || fallbackPayload["client"] != "opencode" || fallbackPayload["directory"] == "" || !strings.HasPrefix(fallbackPayload["session_id"], "ppid-") {
+		t.Fatalf("prompt PID/cwd fallback changed: %#v", fallbackPayload)
+	}
+	if _, found := fallbackPayload["project"]; found {
+		t.Fatalf("prompt PID/cwd fallback invented a project: %#v", fallbackPayload)
+	}
+	assertHiveTemplateJSON(t, numericPrompt, map[string]string{
+		"content": "42", "session_id": fallbackPayload["session_id"], "directory": fallbackPayload["directory"], "client": "opencode",
 	})
 }
 
@@ -181,9 +242,12 @@ func TestOpenCodeHiveTemplate_EndsDeletedSessionFromGenericEvent(t *testing.T) {
 import { pathToFileURL } from "node:url";
 const { Hive } = await import(pathToFileURL(process.argv[2]).href);
 const plugin = await Hive();
-const created = { event: { type: "session.created", properties: { id: "created-pending" } } };
+process.env.PWD = "";
+const created = { event: { type: "session.created", properties: { info: {
+  id: "created-pending", project: "jarvis-dev", directory: "/workspace/jarvis-dev"
+} } } };
 const deleted = { event: { type: "session.deleted", properties: { info: {
-  id: "session /with?reserved%chars", project: "jarvis-dev", directory: "/workspace/jarvis-dev", summary: "finished"
+  id: "session /with?reserved%chars", project: "jarvis-dev", directory: "/workspace/jarvis-dev"
 } } } };
 plugin["event"](created);
 plugin["event"](deleted);
@@ -224,7 +288,7 @@ await new Promise((resolve) => setTimeout(resolve, 100));
 			t.Fatalf("session end request URI = %q, want encoded ID", request.requestURI)
 		}
 		assertHiveTemplateJSON(t, request, map[string]string{
-			"project": "jarvis-dev", "directory": "/workspace/jarvis-dev", "summary": "finished", "client": "opencode",
+			"project": "jarvis-dev", "directory": "/workspace/jarvis-dev", "client": "opencode",
 		})
 	}
 }
