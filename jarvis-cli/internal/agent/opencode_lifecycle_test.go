@@ -322,6 +322,107 @@ await new Promise((resolve) => setTimeout(resolve, 100));
 	}
 }
 
+func TestOpenCodeHiveTemplate_FailsOpenForLifecycleNonOKResponses(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires Node to execute the source-of-truth OpenCode template")
+	}
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("Node is unavailable: source execution test skipped")
+	}
+
+	statusByID := map[string]int{
+		"created-400": http.StatusBadRequest,
+		"created-423": http.StatusLocked,
+		"created-500": http.StatusInternalServerError,
+		"deleted-400": http.StatusBadRequest,
+		"deleted-423": http.StatusLocked,
+		"deleted-500": http.StatusInternalServerError,
+	}
+	createdCounts := map[string]*atomic.Int32{
+		"created-400": {},
+		"created-423": {},
+		"created-500": {},
+	}
+	deletedCounts := map[string]*atomic.Int32{
+		"deleted-400": {},
+		"deleted-423": {},
+		"deleted-500": {},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/governance/project-identity/status":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+		case "/sessions":
+			var payload map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			id := payload["id"]
+			if count, ok := createdCounts[id]; ok {
+				count.Add(1)
+				w.WriteHeader(statusByID[id])
+				return
+			}
+			http.NotFound(w, r)
+		default:
+			for id, count := range deletedCounts {
+				if r.URL.Path == "/sessions/"+id+"/end" {
+					count.Add(1)
+					w.WriteHeader(statusByID[id])
+					return
+				}
+			}
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	port := hiveTemplatePort(t, server.URL)
+	runner := filepath.Join(t.TempDir(), "run-hive-lifecycle-non-ok.mjs")
+	if err := os.WriteFile(runner, []byte(`
+import { pathToFileURL } from "node:url";
+const { Hive } = await import(pathToFileURL(process.argv[2]).href);
+const plugin = await Hive();
+const unhandled = [];
+const onUnhandled = (reason) => unhandled.push(reason);
+process.on("unhandledRejection", onUnhandled);
+for (const status of [400, 423, 500]) {
+  const created = { event: { type: "session.created", properties: { info: {
+    id: "created-" + status, project: "jarvis-dev", directory: "/workspace/jarvis-dev"
+  } } } };
+  const deleted = { event: { type: "session.deleted", properties: { info: {
+    id: "deleted-" + status, project: "jarvis-dev", directory: "/workspace/jarvis-dev"
+  } } } };
+  if (plugin["event"](created) !== undefined) throw new Error("created callback awaited a non-OK response");
+  if (plugin["event"](deleted) !== undefined) throw new Error("deleted callback awaited a non-OK response");
+}
+await new Promise((resolve) => setTimeout(resolve, 200));
+process.off("unhandledRejection", onUnhandled);
+if (unhandled.length !== 0) throw new Error("non-OK lifecycle response was unhandled");
+`), 0600); err != nil {
+		t.Fatalf("write Node non-OK lifecycle runner: %v", err)
+	}
+
+	cmd := exec.Command("node", "--experimental-strip-types", runner, filepath.Join("..", "..", "embed", "hooks", "opencode", "hive.ts"))
+	cmd.Env = append(os.Environ(), "HIVE_HTTP_PORT="+port, "HIVE_OPENCODE_SESSION_ID=", "OPENCODE_SESSION_ID=", "SESSION_ID=", "HIVE_PROJECT=", "JARVIS_PROJECT=", "HIVE_PROJECT_DIRECTORY=", "JARVIS_WORKSPACE_DIRECTORY=")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("execute OpenCode Hive non-OK lifecycle template: %v\n%s", err, output)
+	}
+
+	for id, count := range createdCounts {
+		if got := count.Load(); got != 1 {
+			t.Errorf("created lifecycle requests for %s = %d, want 1", id, got)
+		}
+	}
+	for id, count := range deletedCounts {
+		if got := count.Load(); got != 1 {
+			t.Errorf("deleted lifecycle requests for %s = %d, want 1", id, got)
+		}
+	}
+}
+
 func readOpenCodeHiveTemplate(t *testing.T) string {
 	t.Helper()
 	content, err := os.ReadFile(filepath.Join("..", "..", "embed", "hooks", "opencode", "hive.ts"))

@@ -43,20 +43,18 @@ These are source-derived Node loopback observations from `jarvis-cli/internal/ag
 | Deleted independence from pending created | PASS | A held `created-pending` start request does not prevent the deletion end request. |
 | Deleted timeout beyond one second | PASS | The first end request is held until context cancellation; after 1100 ms a later deleted event causes the second observed end, after the first cancellation. |
 | Deleted synchronous fetch setup failure and missing-ID no-op | PASS | The runner makes `fetch` throw synchronously for a deletion event and then emits a deleted event with no ID; the Node runner completes and no end request is observed for the missing ID. |
+| Created/deleted non-OK 400/423/500 tolerance | PASS | The executable Node loopback test returns each status separately for each lifecycle path, proves every callback returns immediately, observes exactly one request per status/path (no retry), and asserts no `unhandledRejection`. |
 
 ## Explicitly unexecuted or not proven
 
 | Scenario | Status | Rationale |
 | --- | --- | --- |
 | Live OpenCode envelope and runtime compatibility | NOT RUN | The current evidence imports the source template in Node; it does not start OpenCode. This record must not claim compatibility with `opencode 1.18.29` until the disposable procedure is run. |
-| 400 response tolerance | NOT RUN | The lifecycle loopback handlers return successful responses; no 400 case is exercised. |
-| 423 response tolerance | NOT RUN | The lifecycle loopback handlers return successful responses; no 423 case is exercised. |
-| 500 response tolerance | NOT RUN | The lifecycle loopback handlers return successful responses; no 500 case is exercised. |
-| Generic non-OK response tolerance | NOT RUN | No lifecycle test case returns a non-OK response. |
+| Prompt non-OK response tolerance | NOT RUN | The executable non-OK loopback coverage is limited to created and deleted lifecycle delivery; prompt capture still has no 400/423/500 case. |
 | Prompt timeout beyond one second | NOT RUN | Only created and deleted handlers are deliberately held until their request contexts are cancelled. |
 | Prompt synchronous fetch setup failure | NOT RUN | Synchronous `fetch` throws are injected for created and deleted only. |
-| No retries in every failure mode | NOT RUN | The tests show immediate created coalescing and later event-driven dispatch after timeout; they do not exhaustively prove absence of retries for every endpoint/status. |
-| No unhandled failures across all lifecycle paths | NOT RUN | Created synchronous setup failure has an `unhandledRejection` listener/assertion; deleted/prompt setup failures and every rejection/status path are not exhaustively covered. |
+| No retries in every failure mode | PARTIAL | Created/deleted 400/423/500 delivery now proves exactly one request per status/path with no retry. Prompt and timeout failure modes remain unexhausted. |
+| No unhandled failures across all lifecycle paths | PARTIAL | Created/deleted 400/423/500 delivery and created synchronous setup failure install/assert an `unhandledRejection` listener. Prompt and remaining failure modes are not exhaustively covered. |
 | No plugin-created processes or daemon launch | NOT RUN | The test launches Node as its harness and does not inspect child processes or daemon starts. |
 | OpenCode remains usable after failure | NOT RUN | Requires the disposable live runtime procedure; no external model or authentication was invoked here. |
 

@@ -129,7 +129,7 @@ func TestSaveMemoryWithSession_MaterializesReopensAndRollsBack(t *testing.T) {
 			if tt.setup != nil {
 				tt.setup(t, d)
 			}
-			_, err := d.SaveMemoryWithSession(context.Background(), &models.Memory{Project: "alpha", Title: "capture", Content: "content"}, models.SessionInput{ID: "capture", Project: "alpha", Directory: "/capture", DevID: "later", Client: "mcp"})
+			_, err := d.SaveMemoryWithSession(context.Background(), &models.Memory{Project: "alpha", SessionID: "capture", Title: "capture", Content: "content"}, models.SessionInput{ID: "capture", Project: "alpha", Directory: "/capture", DevID: "later", Client: "mcp"})
 			require.NoError(t, err)
 			session, err := d.GetSession("capture")
 			require.NoError(t, err)
@@ -164,7 +164,7 @@ func TestSaveMemoryWithSession_RollsBackSessionMemoryLinkAndJournal(t *testing.T
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			d := openTestDB(t)
-			mem := &models.Memory{Project: "alpha", Title: "capture", Content: "content"}
+			mem := &models.Memory{Project: "alpha", SessionID: "capture", Title: "capture", Content: "content"}
 			tt.setup(t, d, mem)
 			_, err := d.SaveMemoryWithSession(context.Background(), mem, models.SessionInput{ID: "capture", Project: "alpha", Client: "mcp"})
 			require.Error(t, err)
@@ -210,7 +210,7 @@ func TestSaveMemoryWithSession_EndedSessionReopenRollsBackDownstreamFailure(t *t
 			require.NoError(t, d.EndSession("summary", "prior end"))
 			before, err := d.GetSession("summary")
 			require.NoError(t, err)
-			mem := &models.Memory{Project: "alpha", Title: "summary", Content: "content", Category: "session_summary"}
+			mem := &models.Memory{Project: "alpha", SessionID: "summary", Title: "summary", Content: "content", Category: "session_summary"}
 			tt.prepare(t, d, mem)
 
 			_, err = d.SaveMemoryWithSession(context.Background(), mem, models.SessionInput{ID: "summary", Project: "alpha", Directory: "/later", DevID: "later", Client: "mcp"})
@@ -236,16 +236,68 @@ func TestSaveMemoryWithSession_EndedSessionReopenRollsBackDownstreamFailure(t *t
 func TestSaveMemoryWithSession_RejectsMismatchAndBlockedProject(t *testing.T) {
 	d := openTestDB(t)
 	require.NoError(t, d.CreateSession("capture", "alpha", "", "dev", "mcp"))
-	_, err := d.SaveMemoryWithSession(context.Background(), &models.Memory{Project: "beta", Title: "capture", Content: "content"}, models.SessionInput{ID: "capture", Project: "beta", Client: "mcp"})
+	_, err := d.SaveMemoryWithSession(context.Background(), &models.Memory{Project: "beta", SessionID: "capture", Title: "capture", Content: "content"}, models.SessionInput{ID: "capture", Project: "beta", Client: "mcp"})
 	var validation *project.ValidationError
 	require.ErrorAs(t, err, &validation)
 	require.Equal(t, project.CodeProjectSessionMismatch, validation.Code)
 	requireTableCount(t, d, "memories", 0)
 	_, err = d.RecordProjectBlock(context.Background(), ProjectBlockCommand{CommandID: "block", AckToken: "ack", Project: "alpha", CanonicalProjectKey: "alpha", BlockedAt: time.Now()})
 	require.NoError(t, err)
-	_, err = d.SaveMemoryWithSession(context.Background(), &models.Memory{Project: "alpha", Title: "capture", Content: "content"}, models.SessionInput{ID: "capture", Project: "alpha", Client: "mcp"})
+	_, err = d.SaveMemoryWithSession(context.Background(), &models.Memory{Project: "alpha", SessionID: "capture", Title: "capture", Content: "content"}, models.SessionInput{ID: "capture", Project: "alpha", Client: "mcp"})
 	require.ErrorIs(t, err, ErrProjectBlocked)
 	requireTableCount(t, d, "memories", 0)
+}
+
+func TestSaveMemoryWithSession_ValidatesCallerAttributionBeforePersistence(t *testing.T) {
+	tests := []struct {
+		name      string
+		memory    models.Memory
+		session   models.SessionInput
+		wantError bool
+	}{
+		{
+			name:      "session ID mismatch",
+			memory:    models.Memory{Project: "alpha", SessionID: "memory-session", Title: "capture", Content: "content"},
+			session:   models.SessionInput{ID: "session-input", Project: "alpha", Client: "mcp"},
+			wantError: true,
+		},
+		{
+			name:      "canonical project mismatch",
+			memory:    models.Memory{Project: "alpha", SessionID: "capture", Title: "capture", Content: "content"},
+			session:   models.SessionInput{ID: "capture", Project: "beta", Client: "mcp"},
+			wantError: true,
+		},
+		{
+			name:    "canonical project compatibility",
+			memory:  models.Memory{Project: "Jarvis Dev", SessionID: "capture", Title: "capture", Content: "content"},
+			session: models.SessionInput{ID: "capture", Project: "jarvis-dev", Client: "mcp"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := openTestDB(t)
+			memory := tt.memory
+			session := tt.session
+
+			_, err := d.SaveMemoryWithSession(context.Background(), &memory, session)
+			if tt.wantError {
+				var validation *project.ValidationError
+				require.ErrorAs(t, err, &validation)
+				require.Equal(t, project.CodeProjectSessionMismatch, validation.Code)
+				requireTableCount(t, d, "project_identities", 0)
+				requireTableCount(t, d, "sessions", 0)
+				requireTableCount(t, d, "memories", 0)
+				requireTableCount(t, d, "memory_mutations", 0)
+			} else {
+				require.NoError(t, err)
+				requireTableCount(t, d, "sessions", 1)
+				requireTableCount(t, d, "memories", 1)
+			}
+			require.Equal(t, tt.memory, memory)
+			require.Equal(t, tt.session, session)
+		})
+	}
 }
 
 func requireTableCount(t *testing.T, d *DB, table string, want int) {
