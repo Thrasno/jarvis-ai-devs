@@ -2,9 +2,12 @@ package mcp_test
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 
 	hivemcp "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/mcp"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -76,6 +79,60 @@ func TestMigrationGatePendingOperatorReviewBlocksMCPToolsWithTheTUIContinuation(
 	}
 }
 
+func TestMemSessionStart_ConcurrentValidCallsShareOneEnsureAndExcludeInvalidOrBlocked(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	var calls int
+	var mu sync.Mutex
+	store := &mockStore{ensureSessionFn: func(ctx context.Context, in models.SessionInput) (*models.Session, error) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		close(entered)
+		select {
+		case <-release:
+			return &models.Session{ID: in.ID, Project: in.Project}, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}}
+	gate := project.NewMigrationGate(project.MigrationStatus{State: project.MigrationStateReady})
+	session := connectMigrationGateServerWithStore(t, store, gate)
+	args := map[string]any{"id": "session-1", "project": "proj", "directory": "/repo", "dev_id": "dev", "client": "caller"}
+	results := make(chan *sdkmcp.CallToolResult, 2)
+	go func() { results <- callTool(t, session, "mem_session_start", args) }()
+	select {
+	case <-entered:
+	case result := <-results:
+		t.Fatalf("start bypassed EnsureSession: %#v", result)
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("start did not reach EnsureSession")
+	}
+	go func() { results <- callTool(t, session, "mem_session_start", args) }()
+	select {
+	case result := <-results:
+		t.Fatalf("start completed before release: %#v", result)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if result := callTool(t, session, "mem_session_start", map[string]any{"project": "proj", "directory": "/repo", "dev_id": "dev", "client": "caller"}); !result.IsError {
+		t.Fatal("missing ID start unexpectedly succeeded")
+	}
+	gate.Adopt(project.MigrationStatus{State: project.MigrationStateBlocked})
+	if result := callTool(t, session, "mem_session_start", args); !result.IsError {
+		t.Fatal("blocked start unexpectedly succeeded")
+	}
+	close(release)
+	for range 2 {
+		if result := <-results; result.IsError {
+			t.Fatalf("valid start failed: %s", textContent(t, result))
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("EnsureSession calls = %d, want 1", calls)
+	}
+}
+
 func TestMigrationGateAllowsMCPMemoryToolsWhenReady(t *testing.T) {
 	session := connectMigrationGateServer(t, project.NewMigrationGate(project.MigrationStatus{State: project.MigrationStateReady}))
 	res := callTool(t, session, "mem_suggest_topic_key", map[string]any{"title": "Gate wiring", "type": "discovery"})
@@ -86,7 +143,12 @@ func TestMigrationGateAllowsMCPMemoryToolsWhenReady(t *testing.T) {
 
 func connectMigrationGateServer(t *testing.T, gate *project.MigrationGate) *sdkmcp.ClientSession {
 	t.Helper()
-	server := hivemcp.NewServerWithMigrationGate(&mockStore{}, nil, nil, nil, &mockStore{}, gate)
+	return connectMigrationGateServerWithStore(t, &mockStore{}, gate)
+}
+
+func connectMigrationGateServerWithStore(t *testing.T, store hivemcp.MemoryStore, gate *project.MigrationGate) *sdkmcp.ClientSession {
+	t.Helper()
+	server := hivemcp.NewServerWithMigrationGate(store, nil, nil, nil, &mockStore{}, gate)
 	t1, t2 := sdkmcp.NewInMemoryTransports()
 	if _, err := server.Connect(context.Background(), t1, nil); err != nil {
 		t.Fatalf("server.Connect: %v", err)

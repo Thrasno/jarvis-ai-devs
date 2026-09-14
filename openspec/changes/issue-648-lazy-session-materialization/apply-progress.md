@@ -305,3 +305,31 @@ Persisted `tasks.md` slice-2 RED, GREEN, and TRIANGULATE/REFACTOR rows are visib
   - `- [ ] **GREEN:** Implement the mutex/map flight group without holding its lock during SQL/waiting, give each HTTP/MCP server lifetime-owned state, and route only independently validated start calls through \`Group.Do\` and \`EnsureSession\`. <!-- sdd-owner: implementation -->`
   - `- [ ] **TRIANGULATE/REFACTOR:** Cover absent/active/ended starts, typed mismatch mapping, first-writer provenance, migration exclusion, and capture non-use; format and run sessioninit/HTTP/MCP/race/module/vet checks. <!-- sdd-owner: implementation -->`
 - Structured status consumed: `changeName=issue-648-lazy-session-materialization`; `applyState=ready` (parent); `artifactStore=openspec`; `actionContext.mode=repo-local`; workspace `/home/andres/Desarrollo/Proyectos/jarvis-dev-issue-648`; allowed roots supplied; warnings none. Skill resolution: `paths-injected`.
+
+## Slice 5b — HTTP/MCP standalone-start activation
+
+**Status:** complete for the assigned adapter-only slice. Boundary: `main <- 1 <- 2 <- 3 <- 4 <- 5a <- 📍5b`; no end, prompt, passive, memory/summary, OpenCode, commit, push, or PR work.
+
+- [x] RED: blocking HTTP and MCP start tests failed because both adapters bypassed `EnsureSession`.
+- [x] GREEN: each server now owns one `sessioninit.Group`; independently gate- and project-validated starts use the validated canonical project plus exact ID key and invoke `EnsureSession` once. MCP persists `client: mcp`; HTTP retains its supplied client.
+- [x] TRIANGULATE/REFACTOR: the real adapter tests hold a valid leader, prove the concurrent valid follower shares it, and prove empty-ID and migration-blocked callers neither enter nor block the flight. Existing start suites retain ID, resolution, mismatch, and transport-contract coverage.
+
+### TDD Cycle Evidence
+
+| Task | Test file | RED | GREEN | TRIANGULATE / REFACTOR |
+| --- | --- | --- | --- | --- |
+| HTTP/MCP group wiring | `internal/httpapi/sessions_test.go`, `internal/mcp/migration_gate_test.go` | both focused tests failed: start bypassed `EnsureSession` | passed after lifetime group plus `EnsureSession` wiring | focused start suites and race (`-count=5`) passed; gofmt clean |
+
+### Verification
+
+- Safety net before edits: `go test ./internal/httpapi ./internal/mcp` passed.
+- Passed: focused RED/GREEN HTTP and MCP commands; `go test ./internal/httpapi -run '^TestPostSessions_' -count=1`; `go test ./internal/mcp -run '^TestMemSessionStart_' -count=1 -v`; `go test -race ./internal/httpapi ./internal/mcp -run '^(TestPostSessions_ConcurrentValidStartsShareOneEnsureAndExcludeInvalidOrBlocked|TestMemSessionStart_ConcurrentValidCallsShareOneEnsureAndExcludeInvalidOrBlocked)$' -count=5`; `go test ./...`; `go vet ./...`; `gofmt -l`; `git diff --check`.
+
+### Files / accounting / remaining
+
+- Changed: `hive-daemon/internal/{httpapi/server.go,httpapi/sessions_test.go,mcp/server.go,mcp/tools.go,mcp/server_test.go,mcp/migration_gate_test.go,mcp/tools_test.go}`, plus this record and `tasks.md`.
+- Persisted tasks: the three original slice-5 implementation rows are visibly `- [x]`; 5a rows remain complete. Parent review rows are unchanged.
+- Native accounting from base `342ce781`: **265** additions+deletions (231 Go/test + 28 apply-progress + 6 tasks); hard cap `<399` satisfied.
+- Remaining: all slice-6+ implementation rows and all parent-owned review/lifecycle rows. Deferred parent action: review slice 5 start coalescing, validation exclusion, race evidence, and native accounting before lifecycle checkpoint.
+- Risks: adapter-local flights are deliberately process/server scoped; cross-process convergence remains the transactional store's responsibility. `Group` never covers excluded capture/end paths.
+- Status consumed: parent `issue-648-lazy-session-materialization`, `apply=ready`, repo-local allowed root `/home/andres/Desarrollo/Proyectos/jarvis-dev-issue-648`, no action-context warnings; skill resolution `paths-injected`.

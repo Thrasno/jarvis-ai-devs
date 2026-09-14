@@ -20,6 +20,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sanitize"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sessioninit"
 	"github.com/Thrasno/jarvis-ai-devs/hivederive"
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
 	sqlite "modernc.org/sqlite"
@@ -49,6 +50,7 @@ type MemoryStore interface {
 // SessionStore is the interface httpapi needs for session-lifecycle and
 // passive-observation endpoints. *db.DB satisfies this structurally.
 type SessionStore interface {
+	EnsureSession(context.Context, models.SessionInput) (*models.Session, error)
 	CreateSession(id, project, directory, devID, client string) error
 	EndSession(id, summary string) error
 	SavePassiveObservation(ctx context.Context, sessionID, project, source, content string) error
@@ -86,23 +88,24 @@ type SDDService interface {
 
 // Server handles HTTP requests for the Hive prompt-capture endpoint.
 type Server struct {
-	addr       string
-	prompts    PromptStore
-	memories   MemoryStore
-	sessions   SessionStore
-	projects   project.Store
-	governance GovernanceService
-	sdd        SDDService
-	config     ConfigService
-	health     HealthService
-	gate       *project.MigrationGate
-	retry      func()
-	restore    func(context.Context, governance.RestoreRequest) error
-	resolve    func(context.Context, project.IdentityResolutionRequest) error
-	execution  MigrationExecutionService
-	retryMu    sync.Mutex
-	retrying   bool
-	mux        *http.ServeMux
+	addr        string
+	prompts     PromptStore
+	memories    MemoryStore
+	sessions    SessionStore
+	projects    project.Store
+	governance  GovernanceService
+	sdd         SDDService
+	config      ConfigService
+	health      HealthService
+	gate        *project.MigrationGate
+	retry       func()
+	restore     func(context.Context, governance.RestoreRequest) error
+	resolve     func(context.Context, project.IdentityResolutionRequest) error
+	execution   MigrationExecutionService
+	retryMu     sync.Mutex
+	retrying    bool
+	sessionInit *sessioninit.Group
+	mux         *http.ServeMux
 }
 
 // SetMigrationGate installs the daemon-wide migration gate after startup has
@@ -170,7 +173,7 @@ func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, 
 	if len(sessions) > 0 {
 		sess = sessions[0]
 	}
-	s := &Server{addr: addr, prompts: prompts, sessions: sess, projects: projects, governance: governance, config: config, health: health}
+	s := &Server{addr: addr, prompts: prompts, sessions: sess, projects: projects, governance: governance, config: config, health: health, sessionInit: sessioninit.NewGroup()}
 	if service, ok := governance.(SDDService); ok {
 		s.sdd = service
 	}
@@ -1263,8 +1266,8 @@ func writeConfigError(w http.ResponseWriter, source string, err error) {
 // ─── Session-lifecycle handlers ───────────────────────────────────────────────
 
 // handleSessionsCreate handles POST /sessions.
-// Accepts optional dev_id and client (hook context has no MCP values to provide).
-// Treats duplicate-id errors as idempotent — returns 200 on UNIQUE constraint failure.
+// It validates each caller before sharing only the standalone EnsureSession flight.
+// dev_id and client remain optional for hook callers.
 func (s *Server) handleSessionsCreate(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
 		return
@@ -1293,6 +1296,7 @@ func (s *Server) handleSessionsCreate(w http.ResponseWriter, r *http.Request) {
 		resolved, err := project.ValidateWriteProject(r.Context(), s.projects, project.WriteInput{
 			Project:   body.Project,
 			Directory: body.Directory,
+			SessionID: body.ID,
 		})
 		if err != nil {
 			writeProjectValidationError(w, err)
@@ -1316,14 +1320,18 @@ func (s *Server) handleSessionsCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project is required"})
 		return
 	}
-	err := s.sessions.CreateSession(body.ID, body.Project, body.Directory, body.DevID, body.Client)
+	_, err := s.sessionInit.Do(r.Context(), sessioninit.Key{Project: body.Project, ID: body.ID}, func(ctx context.Context) (*models.Session, error) {
+		return s.sessions.EnsureSession(ctx, models.SessionInput{
+			ID: body.ID, Project: body.Project, Directory: body.Directory, DevID: body.DevID, Client: body.Client,
+		})
+	})
 	if err != nil {
-		// Treat duplicate-key errors as idempotent (hook may fire more than once).
-		if isDuplicateKeyError(err) {
-			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		var validationErr *project.ValidationError
+		if errors.As(err, &validationErr) {
+			writeProjectValidationError(w, err)
 			return
 		}
-		logger.Log.Printf("create session %q: %v", body.ID, err)
+		logger.Log.Printf("ensure session %q: %v", body.ID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}

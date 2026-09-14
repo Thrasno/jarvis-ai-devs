@@ -6,6 +6,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sessioninit"
 	hivesync "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sync"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -29,6 +30,7 @@ type MemoryStore interface {
 
 	// Session lifecycle — added in Slice 2
 	CreateSession(id, project, directory, devID, client string) error
+	EnsureSession(context.Context, models.SessionInput) (*models.Session, error)
 	EndSession(id, summary string) error
 	GetSession(id string) (*models.Session, error)
 	EnsureManualSaveSession(project string) (string, error)
@@ -79,7 +81,7 @@ func newServer(store MemoryStore, syncStore hivesync.SyncStore, syncer SyncRunne
 
 	activity := NewActivityTracker()
 	syncRuntime := newSyncRuntime(syncStore, syncer, cfg)
-	registerTools(s, store, syncRuntime, activity, prompts, gate)
+	registerTools(s, store, syncRuntime, activity, prompts, gate, sessioninit.NewGroup())
 
 	syncStatus := "sin sync"
 	if syncer != nil {

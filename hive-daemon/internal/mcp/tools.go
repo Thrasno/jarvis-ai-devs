@@ -17,6 +17,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sanitize"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sessioninit"
 	hivesync "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/sync"
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -35,7 +36,7 @@ type applyProgressService interface {
 	AdvanceApplyProgress(context.Context, governance.ApplyProgressAdvanceRequest) (governance.ApplyProgressAdvanceResult, error)
 }
 
-func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime, activity *ActivityTracker, prompts PromptStore, gate *project.MigrationGate) {
+func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime, activity *ActivityTracker, prompts PromptStore, gate *project.MigrationGate, sessionInit *sessioninit.Group) {
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_session_start",
 		Description: "Start a new named session to track tool calls and memory saves under a single lifecycle.",
@@ -51,7 +52,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 				"session_id": {"type": "string", "description": "Unused — present for schema symmetry only"}
 			}
 		}`),
-	}, gateTool(gate, memSessionStartHandler(store, activity)))
+	}, gateTool(gate, memSessionStartHandler(store, activity, sessionInit)))
 
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "mem_session_end",
@@ -199,7 +200,7 @@ func registerTools(s *sdkmcp.Server, store MemoryStore, syncRuntime *syncRuntime
 
 // ─── Handlers ──────────────────────────────────────────────────────────────
 
-func memSessionStartHandler(store MemoryStore, activity *ActivityTracker) sdkmcp.ToolHandler {
+func memSessionStartHandler(store MemoryStore, activity *ActivityTracker, sessionInit *sessioninit.Group) sdkmcp.ToolHandler {
 	return func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
 		var p struct {
 			ID        string `json:"id"`
@@ -224,14 +225,23 @@ func memSessionStartHandler(store MemoryStore, activity *ActivityTracker) sdkmcp
 		resolved, err := project.ValidateWriteProject(ctx, store, project.WriteInput{
 			Project:   p.Project,
 			Directory: p.Directory,
+			SessionID: p.ID,
 		})
 		if err != nil {
 			return toolValidationError(err), nil
 		}
 		p.Project = resolved.Project
 
-		if err := store.CreateSession(p.ID, p.Project, p.Directory, p.DevID, p.Client); err != nil {
-			return toolError(fmt.Errorf("create session failed: %w", err)), nil
+		if _, err := sessionInit.Do(ctx, sessioninit.Key{Project: p.Project, ID: p.ID}, func(ctx context.Context) (*models.Session, error) {
+			return store.EnsureSession(ctx, models.SessionInput{
+				ID: p.ID, Project: p.Project, Directory: p.Directory, DevID: p.DevID, Client: "mcp",
+			})
+		}); err != nil {
+			var validationErr *project.ValidationError
+			if errors.As(err, &validationErr) {
+				return toolValidationError(err), nil
+			}
+			return toolError(fmt.Errorf("ensure session failed: %w", err)), nil
 		}
 
 		// CRIT-6: record activity in BOTH namespaces — per-session (real attribution)
