@@ -279,4 +279,29 @@ Persisted `tasks.md` slice-2 RED, GREEN, and TRIANGULATE/REFACTOR rows are visib
 - Persisted tasks: slice-4 RED, GREEN, and TRIANGULATE/REFACTOR rows are visibly `- [x]`; parent-owned rows remain unchanged.
 - Native accounting is pending final receipt; current code/tests/tasks are 320 additions+deletions before this evidence, so this bounded slice remains below 399 with this minimal record. Parent must review stale/failed-push evidence and exact final count before lifecycle checkpoint.
 - No design deviation. Residual risk: unknown timestamp encodings fail closed and stay dirty for retry; no SQLite transaction spans network I/O.
-- Structured status: `changeName=issue-648-lazy-session-materialization`, `applyState=ready`, `artifactStore=openspec`, `actionContext.mode=repo-local`, workspace `/home/andres/Desarrollo/Proyectos/jarvis-dev-issue-648`, warnings none; skill resolution `paths-injected`.
+    - Structured status: `changeName=issue-648-lazy-session-materialization`, `applyState=ready`, `artifactStore=openspec`, `actionContext.mode=repo-local`, workspace `/home/andres/Desarrollo/Proyectos/jarvis-dev-issue-648`, warnings none; skill resolution `paths-injected`.
+
+## Slice 5a — standalone session-init group foundation
+
+**Status:** complete for the assigned foundation only. Boundary: `main <- 1 <- 2 <- 3 <- 4 <- 📍5a <- 5b`; no HTTP/MCP wiring, commit, push, or PR.
+
+- [x] RED/GREEN/TRIANGULATE: `group_test.go` first failed to compile because `Key`/`NewGroup` were absent, then proved one canonical-project/exact-ID invocation, detached snapshots/errors, cleanup/retry, key isolation, alias-key sharing, waiter cancellation, and panic recovery.
+- [x] Persisted tasks: only the three new **Slice 5a** implementation rows at `tasks.md:71-73` are checked. Original slice-5 adapter rows remain unchecked.
+
+### TDD Cycle Evidence
+
+| Task | Test file | RED | GREEN | TRIANGULATE / REFACTOR |
+| --- | --- | --- | --- | --- |
+| 5a group | `hive-daemon/internal/sessioninit/group_test.go` | `go test` failed: `Key`/`NewGroup` undefined | focused group test passed | controlled same-key/error/panic/retry/key-isolation/cancellation cases passed under `-race -count=10`; gofmt clean |
+
+### Verification and boundary
+
+- Passed: focused `go test ./internal/sessioninit -run '^TestGroupDo' -count=1 -v`; `go test -race ./internal/sessioninit -run '^TestGroupDo' -count=10`; `cd hive-daemon && go test ./... && go vet ./...`; `gofmt -l` and `git diff --check`.
+- Files: `hive-daemon/internal/sessioninit/{group.go,group_test.go}` plus this evidence and task record. The mutex covers only the flight map; SQL/initializer work and waiter selects occur unlocked. Returned session timestamps are copied.
+- Native accounting: 286 Go + 6 task + 27 evidence additions/deletions = **319 lines**, below 399. Rollback: remove the standalone package and its three 5a task rows; adapters are untouched.
+- Deviation: slice 5 was split by parent instruction; canonical aliases are represented by the same already-validated `Key`, not adapter validation. No design deviation within 5a.
+- Remaining adapter work (intentionally unchecked):
+  - `- [ ] **RED:** Add channel-controlled group tests for one invocation, shared detached snapshots/errors, cleanup/retry, key isolation, alias sharing, cancellation, panic cleanup, and snapshot isolation; add real HTTP/MCP blocking-store wiring tests proving invalid or blocked callers never join. <!-- sdd-owner: implementation -->`
+  - `- [ ] **GREEN:** Implement the mutex/map flight group without holding its lock during SQL/waiting, give each HTTP/MCP server lifetime-owned state, and route only independently validated start calls through \`Group.Do\` and \`EnsureSession\`. <!-- sdd-owner: implementation -->`
+  - `- [ ] **TRIANGULATE/REFACTOR:** Cover absent/active/ended starts, typed mismatch mapping, first-writer provenance, migration exclusion, and capture non-use; format and run sessioninit/HTTP/MCP/race/module/vet checks. <!-- sdd-owner: implementation -->`
+- Structured status consumed: `changeName=issue-648-lazy-session-materialization`; `applyState=ready` (parent); `artifactStore=openspec`; `actionContext.mode=repo-local`; workspace `/home/andres/Desarrollo/Proyectos/jarvis-dev-issue-648`; allowed roots supplied; warnings none. Skill resolution: `paths-injected`.
