@@ -56,6 +56,7 @@ type SessionStore interface {
 	CreateSession(id, project, directory, devID, client string) error
 	EndSession(id, summary string) error
 	SavePassiveObservation(ctx context.Context, sessionID, project, source, content string) error
+	SavePassiveObservationWithSession(context.Context, models.PassiveObservationWrite) error
 }
 
 type GovernanceService interface {
@@ -1462,6 +1463,7 @@ func (s *Server) handleObservationsPassive(w http.ResponseWriter, r *http.Reques
 		Project   string `json:"project"`
 		Source    string `json:"source"`
 		Directory string `json:"directory"`
+		Client    string `json:"client"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
@@ -1475,15 +1477,57 @@ func (s *Server) handleObservationsPassive(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session store not configured"})
 		return
 	}
-	// Derive the effective project from directory when project is empty.
-	if strings.TrimSpace(body.Project) == "" && strings.TrimSpace(body.Directory) != "" {
-		if derived := project.DeriveFromDirectory(body.Directory); derived != "default" && derived != "" {
-			body.Project = derived
+	// Empty/NULL session attribution is intentionally raw: it must not create a
+	// regular session when a hook cannot provide an ID.
+	if strings.TrimSpace(body.SessionID) == "" {
+		if strings.TrimSpace(body.Project) == "" && strings.TrimSpace(body.Directory) != "" {
+			if derived := project.DeriveFromDirectory(body.Directory); derived != "default" && derived != "" {
+				body.Project = derived
+			}
 		}
+		if err := s.sessions.SavePassiveObservation(r.Context(), body.SessionID, body.Project, body.Source, body.Content); err != nil {
+			logger.Log.Printf("save passive observation: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
+		return
 	}
-	if err := s.sessions.SavePassiveObservation(r.Context(), body.SessionID, body.Project, body.Source, body.Content); err != nil {
-		logger.Log.Printf("save passive observation: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+
+	if strings.TrimSpace(body.Project) == "" && (s.projects == nil || strings.TrimSpace(body.Directory) == "") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project is required"})
+		return
+	}
+	if s.projects != nil {
+		resolved, err := project.ValidateWriteProject(r.Context(), s.projects, project.WriteInput{
+			Project: body.Project, Directory: body.Directory, SessionID: body.SessionID,
+		})
+		if err != nil {
+			writeProjectValidationError(w, err)
+			return
+		}
+		body.Project = resolved.Project
+	}
+	client := body.Client
+	if strings.TrimSpace(client) == "" {
+		client = "unknown"
+	}
+	err := s.sessions.SavePassiveObservationWithSession(r.Context(), models.PassiveObservationWrite{
+		Session: models.SessionInput{ID: body.SessionID, Project: body.Project, Directory: body.Directory, Client: client},
+		Source:  body.Source,
+		Content: body.Content,
+	})
+	if err != nil {
+		var validationErr *project.ValidationError
+		switch {
+		case errors.As(err, &validationErr):
+			writeProjectValidationError(w, err)
+		case errors.Is(err, db.ErrProjectBlocked):
+			writeJSON(w, http.StatusLocked, map[string]string{"error": db.ErrProjectBlocked.Error()})
+		default:
+			logger.Log.Printf("save passive observation with session %q: %v", body.SessionID, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		}
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})

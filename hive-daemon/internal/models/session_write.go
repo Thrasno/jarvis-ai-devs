@@ -21,3 +21,11 @@ type SessionEndInput struct {
 	Summary            string
 	RejectAlreadyEnded bool
 }
+
+// PassiveObservationWrite carries the session attribution and content for an
+// atomic passive-observation capture.
+type PassiveObservationWrite struct {
+	Session SessionInput
+	Source  string
+	Content string
+}

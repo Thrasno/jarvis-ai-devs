@@ -707,8 +707,12 @@ func TestRunPromptSubmit_PostsPromptWithExactContent(t *testing.T) {
 
 func TestRunSubagentStop_PostsObservation(t *testing.T) {
 	var receivedPath string
+	var received map[string]string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Errorf("decode observation: %v", err)
+		}
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer srv.Close()
@@ -725,6 +729,9 @@ func TestRunSubagentStop_PostsObservation(t *testing.T) {
 	}
 	if receivedPath != "/observations/passive" {
 		t.Errorf("should POST to /observations/passive, got: %q", receivedPath)
+	}
+	if received["client"] != "hook" {
+		t.Errorf("client: got %q, want hook", received["client"])
 	}
 }
 
