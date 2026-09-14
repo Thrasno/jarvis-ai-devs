@@ -122,4 +122,72 @@ The first broad repository run exposed a real regression in `TestUpsertSession_R
 - **Broad verification:** `cd hive-api && go test ./internal/repository ./internal/service` passed (`repository` 265.312s; `service` cached).
 - **Module verification:** `cd hive-api && go test ./... && go vet ./...` passed; changed Go files are gofmt-clean and `git diff --check` passed.
 - **Final size:** 299 production+test changed lines against `11e6a824`. SDD bookkeeping is committed separately from the code/test candidate so the review slice remains below 399 without deleting or compressing evidence.
-- **Pending:** native review, local code/test commit, and eventual PR checkpoint/attachment. No push or PR was performed.
+    - **Pending:** native review, local code/test commit, and eventual PR checkpoint/attachment. No push or PR was performed.
+
+## Slice 2 — Transactional lifecycle-store foundation
+
+**Status:** implementation complete; PR checkpoint and parent lifecycle remain pending.
+**Boundary:** `main <- 1 <- 📍2 <- 3`. This changes additive DB primitives only: no HTTP/MCP adapter, hook, sync acknowledgement, schema, commit, push, or PR.
+
+### Completed implementation tasks
+
+- [x] RED — added table-driven lifecycle tests before the store API existed. The focused command failed to compile because `models.SessionInput` and `(*DB).EnsureSession` were undefined; end variants then failed because `EnsureAndEndSession` and `ErrSessionAlreadyEnded` were undefined.
+- [x] GREEN — added `SessionInput`/`SessionEndInput`, transactional `EnsureSession` and `EnsureAndEndSession`, and a private transaction-scoped materialization/read path. It registers the canonical identity first, checks target and stored-project writability, returns `*project.ValidationError{Code: project.CodeProjectSessionMismatch}` for incompatible canonical bindings, preserves regular provenance/identity, reopens only write paths, and rolls back failed lifecycle writes.
+- [x] TRIANGULATE/REFACTOR — covered absent/active/ended paths, compatible variants, mismatch, default client, developer-ID healing, target/existing blocks, insert/reopen/end trigger rollbacks, duplicate-end semantics, and two-handle concurrent first writes. Extracted only the mode and transaction-reader helpers; legacy `CreateSession`/`EndSession` retain their existing behavior.
+
+Persisted `tasks.md` slice-2 RED, GREEN, and TRIANGULATE/REFACTOR rows are visibly marked `- [x]`.
+
+### Files changed
+
+| File | Change |
+| --- | --- |
+| `hive-daemon/internal/models/session_write.go` | Adds additive write command inputs. |
+| `hive-daemon/internal/db/session.go` | Adds typed, transaction-owned ensure/reopen/end primitives and preserves legacy methods. |
+| `hive-daemon/internal/db/session_lifecycle_test.go` | Adds SQLite/t.TempDir lifecycle, rollback, gate, and two-handle convergence coverage. |
+| `openspec/changes/issue-648-lazy-session-materialization/tasks.md` | Marks only the three completed slice-2 implementation rows. |
+| `openspec/changes/issue-648-lazy-session-materialization/apply-progress.md` | Cumulative slice-2 evidence. |
+
+### TDD Cycle Evidence
+
+| Task | Test file | Layer | Safety net | RED | GREEN | TRIANGULATE | REFACTOR |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Slice 2 lifecycle primitives | `hive-daemon/internal/db/session_lifecycle_test.go` | SQLite DB | `cd hive-daemon && go test ./internal/db` passed before edits | Focused absent-session test failed: missing `SessionInput` and `EnsureSession` | Passed after minimal input plus transactional absent-session creation | End/mismatch tests then failed for missing `EnsureAndEndSession`/`ErrSessionAlreadyEnded`; final table-driven lifecycle, rollback, gate, healing, and concurrency variants pass | Private mode and transaction reader extracted; focused tests remained green |
+
+### Verification
+
+| Command | Result |
+| --- | --- |
+| `cd hive-daemon && go test ./internal/db` (pre-edit) | Passed. |
+| `cd hive-daemon && go test ./internal/db -run '^TestEnsureSession_CreatesAbsentAttributedSession$' -count=1` | RED: failed to compile (`EnsureSession`/`SessionInput` undefined). |
+| `cd hive-daemon && go test ./internal/db -run '^(TestEnsureSession_ReusesAndReopensCompatibleSessions|TestEnsureSession_RejectsCanonicalProjectMismatch|TestEnsureAndEndSession_LifecycleAndRollback)$' -count=1` | RED: failed to compile (`EnsureAndEndSession`/`ErrSessionAlreadyEnded` undefined). |
+| Focused lifecycle command after implementation | GREEN and triangulation: passed. |
+| `cd hive-daemon && go test ./internal/db` | Passed. |
+| `cd hive-daemon && go test -race ./internal/db` | Passed (87.608s) before the final test-only healing addition. |
+| `cd hive-daemon && go test -race ./internal/db -run '^(TestEnsureSession_(ConcurrentFirstWritesConverge|HealsEmptyDeveloperID)|TestEnsureAndEndSession_LifecycleAndRollback)$' -count=1` | Passed (1.920s) after final changes. |
+| `cd hive-daemon && go test ./...` | Passed. |
+| `cd hive-daemon && go vet ./...` | Passed (no output, exit 0). |
+| `git diff --check`; targeted `gofmt -l` | Passed clean. |
+
+### Workload / PR boundary
+
+- Product + test diff against the required local predecessor `afe6bbd5`: **387 additions + 0 deletions = 387 changed lines**, below the 399-line cap.
+- `origin/main` is unavailable in this worktree, so the task-prescribed merge-base command cannot be evaluated. The user-supplied local predecessor was used instead.
+- Rollback: revert the unused primitives and their tests together before adapter consumers land; do not modify already materialized rows.
+- Excluded: all adapters, capture transactions, sync acknowledgement, API changes, and later slices.
+
+### Deviations, risks, and remaining tasks
+
+- No design deviation. New public methods are intentionally unused until later adapter slices.
+- The two-handle test proves DB-level convergence with a barrier channel and no sleeps; it does not add the later adapter-local coalescer.
+- Remaining implementation-owned slice-2 task (left unchecked):
+  - `- [ ] **Checkpoint:** Confirm PR 2 is below 400 changed lines using the mandated merge-base calculation; record actual size, DB/race evidence, exclusions (all adapters and sync acknowledgement), rollback, and \`main <- 1 <- 📍2 <- 3\` before starting slice 3. <!-- sdd-owner: implementation -->`
+- Later slices and all parent-owned lifecycle rows remain unchanged and deferred. Parent must review the bounded DB primitive work and own the PR/merge checkpoint. No commit, push, or PR was performed.
+
+### Structured status consumed
+
+- `changeName`: `issue-648-lazy-session-materialization`
+- `artifactStore`: `openspec`
+- `applyState`: `ready` (parent supplied)
+- `actionContext.mode`: `repo-local`
+- `actionContext.workspaceRoot`: `/home/andres/Desarrollo/Proyectos/jarvis-dev-issue-648`
+- `actionContext` warning: operate only in the supplied worktree and allowed edit surfaces; satisfied.
