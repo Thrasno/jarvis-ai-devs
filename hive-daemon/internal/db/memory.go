@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/topickey"
 	"github.com/google/uuid"
 )
@@ -79,13 +80,22 @@ func (d *DB) SaveMemoryWithManualSession(mem *models.Memory) (int64, error) {
 // SaveMemoryWithSession atomically materializes or reopens a compatible regular
 // session and persists the attributed memory, link, and mutation journal.
 func (d *DB) SaveMemoryWithSession(ctx context.Context, mem *models.Memory, session models.SessionInput) (int64, error) {
-	return d.saveMemory(mem, func(tx *sql.Tx) error {
-		session.Project = mem.Project
+	if session.ID != mem.SessionID || canonicalProjectKey(session.Project) != canonicalProjectKey(mem.Project) {
+		return 0, &project.ValidationError{
+			Code:       project.CodeProjectSessionMismatch,
+			Message:    "session attribution does not match memory",
+			Candidates: []project.Candidate{{Project: session.Project}, {Project: mem.Project}},
+		}
+	}
+
+	memory := *mem
+	return d.saveMemory(&memory, func(tx *sql.Tx) error {
+		session.Project = memory.Project
 		ensured, err := d.ensureSessionInTx(ctx, tx, session, reopenForWrite)
 		if err != nil {
 			return err
 		}
-		mem.SessionID = ensured.ID
+		memory.SessionID = ensured.ID
 		return nil
 	})
 }
