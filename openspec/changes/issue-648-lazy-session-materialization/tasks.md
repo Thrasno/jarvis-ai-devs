@@ -118,9 +118,9 @@ Chain strategy: stacked-to-main
 
 **Dependency / finish:** slice 7 → explicit passive observations materialize/reopen atomically while empty/NULL attribution stays unchanged. **Paths:** `hive-daemon/internal/models/session_write.go`, `hive-daemon/internal/db/passive_observation.go` and tests, HTTP passive paths/tests, `jarvis-cli/internal/hook/client.go` and tests. **Rollback:** revert explicit-ID passive behavior only.
 
-- [ ] **RED:** Add explicit-ID absent/ended/mismatch/gate/rollback/concurrency tests and regressions proving empty IDs retain raw empty/NULL attribution without a regular session. <!-- sdd-owner: implementation -->
-- [ ] **GREEN:** Add `PassiveObservationWrite` and `SavePassiveObservationWithSession`; route only explicit HTTP IDs through it with unknown default client and hook attribution. <!-- sdd-owner: implementation -->
-- [ ] **TRIANGULATE/REFACTOR:** Cover directory/alias and identity preservation variants; format and run focused DB/HTTP/hook, race, module, and vet checks. <!-- sdd-owner: implementation -->
+- [x] **RED:** Add explicit-ID absent/ended/mismatch/gate/rollback/concurrency tests and regressions proving empty IDs retain raw empty/NULL attribution without a regular session. <!-- sdd-owner: implementation -->
+- [x] **GREEN:** Add `PassiveObservationWrite` and `SavePassiveObservationWithSession`; route only explicit HTTP IDs through it with unknown default client and hook attribution. <!-- sdd-owner: implementation -->
+- [x] **TRIANGULATE/REFACTOR:** Cover directory/alias and identity preservation variants; format and run focused DB/HTTP/hook, race, module, and vet checks. <!-- sdd-owner: implementation -->
 
 ### 9. Atomic observations and summaries — 280–385 native lines
 
