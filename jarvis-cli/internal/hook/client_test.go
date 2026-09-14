@@ -56,6 +56,9 @@ func TestDaemonClient_PostPrompt_HappyPath(t *testing.T) {
 	if received["project"] != "my-project" {
 		t.Errorf("project: got %q", received["project"])
 	}
+	if received["client"] != "hook" {
+		t.Errorf("client: got %q, want hook", received["client"])
+	}
 }
 
 func TestDaemonClient_PostPrompt_ServerDown_ReturnsNil(t *testing.T) {

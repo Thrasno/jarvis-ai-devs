@@ -205,6 +205,7 @@ func (c *DaemonClient) PostPrompt(ctx context.Context, sessionID, directory, pro
 		"session_id": sessionID,
 		"directory":  directory,
 		"project":    project,
+		"client":     "hook",
 	})
 }
 

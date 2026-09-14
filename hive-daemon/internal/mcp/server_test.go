@@ -33,6 +33,7 @@ type mockStore struct {
 	searchFn                      func(models.MemorySearchCriteria) ([]*models.Memory, error)
 	savePromptFn                  func(context.Context, string, string) (*models.Prompt, error)
 	savePromptForSessionFn        func(context.Context, string, string, string) (*models.Prompt, error)
+	savePromptWithSessionFn       func(context.Context, models.PromptWrite) (*models.Prompt, error)
 	latestPromptForSessionFn      func(context.Context, string, string) (*models.Prompt, error)
 	listRecentPromptsFn           func(context.Context, string, int) ([]*models.Prompt, error)
 	createSessionFn               func(id, project, directory, devID, client string) error
@@ -104,6 +105,13 @@ func (m *mockStore) SavePromptForSession(ctx context.Context, project, sessionID
 		return m.savePromptFn(ctx, project, content)
 	}
 	return &models.Prompt{ID: 1, Project: project, SessionID: sessionID, Content: content, CreatedAt: time.Now()}, nil
+}
+
+func (m *mockStore) SavePromptWithSession(ctx context.Context, in models.PromptWrite) (*models.Prompt, error) {
+	if m.savePromptWithSessionFn != nil {
+		return m.savePromptWithSessionFn(ctx, in)
+	}
+	return &models.Prompt{ID: 1, Project: in.Session.Project, SessionID: in.Session.ID, Content: in.Content, CreatedAt: time.Now()}, nil
 }
 
 func (m *mockStore) LatestPromptForSession(ctx context.Context, project, sessionID string) (*models.Prompt, error) {
