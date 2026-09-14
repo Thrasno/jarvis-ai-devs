@@ -94,6 +94,8 @@ Chain strategy: stacked-to-main
 
 ### 7. Atomic prompts — split into 7a/7b
 
+**Status:** implementation complete (7a + 7b); parent review/checkpoint remains pending.
+
 **Split boundary:** the former prompt unit exceeded the review budget at 394 lines and lacked complete transport mappings and DB evidence. Slice **7a** retains only the DB foundation; slice **7b** will activate HTTP/MCP/hook callers and their mocks/tests. No transport behavior is part of 7a.
 
 #### Slice 7a — DB prompt foundation
@@ -108,9 +110,9 @@ Chain strategy: stacked-to-main
 
 **Dependency / finish:** slice 7a → explicit HTTP/MCP captures call the DB foundation with validated attribution; hook sends caller attribution. **Paths:** HTTP/MCP/hook prompt sources, mocks, and tests. **Rollback:** revert only transport activation.
 
-- [ ] **Transport RED:** Add adapter tests for HTTP/MCP mappings, validation failures, and hook payload attribution. <!-- sdd-owner: implementation -->
-- [ ] **Transport GREEN:** Activate `SavePromptWithSession` only for explicit HTTP/MCP captures and add hook client attribution while retaining manual/empty fallbacks. <!-- sdd-owner: implementation -->
-- [ ] **Transport TRIANGULATE/REFACTOR:** Run focused HTTP/MCP/hook and race evidence, then verify mappings and fallback behavior. <!-- sdd-owner: implementation -->
+- [x] **Transport RED:** Add adapter tests for HTTP/MCP mappings, validation failures, and hook payload attribution. <!-- sdd-owner: implementation -->
+- [x] **Transport GREEN:** Activate `SavePromptWithSession` only for explicit HTTP/MCP captures and add hook client attribution while retaining manual/empty fallbacks. <!-- sdd-owner: implementation -->
+- [x] **Transport TRIANGULATE/REFACTOR:** Run focused HTTP/MCP/hook and race evidence, then verify mappings and fallback behavior. <!-- sdd-owner: implementation -->
 
 ### 8. Atomic passive observations — 220–330 native lines
 
