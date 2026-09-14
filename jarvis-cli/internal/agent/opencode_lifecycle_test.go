@@ -149,6 +149,8 @@ if (unhandled.length !== 0) throw new Error("lifecycle callback produced an unha
 
 	cmd := exec.Command("node", "--experimental-strip-types", runner, filepath.Join("..", "..", "embed", "hooks", "opencode", "hive.ts"))
 	cmd.Env = append(os.Environ(), "HIVE_HTTP_PORT="+port, "HIVE_OPENCODE_SESSION_ID=", "OPENCODE_SESSION_ID=", "SESSION_ID=", "HIVE_PROJECT=", "JARVIS_PROJECT=", "HIVE_PROJECT_DIRECTORY=", "JARVIS_WORKSPACE_DIRECTORY=", "PWD=")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 	finished := make(chan error, 1)
 	go func() { finished <- cmd.Run() }()
 
