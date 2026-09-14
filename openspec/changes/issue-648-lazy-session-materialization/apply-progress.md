@@ -333,3 +333,13 @@ Persisted `tasks.md` slice-2 RED, GREEN, and TRIANGULATE/REFACTOR rows are visib
 - Remaining: all slice-6+ implementation rows and all parent-owned review/lifecycle rows. Deferred parent action: review slice 5 start coalescing, validation exclusion, race evidence, and native accounting before lifecycle checkpoint.
 - Risks: adapter-local flights are deliberately process/server scoped; cross-process convergence remains the transactional store's responsibility. `Group` never covers excluded capture/end paths.
 - Status consumed: parent `issue-648-lazy-session-materialization`, `apply=ready`, repo-local allowed root `/home/andres/Desarrollo/Proyectos/jarvis-dev-issue-648`, no action-context warnings; skill resolution `paths-injected`.
+
+## Slice 6a — HTTP atomic end adapter
+
+**Status:** complete for HTTP only. The former slice 6 is now three delivery boundaries: 6a HTTP adapter (this record), 6b MCP adapter, and 6c native hook caller. No MCP, hook, prompt, passive, memory, OpenCode, commit, push, or PR work occurred.
+
+- **RED:** `TestPostSessionsEnd_MissingSessionMaterializesAtomically` expected 200 but the legacy endpoint returned 404 for the absent session.
+- **GREEN:** the HTTP handler decodes bounded project evidence, independently runs `ValidateWriteProject`, then calls `EnsureAndEndSession` with `RejectAlreadyEnded: false`. Missing and active sessions end atomically; duplicate ends preserve the stored summary/lifecycle.
+- **TRIANGULATE/REFACTOR:** temporary SQLite tests cover missing, active, duplicate, typed mismatch/identity/unknown evidence errors, empty ID, migration and project-block HTTP mappings, and abort-trigger rollback. `gofmt` retained one handler path and focused/race HTTP tests passed.
+- **Verification:** `cd hive-daemon && go test ./internal/httpapi -run '^TestPostSessionsEnd_' -count=1`; `go test -race ./internal/httpapi -run '^TestPostSessionsEnd_' -count=1`; `go test ./...`; `go vet ./...`; targeted `gofmt -l`; and `git diff --check` all passed.
+- **Accounting / rollback:** **280 additions+deletions** across the five permitted files, including 153 new temporary-DB test lines and 32 task/evidence changes; below the 399-line cap. Parent review remains required. Revert only the HTTP handler/interface/mock/tests and this 6a task/evidence record; do not modify persisted ended rows. 6b and 6c remain intentionally unchecked.

@@ -72,13 +72,25 @@ Chain strategy: stacked-to-main
 - [x] **GREEN:** Implement the standalone mutex/map flight group with cleanup and pointer-safe result snapshots; do not hold its lock during initialization or waiting. <!-- sdd-owner: implementation -->
 - [x] **TRIANGULATE/REFACTOR:** Prove failure/success/panic retries and cancellation under `-race`; format and retain no HTTP/MCP wiring. <!-- sdd-owner: implementation -->
 
-### 6. Atomic lifecycle end and shipped callers — 250–350 native lines
+### 6. Atomic lifecycle end and shipped callers — split into 6a/6b/6c
 
-**Dependency / finish:** slice 5 → HTTP/MCP ends validate evidence and atomically materialize/close missing sessions; native hook end calls carry encoded ID, evidence, and `client: hook`. **Paths:** HTTP/MCP end handlers/interfaces/mocks/tests under `hive-daemon/internal/{httpapi,mcp}/`, `jarvis-cli/internal/hook/client.go` and tests, `openspec/changes/issue-648-lazy-session-materialization/end-evidence-compatibility.md`. **Rollback:** revert adapters and hook caller together, never undo persisted closures/summaries.
+**Split boundary:** the former 250–350-line transport/caller unit is three independent delivery slices: **6a HTTP adapter**, **6b MCP adapter**, and **6c native hook caller**. Only 6a is complete here; 6b/6c stay unchecked and must not be inferred from HTTP coverage. Roll back each adapter/caller independently; never undo persisted closures/summaries.
 
-- [ ] **RED:** Add temporary-DB HTTP/MCP tests for missing, active, duplicate, mismatch, invalid/unresolved/no evidence, blocked, and empty-ID outcomes plus trigger rollback through both adapters; add hook receiver assertions for encoded path and exact evidence/client. <!-- sdd-owner: implementation -->
-- [ ] **GREEN:** Add bounded end evidence decoding/validation, call `EnsureAndEndSession` with HTTP duplicate no-op and MCP duplicate rejection, preserve typed error mapping/statuses, and update the native hook caller plus compatibility document. <!-- sdd-owner: implementation -->
-- [ ] **TRIANGULATE/REFACTOR:** Cover aliases, directory corroboration, recovery/migration, and concurrent end serialization; format and run hive-daemon HTTP/MCP plus jarvis-cli hook/module/vet checks. <!-- sdd-owner: implementation -->
+#### Slice 6a — HTTP atomic end adapter
+
+**Dependency / finish:** slice 5 → HTTP independently validates bounded project evidence and calls `EnsureAndEndSession` with duplicate no-op semantics. **Paths:** `hive-daemon/internal/httpapi/{server.go,sessions_test.go,end_materialization_test.go}`. **Excluded:** MCP, hook, prompt, passive, memory, and OpenCode.
+
+- [x] **RED:** Add temporary-DB HTTP coverage for missing materialization; observe the prior legacy endpoint return 404. <!-- sdd-owner: implementation -->
+- [x] **GREEN:** Decode bounded HTTP end evidence, validate it before an atomic `EnsureAndEndSession`, preserve typed validation/project-block mappings, and make duplicate end a no-op. <!-- sdd-owner: implementation -->
+- [x] **TRIANGULATE/REFACTOR:** Cover active, duplicate-summary preservation, mismatch, invalid/unresolved/no evidence, empty ID, migration/project gates, trigger rollback, focused/race HTTP tests, and formatting. <!-- sdd-owner: implementation -->
+
+#### Slice 6b — MCP atomic end adapter
+
+- [ ] **RED/GREEN/TRIANGULATE:** Add MCP-only evidence, duplicate-rejection, typed mapping, rollback, and focused/race coverage. <!-- sdd-owner: implementation -->
+
+#### Slice 6c — Native hook end caller
+
+- [ ] **RED/GREEN/TRIANGULATE:** Add encoded-path/exact-evidence/client hook receiver coverage and the native caller; update end-evidence compatibility documentation. <!-- sdd-owner: implementation -->
 
 ### 7. Atomic prompts — 280–375 native lines
 
