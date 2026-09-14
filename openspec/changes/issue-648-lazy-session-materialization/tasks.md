@@ -46,9 +46,9 @@ Chain strategy: stacked-to-main
 
 **Dependency / finish:** slice 2 → additive `SessionEndInput`, `ErrSessionAlreadyEnded`, and atomic ensure-and-end behavior; no HTTP/MCP/hook adapter activation. **Paths:** `hive-daemon/internal/models/session_write.go`, `hive-daemon/internal/db/session.go`, `hive-daemon/internal/db/session_lifecycle_test.go`. **Excluded:** transport semantics and any standalone coalescer. **Rollback:** revert this extension and its end tests while retaining slice-2 regular ensure behavior.
 
-- [ ] **RED:** Extend lifecycle tests with missing/active/already-ended/mismatch end cases, duplicate-summary preservation, aborting-trigger failure, and serialized one-/two-handle end outcomes; record the missing `EnsureAndEndSession`/`ErrSessionAlreadyEnded` failure. <!-- sdd-owner: implementation -->
-- [ ] **GREEN:** Add `SessionEndInput`, `ErrSessionAlreadyEnded`, and `EnsureAndEndSession` using the transaction-owned preserve-for-end path: materialize then close missing/active compatible rows, never reopen a duplicate end, and roll back every lifecycle mutation on failure. <!-- sdd-owner: implementation -->
-- [ ] **TRIANGULATE/REFACTOR:** Prove a failed missing-session end leaves neither open nor ended row, MCP-style duplicate rejection preserves summary/state, HTTP-style duplicate no-op remains representable, and concurrent ends serialize; format and record DB/race/module/vet evidence. <!-- sdd-owner: implementation -->
+- [x] **RED:** Extend lifecycle tests with missing/active/already-ended/mismatch end cases, duplicate-summary preservation, aborting-trigger failure, and serialized one-/two-handle end outcomes; record the missing `EnsureAndEndSession`/`ErrSessionAlreadyEnded` failure. <!-- sdd-owner: implementation -->
+- [x] **GREEN:** Add `SessionEndInput`, `ErrSessionAlreadyEnded`, and `EnsureAndEndSession` using the transaction-owned preserve-for-end path: materialize then close missing/active compatible rows, never reopen a duplicate end, and roll back every lifecycle mutation on failure. <!-- sdd-owner: implementation -->
+- [x] **TRIANGULATE/REFACTOR:** Prove a failed missing-session end leaves neither open nor ended row, MCP-style duplicate rejection preserves summary/state, HTTP-style duplicate no-op remains representable, and concurrent ends serialize; format and record DB/race/module/vet evidence. <!-- sdd-owner: implementation -->
 
 ### 4. Snapshot-safe local sync acknowledgement — 170–260 native lines
 
