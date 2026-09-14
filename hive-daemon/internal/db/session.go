@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
 )
 
 // ErrSessionNotFound is returned when a requested session does not exist.
@@ -43,6 +44,94 @@ func (d *DB) CreateSession(id, project, directory, devID, client string) error {
 		return fmt.Errorf("create session: %w", err)
 	}
 	return nil
+}
+
+// EnsureSession creates, reuses, or reopens a regular session atomically.
+func (d *DB) EnsureSession(ctx context.Context, in models.SessionInput) (*models.Session, error) {
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin ensure session: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	session, err := d.ensureSessionInTx(ctx, tx, in)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit ensure session: %w", err)
+	}
+	return session, nil
+}
+
+func (d *DB) ensureSessionInTx(ctx context.Context, tx *sql.Tx, in models.SessionInput) (*models.Session, error) {
+	if strings.TrimSpace(in.ID) == "" {
+		return nil, fmt.Errorf("session id is required")
+	}
+	projectName, err := registerProjectIdentity(ctx, tx, in.Project)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureProjectWritableInTx(tx, projectName); err != nil {
+		return nil, err
+	}
+
+	session, err := readSessionInTx(ctx, tx, in.ID)
+	if errors.Is(err, ErrSessionNotFound) {
+		devID := in.DevID
+		if strings.TrimSpace(devID) == "" {
+			devID = resolveDevID()
+		}
+		client := in.Client
+		if strings.TrimSpace(client) == "" {
+			client = "unknown"
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO sessions (id, sync_id, project, directory, dev_id, client)
+			VALUES (?, lower(hex(randomblob(16))), ?, ?, ?, ?)`,
+			in.ID, projectName, in.Directory, devID, client); err != nil {
+			return nil, fmt.Errorf("create ensured session: %w", err)
+		}
+		return readSessionInTx(ctx, tx, in.ID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureProjectWritableInTx(tx, session.Project); err != nil {
+		return nil, err
+	}
+	if canonicalProjectKey(session.Project) != projectName {
+		return nil, &project.ValidationError{
+			Code:       project.CodeProjectSessionMismatch,
+			Message:    "session project does not match write project",
+			Candidates: []project.Candidate{{Project: session.Project}, {Project: projectName}},
+		}
+	}
+	if strings.TrimSpace(session.DevID) == "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET dev_id = ?, synced_at = NULL WHERE id = ?`, resolveDevID(), in.ID); err != nil {
+			return nil, fmt.Errorf("heal session developer id: %w", err)
+		}
+	}
+	if session.EndedAt != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET ended_at = NULL, synced_at = NULL WHERE id = ?`, in.ID); err != nil {
+			return nil, fmt.Errorf("reopen ensured session: %w", err)
+		}
+	}
+	return readSessionInTx(ctx, tx, in.ID)
+}
+
+func readSessionInTx(ctx context.Context, tx *sql.Tx, id string) (*models.Session, error) {
+	session, err := scanSession(tx.QueryRowContext(ctx, `
+		SELECT id, sync_id, project, directory, dev_id, client,
+		       started_at, ended_at, summary, synced_at, sync_from_project
+		FROM sessions WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrSessionNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read session in transaction: %w", err)
+	}
+	return session, nil
 }
 
 // GetSession retrieves a session by id.
