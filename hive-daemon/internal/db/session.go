@@ -435,6 +435,51 @@ func (d *DB) MarkSessionSynced(id string, at time.Time) error {
 	return nil
 }
 
+// AckSessionSnapshot marks sent as synced only when the current pending row
+// still has exactly the semantic state that was pushed. This compare-and-set
+// keeps a later reopen, end, or relocation dirty after an older push returns.
+func (d *DB) AckSessionSnapshot(ctx context.Context, sent *models.Session, at time.Time) (bool, error) {
+	if sent == nil {
+		return false, nil
+	}
+
+	startedAt := sent.StartedAt.UTC()
+	endedAt := formatNullableTime(sent.EndedAt)
+	var endedAtRFC3339 any
+	if sent.EndedAt != nil {
+		endedAtRFC3339 = sent.EndedAt.UTC().Format(time.RFC3339)
+	}
+	result, err := d.sqlDB.ExecContext(ctx, `
+		UPDATE sessions
+		SET synced_at = ?, sync_from_project = ''
+		WHERE id = ?
+		  AND sync_id = ?
+		  AND project = ?
+		  AND sync_from_project = ?
+		  AND directory = ?
+		  AND dev_id = ?
+		  AND client = ?
+		  AND (started_at = ? OR started_at = ?)
+		  AND ((? IS NULL AND ended_at IS NULL) OR (? IS NOT NULL AND (ended_at = ? OR ended_at = ?)))
+		  AND COALESCE(summary, '') = ?
+		  AND synced_at IS NULL`,
+		at.UTC().Format("2006-01-02 15:04:05"),
+		sent.ID, sent.SyncID, canonicalProjectKey(sent.Project), sent.SyncFromProject,
+		sent.Directory, sent.DevID, sent.Client,
+		startedAt.Format("2006-01-02 15:04:05"), startedAt.Format(time.RFC3339),
+		endedAt, endedAt, endedAt, endedAtRFC3339,
+		sent.Summary,
+	)
+	if err != nil {
+		return false, fmt.Errorf("ack session snapshot: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("ack session snapshot rows affected: %w", err)
+	}
+	return rowsAffected == 1, nil
+}
+
 // SaveSessionFromRemote upserts a session received from the server.
 // Uses the sync_id for conflict detection — ON CONFLICT(id) keeps first-arriving
 // sentinel rows intact for legacy-pre-lifecycle-* IDs.

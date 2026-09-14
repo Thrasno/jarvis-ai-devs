@@ -109,6 +109,7 @@ type SyncStore interface {
 	// (PR 1b-iii, hive-sync-batched-drain) — see GetUnsyncedPage doc.
 	ListUnsyncedSessionsPage(project string, limit int) ([]*models.Session, error)
 	MarkSessionSynced(id string, at time.Time) error
+	AckSessionSnapshot(ctx context.Context, sent *models.Session, at time.Time) (bool, error)
 	SaveSessionFromRemote(s *models.Session) error
 
 	GetPendingMutations(project string, limit int) ([]db.MutationEnvelope, error)
@@ -971,13 +972,18 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 	// it must not be treated as progress.
 	recordsMarkedSynced := 0
 
-	// Paso 5a: marcamos como sincronizadas las sesiones que enviamos
+	// Paso 5a: confirmamos únicamente el snapshot exacto que se envió. The
+	// acknowledgement is after network I/O, but does not hold a DB transaction
+	// while waiting for the server response.
 	for _, sess := range unsyncedSessions {
-		if err := s.store.MarkSessionSynced(sess.ID, now); err != nil {
-			logger.Log.Printf("warn: MarkSessionSynced %s: %v", sess.ID, err)
+		acknowledged, err := s.store.AckSessionSnapshot(ctx, sess, now)
+		if err != nil {
+			logger.Log.Printf("warn: AckSessionSnapshot %s: %v", sess.ID, err)
 			continue
 		}
-		recordsMarkedSynced++
+		if acknowledged {
+			recordsMarkedSynced++
+		}
 	}
 
 	// Paso 5b: marcamos como sincronizadas las memorias legacy solo cuando

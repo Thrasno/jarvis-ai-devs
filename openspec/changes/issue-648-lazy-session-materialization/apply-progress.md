@@ -258,3 +258,25 @@ Persisted `tasks.md` slice-2 RED, GREEN, and TRIANGULATE/REFACTOR rows are visib
 - Deferred parent lifecycle action (unchanged): `- [ ] Review slice 3's EnsureAndEndSession extension; confirm end rollback/concurrency receipts, separate native-accounting result, rollback, and \`main <- 1 <- 2 <- 📍3 <- 4\` context before merge. <!-- sdd-owner: parent -->`
 - Remaining implementation work is deliberately outside slice 3, beginning with slice 4. Risk: transport-level end evidence, HTTP/MCP duplicate mapping, and snapshot sync acknowledgement remain unactivated and unverified by this DB-only unit.
 - Structured status consumed: `changeName=issue-648-lazy-session-materialization`; `applyState=ready`; `artifactStore=openspec`; `actionContext.mode=repo-local`; allowed root `/home/andres/Desarrollo/Proyectos/jarvis-dev-issue-648`; warnings none. Skill resolution: `paths-injected`.
+
+## Slice 4 — Snapshot-safe local sync acknowledgement
+
+**Status:** implementation complete; native review/checkpoint pending. **Boundary:** `main <- 1 <- 2 <- 3 <- 📍4 <- 5`; no adapters, later slices, commit, push, or PR.
+
+- [x] RED: new DB tests failed because `AckSessionSnapshot` did not exist; sync stale-ack test failed because the old loop marked progress by ID.
+- [x] GREEN: `AckSessionSnapshot` conditionally marks only the exact dirty snapshot, normalizing NULL/empty summaries and SQLite/RFC3339 timestamp representations; the push loop now counts only `true` after network I/O. `MarkSessionSynced` remains unchanged.
+- [x] TRIANGULATE/REFACTOR: covered reopen/end/relocation stale snapshots, nullable and non-null timestamp/summary cases, state restoration, blocked in-flight push interleaving, failed push, and false/error progress. No production refactor was needed.
+
+### TDD Cycle Evidence
+
+| Task | Test file | Layer | Safety net | RED | GREEN | TRIANGULATE | REFACTOR |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Slice 4 acknowledgement | `internal/db/session_ack_test.go`, `internal/sync/syncer_test.go` | DB + sync integration | `go test ./internal/db`; focused sync passed | Missing DB API and stale-progress assertions failed | Focused DB/sync passed | Snapshot/end/reopen/relocation/restored/failed-push cases passed | gofmt; no extra refactor |
+
+### Verification and workload
+
+- Passed: focused DB/sync tests; `go test -race ./internal/db ./internal/sync`; `cd hive-daemon && go test ./...`; `go vet ./...`; `gofmt -l`; `git diff --check`.
+- Persisted tasks: slice-4 RED, GREEN, and TRIANGULATE/REFACTOR rows are visibly `- [x]`; parent-owned rows remain unchanged.
+- Native accounting is pending final receipt; current code/tests/tasks are 320 additions+deletions before this evidence, so this bounded slice remains below 399 with this minimal record. Parent must review stale/failed-push evidence and exact final count before lifecycle checkpoint.
+- No design deviation. Residual risk: unknown timestamp encodings fail closed and stay dirty for retry; no SQLite transaction spans network I/O.
+- Structured status: `changeName=issue-648-lazy-session-materialization`, `applyState=ready`, `artifactStore=openspec`, `actionContext.mode=repo-local`, workspace `/home/andres/Desarrollo/Proyectos/jarvis-dev-issue-648`, warnings none; skill resolution `paths-injected`.

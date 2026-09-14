@@ -54,9 +54,9 @@ Chain strategy: stacked-to-main
 
 **Dependency / finish:** slice 3 → successful session pushes acknowledge only their exact local snapshot; public lifecycle producers remain unchanged. **Paths:** `hive-daemon/internal/db/session.go`, focused acknowledgement tests in `hive-daemon/internal/db/`, `hive-daemon/internal/sync/syncer.go`, and sync mocks/tests in `hive-daemon/internal/sync/`. **Rollback:** revert acknowledgement contract and loop migration together; do not clear pending rows.
 
-- [ ] **RED:** Add DB/sync interleaving tests holding a push after its snapshot, then committing reopen, end, and relocation; assert stale acknowledgement is false, dirty state remains, progress is unchanged, failed push stays dirty, and nullable timestamps/summaries compare safely. <!-- sdd-owner: implementation -->
-- [ ] **GREEN:** Implement `AckSessionSnapshot(ctx, sent, at)` as a null-safe conditional update and migrate only the production session push loop to count progress on a true acknowledgement after network I/O. <!-- sdd-owner: implementation -->
-- [ ] **TRIANGULATE/REFACTOR:** Cover end-after-open snapshot and changed-then-restored state, keep comparisons fail-closed, then format and run focused DB/sync, race, module, and vet checks. <!-- sdd-owner: implementation -->
+- [x] **RED:** Add DB/sync interleaving tests holding a push after its snapshot, then committing reopen, end, and relocation; assert stale acknowledgement is false, dirty state remains, progress is unchanged, failed push stays dirty, and nullable timestamps/summaries compare safely. <!-- sdd-owner: implementation -->
+- [x] **GREEN:** Implement `AckSessionSnapshot(ctx, sent, at)` as a null-safe conditional update and migrate only the production session push loop to count progress on a true acknowledgement after network I/O. <!-- sdd-owner: implementation -->
+- [x] **TRIANGULATE/REFACTOR:** Cover end-after-open snapshot and changed-then-restored state, keep comparisons fail-closed, then format and run focused DB/sync, race, module, and vet checks. <!-- sdd-owner: implementation -->
 
 ### 5. Coalesced standalone registration — 300–390 native lines
 
