@@ -11,7 +11,7 @@ const HIVE_URL = `http://127.0.0.1:${HIVE_PORT}`;
 const HIVE_CLIENT = "opencode";
 const HIVE_ENDPOINTS = {
   PROMPTS: `${HIVE_URL}/prompts`,
-  SESSION_START: `${HIVE_URL}/sessions/start`,
+  SESSION_START: `${HIVE_URL}/sessions`,
 } as const;
 const createdFlights = new Map<string, Promise<void>>();
 
@@ -104,6 +104,32 @@ function resolveHiveDeveloperID(): string {
   );
 }
 
+function notifySessionDeleted(input: unknown, output: unknown): void {
+  const id = readPath(input, output, ["id", "session_id", "sessionId", "sessionID"]);
+  if (!id) return;
+
+  const directory = resolveHiveDirectory(input, output);
+  const project = resolveHiveProject(input, output);
+  const summary = readPath(input, output, ["summary"]);
+  const payload: Record<string, string> = { client: HIVE_CLIENT };
+  if (directory) payload.directory = directory;
+  if (project) payload.project = project;
+  if (summary) payload.summary = summary;
+
+  let request: Promise<Response>;
+  try {
+    request = fetch(`${HIVE_URL}/sessions/${encodeURIComponent(id)}/end`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(1000),
+    });
+  } catch {
+    return;
+  }
+  void request.catch(() => undefined);
+}
+
 function notifySessionCreated(input: unknown, output: unknown): void {
   const id = resolveHiveSessionId(input, output);
   if (!id || createdFlights.has(id)) return;
@@ -144,6 +170,9 @@ export const Hive: Plugin = async () => {
     event: ({ event }) => {
       if (event.type === "session.created") {
         notifySessionCreated(event.properties, {});
+      } else if (event.type === "session.deleted") {
+        const properties = readRecord(event.properties);
+        notifySessionDeleted(properties["info"], event.properties);
       }
     },
     "chat.message": async (input: unknown, output: unknown) => {
