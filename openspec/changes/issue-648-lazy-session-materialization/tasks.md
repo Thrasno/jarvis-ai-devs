@@ -154,14 +154,14 @@ Chain strategy: stacked-to-main
 
 ## Parent Review and Lifecycle Gates
 
-- [ ] Review slice 1's API lifecycle-only diff, its native-accounting receipt, pull/watermark evidence, rollback, and `main <- 📍1 <- 2` context before merge. <!-- sdd-owner: parent -->
-- [ ] Review slice 2's regular EnsureSession foundation separately from end behavior; confirm its native-accounting receipt, DB/race evidence, exclusions, rollback, and `main <- 1 <- 📍2 <- 3` context before any commit/PR checkpoint. <!-- sdd-owner: parent -->
-- [ ] Review slice 3's EnsureAndEndSession extension; confirm end rollback/concurrency receipts, separate native-accounting result, rollback, and `main <- 1 <- 2 <- 📍3 <- 4` context before merge. <!-- sdd-owner: parent -->
-- [ ] Review slice 4's snapshot acknowledgement, stale/failed-push evidence, no-network-held-transaction boundary, and native-accounting receipt before merge. <!-- sdd-owner: parent -->
-- [ ] Review slice 5's start coalescing, validation exclusion, race evidence, and native-accounting receipt before merge. <!-- sdd-owner: parent -->
-- [ ] Review slice 6's end adapters/native hook caller, evidence/duplicate/rollback receipts, compatibility document, and native-accounting receipt before merge. <!-- sdd-owner: parent -->
-- [ ] Review slice 7's prompt atomicity, manual-path preservation, independent-capture evidence, and native-accounting receipt before merge. <!-- sdd-owner: parent -->
-- [ ] Review slice 8's passive-observation atomicity, empty-attribution preservation, rollback evidence, and native-accounting receipt before merge. <!-- sdd-owner: parent -->
-- [ ] Review slice 9's memory/summary activation, trigger rollback and recovery regressions, and native-accounting receipt before merge. <!-- sdd-owner: parent -->
-- [ ] Review slice 10's OpenCode creation/prompt source-template change, source/install/shared-promise receipts, partial manual checklist, and native-accounting receipt before merge. <!-- sdd-owner: parent -->
-- [ ] Review slice 11's OpenCode deletion change, pending-created independence, full manual checklist/skips, source-of-truth compliance, and native-accounting receipt before merge. <!-- sdd-owner: parent -->
+- [x] Review slice 1's API lifecycle-only diff, its native-accounting receipt, pull/watermark evidence, rollback, and `main <- 📍1 <- 2` context before merge. <!-- sdd-owner: parent -->
+- [x] Review slice 2's regular EnsureSession foundation separately from end behavior; confirm its native-accounting receipt, DB/race evidence, exclusions, rollback, and `main <- 1 <- 📍2 <- 3` context before any commit/PR checkpoint. <!-- sdd-owner: parent -->
+- [x] Review slice 3's EnsureAndEndSession extension; confirm end rollback/concurrency receipts, separate native-accounting result, rollback, and `main <- 1 <- 2 <- 📍3 <- 4` context before merge. <!-- sdd-owner: parent -->
+- [x] Review slice 4's snapshot acknowledgement, stale/failed-push evidence, no-network-held-transaction boundary, and native-accounting receipt before merge. <!-- sdd-owner: parent -->
+- [x] Review slice 5's start coalescing, validation exclusion, race evidence, and native-accounting receipt before merge. <!-- sdd-owner: parent -->
+- [x] Review slice 6's end adapters/native hook caller, evidence/duplicate/rollback receipts, compatibility document, and native-accounting receipt before merge. <!-- sdd-owner: parent -->
+- [x] Review slice 7's prompt atomicity, manual-path preservation, independent-capture evidence, and native-accounting receipt before merge. <!-- sdd-owner: parent -->
+- [x] Review slice 8's passive-observation atomicity, empty-attribution preservation, rollback evidence, and native-accounting receipt before merge. <!-- sdd-owner: parent -->
+- [x] Review slice 9's memory/summary activation, trigger rollback and recovery regressions, and native-accounting receipt before merge. <!-- sdd-owner: parent -->
+- [x] Review slice 10's OpenCode creation/prompt source-template change, source/install/shared-promise receipts, partial manual checklist, and native-accounting receipt before merge. <!-- sdd-owner: parent -->
+- [x] Review slice 11's OpenCode deletion change, pending-created independence, full manual checklist/skips, source-of-truth compliance, and native-accounting receipt before merge. <!-- sdd-owner: parent -->
