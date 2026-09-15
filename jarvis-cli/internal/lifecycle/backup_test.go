@@ -157,6 +157,64 @@ func TestBackupStore_CreateSnapshotWritesManifestWithChecksums(t *testing.T) {
 	}
 }
 
+func TestBackupStore_CreateSnapshotOfTargetsRecursivelyArchivesManagedDirectory(t *testing.T) {
+	home := t.TempDir()
+	store := NewBackupStore(home)
+	skillDir := filepath.Join(home, ".claude", "skills", "retired-skill")
+	for path, body := range map[string]string{
+		filepath.Join(skillDir, "SKILL.md"):               "# retired\n",
+		filepath.Join(skillDir, "references", "notes.md"): "notes\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	manifest, err := store.CreateSnapshotOfTargets("sync", []BackupTarget{{Path: skillDir}})
+	if err != nil {
+		t.Fatalf("CreateSnapshotOfTargets: %v", err)
+	}
+	if len(manifest.Entries) != 2 {
+		t.Fatalf("entries = %#v, want both managed skill files", manifest.Entries)
+	}
+	if err := store.ValidateSnapshot(manifest); err != nil {
+		t.Fatalf("ValidateSnapshot: %v", err)
+	}
+}
+
+// A managed file kept as a symlink into a checkout under the same root was
+// archived through the link by every earlier version; the recursive expansion
+// must keep doing so, refusing links only inside walked trees.
+func TestBackupStore_CreateSnapshotOfTargetsArchivesSymlinkedFileTarget(t *testing.T) {
+	home := t.TempDir()
+	store := NewBackupStore(home)
+	real := filepath.Join(home, ".claude", "dotfiles", "CLAUDE.md")
+	if err := os.MkdirAll(filepath.Dir(real), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(real, []byte("# linked\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	link := filepath.Join(home, ".claude", "CLAUDE.md")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	manifest, err := store.CreateSnapshotOfTargets("sync", []BackupTarget{{Path: link}})
+	if err != nil {
+		t.Fatalf("CreateSnapshotOfTargets: %v", err)
+	}
+	if len(manifest.Entries) != 1 || manifest.Entries[0].Path != link {
+		t.Fatalf("entries = %#v, want the linked file archived under its managed path", manifest.Entries)
+	}
+	if err := store.ValidateSnapshot(manifest); err != nil {
+		t.Fatalf("ValidateSnapshot: %v", err)
+	}
+}
+
 func TestBackupStore_CreateSnapshotSetsSourceOperationAndArchivePath(t *testing.T) {
 	home := t.TempDir()
 	store := NewBackupStore(home)
