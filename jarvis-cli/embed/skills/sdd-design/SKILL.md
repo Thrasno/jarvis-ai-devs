@@ -5,7 +5,7 @@ description: "Document architecture decisions and technical approach with ration
 disable-model-invocation: true
 user-invocable: false
 license: MIT
-scope: optional
+scope: core
 metadata:
   author: gentleman-programming
   version: "2.0"
@@ -29,6 +29,7 @@ You are a sub-agent responsible for TECHNICAL DESIGN. You take the proposal and 
 ## What You Receive
 
 From the orchestrator:
+
 - Change name
 - Artifact store mode (`hive | openspec | hybrid | none`)
 
@@ -44,11 +45,13 @@ From the orchestrator:
 ## What to Do
 
 ### Step 1: Load Skills
+
 Follow **Section A** from `skills/_shared/sdd-phase-common.md`.
 
 ### Step 2: Read the Codebase
 
 Before designing, read the actual code that will be affected:
+
 - Entry points and module structure
 - Existing patterns and conventions
 - Dependencies and interfaces
@@ -137,6 +140,7 @@ If not applicable, state "No migration required."}
 **This step is MANDATORY — do NOT skip it.**
 
 Follow **Section C** from `skills/_shared/sdd-phase-common.md`.
+
 - artifact: `design`
 - topic_key: `sdd/{change-name}/design`
 - type: `architecture`

@@ -8,6 +8,7 @@ package sync
 import (
 	"fmt"
 	"io/fs"
+	"path/filepath"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agentapply"
@@ -51,24 +52,32 @@ type ReplayInput struct {
 	Layer1   string
 	Layer2   string
 	Profile  *persona.Profile
-	Resolve  AgentResolver
-	MCPDeps  agentapply.MCPDeps
+	// DeletedSkillIDs are manifest-owned catalog removals to delete after the
+	// pre-apply snapshot and before the installer renders the remaining skills.
+	DeletedSkillIDs []string
+	Resolve         AgentResolver
+	MCPDeps         agentapply.MCPDeps
 	// Configure defaults to agentapply.ConfigureAgent.
 	Configure ConfigureAgentFunc
+	// RetainedSkillIDs are manifest skills this build neither offers nor retired,
+	// which a newer jarvis may have recorded. They are never rendered, never
+	// deleted, and stay in durable state.
+	RetainedSkillIDs []string
 }
 
 // PlanInputFor projects the replay input onto the planner's input.
 func PlanInputFor(in ReplayInput) PlanInput {
 	return PlanInput{
-		Root:      in.Root,
-		State:     in.State,
-		Templates: in.Templates,
-		Layer1:    in.Layer1,
-		Layer2:    in.Layer2,
-		Skills:    in.Skills,
-		SkillsFS:  in.SkillsFS,
-		HooksFS:   in.HooksFS,
-		Profile:   in.Profile,
+		Root:            in.Root,
+		State:           in.State,
+		Templates:       in.Templates,
+		Layer1:          in.Layer1,
+		Layer2:          in.Layer2,
+		Skills:          in.Skills,
+		SkillsFS:        in.SkillsFS,
+		HooksFS:         in.HooksFS,
+		Profile:         in.Profile,
+		DeletedSkillIDs: append([]string(nil), in.DeletedSkillIDs...),
 	}
 }
 
@@ -90,6 +99,11 @@ func TargetsFor(in ReplayInput) []AgentTarget {
 	return targets
 }
 
+type deletedSkillState struct {
+	ids      []string
+	evidence map[string]fileState
+}
+
 // Runner is the production ComponentRunner.
 //
 // One caveat is structural and is documented rather than worked around:
@@ -102,19 +116,20 @@ func TargetsFor(in ReplayInput) []AgentTarget {
 // reported at models. The agent is still named exactly, and the last three
 // components keep their own precise attribution.
 type Runner struct {
-	resolve     AgentResolver
-	configure   ConfigureAgentFunc
-	phaseModels state.PhaseModels
-	skills      []config.SkillInfo
-	skillIDs    []string
-	skillsFS    fs.FS
-	agentsFS    AgentsSubFS
-	layer1      string
-	layer2      string
-	ownership   InstructionOwnership
-	mcps        MCPComponent
-	statusline  StatuslineComponent
-	profile     *persona.Profile
+	resolve         AgentResolver
+	configure       ConfigureAgentFunc
+	phaseModels     state.PhaseModels
+	skills          []config.SkillInfo
+	skillIDs        []string
+	skillsFS        fs.FS
+	agentsFS        AgentsSubFS
+	layer1          string
+	layer2          string
+	ownership       InstructionOwnership
+	mcps            MCPComponent
+	statusline      StatuslineComponent
+	profile         *persona.Profile
+	deletedSkillIDs deletedSkillState
 }
 
 // NewRunner builds the production runner from the same input the planner reads.
@@ -124,15 +139,17 @@ func NewRunner(in ReplayInput) *Runner {
 		configure = agentapply.ConfigureAgent
 	}
 	runner := &Runner{
-		resolve:   in.Resolve,
-		configure: configure,
-		skills:    in.Skills,
-		skillsFS:  in.SkillsFS,
-		agentsFS:  in.AgentsFS,
-		layer1:    in.Layer1,
-		layer2:    in.Layer2,
-		profile:   in.Profile,
-		mcps:      MCPComponent{Resolve: in.Resolve, Deps: in.MCPDeps},
+		resolve:         in.Resolve,
+		configure:       configure,
+		skills:          in.Skills,
+		skillsFS:        in.SkillsFS,
+		agentsFS:        in.AgentsFS,
+		layer1:          in.Layer1,
+		layer2:          in.Layer2,
+		profile:         in.Profile,
+		deletedSkillIDs: deletedSkillState{ids: append([]string(nil), in.DeletedSkillIDs...)},
+
+		mcps: MCPComponent{Resolve: in.Resolve, Deps: in.MCPDeps},
 		// Only Consent comes from the manifest, so the statusline's own
 		// dependencies are wired alongside its sibling component's. The zero
 		// StatuslineState is "never asked", which already leaves the statusline
@@ -148,6 +165,15 @@ func NewRunner(in ReplayInput) *Runner {
 	return runner
 }
 
+func (r *Runner) SetPreApplyEvidence(plan Plan, snapshot Snapshot) {
+	r.deletedSkillIDs.evidence = make(map[string]fileState)
+	for _, tracked := range plan.Tracked {
+		if tracked.DesiredAbsent {
+			r.deletedSkillIDs.evidence[tracked.Path] = snapshot.states[tracked.Path]
+		}
+	}
+}
+
 // ApplyModels runs the whole indivisible installer pass. See the Runner comment
 // for why three component IDs share it.
 func (r *Runner) ApplyModels(target AgentTarget) error {
@@ -158,6 +184,21 @@ func (r *Runner) ApplyModels(target AgentTarget) error {
 	agentsSubFS, err := r.agentsSubFS(target.ID)
 	if err != nil {
 		return err
+	}
+	location, err := managedLocation(target.Root, target.InstructionsPath)
+	if err != nil {
+		return fmt.Errorf("derive managed skills root for %q: %w", target.ID, err)
+	}
+	skillsRoot := filepath.Join(target.Root, filepath.Dir(location), skillsDirName)
+	for _, id := range r.deletedSkillIDs.ids {
+		skillPath := filepath.Join(skillsRoot, id)
+		evidence, ok := r.deletedSkillIDs.evidence[skillPath]
+		if !ok {
+			return fmt.Errorf("missing pre-apply evidence for retired managed skill %q", id)
+		}
+		if err := removeManagedSkillTreeWithEvidence(target.Root, skillsRoot, id, evidence); err != nil {
+			return fmt.Errorf("remove retired managed skill %q for %q: %w", id, target.ID, err)
+		}
 	}
 	// The statusline is the last component and runs after the instruction write,
 	// so this pass is told explicitly not to touch it.

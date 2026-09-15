@@ -301,6 +301,38 @@ func TestRun_PersistsZohoExpansionAfterVerifiedNoOp(t *testing.T) {
 	}
 }
 
+func TestBookkeeping_RebasesSkillLifecycleDeltasOnTheLatestManifest(t *testing.T) {
+	home := t.TempDir()
+	seedZohoManifest(t, home, "baseline", "retired-skill")
+
+	book := &Bookkeeping{
+		SkillAdditions: []string{"selected-skill"},
+		SkillRemovals:  []string{"retired-skill"},
+		Lock: func(critical func() error) error {
+			latest, err := state.Load()
+			if err != nil {
+				return err
+			}
+			latest.Skills = append(latest.Skills, "concurrent-skill")
+			if err := state.Save(latest); err != nil {
+				return err
+			}
+			return critical()
+		},
+	}
+
+	if _, err := book.record(false, true); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	loaded, err := state.Load()
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	if want := []string{"baseline", "concurrent-skill", "selected-skill"}; !reflect.DeepEqual(loaded.Skills, want) {
+		t.Fatalf("skills = %v, want lifecycle deltas rebased on latest state %v", loaded.Skills, want)
+	}
+}
+
 func TestBookkeeping_DoesNotResurrectAConcurrentlyDeselectedPack(t *testing.T) {
 	home := t.TempDir()
 	seedManifest(t, home, "sha256:current")
@@ -422,5 +454,19 @@ func TestBookkeeping_ReturnsNoAdditionsWhenSaveFails(t *testing.T) {
 	}
 	if len(added) != 0 {
 		t.Fatalf("AddedSkillIDs = %v, want none after failed save", added)
+	}
+}
+
+// A manifest may have been written by a newer jarvis. Only a skill this build
+// explicitly retired is deleted; a dropped skill it does not know is retained.
+func TestSplitCatalogRemovals_DeletesOnlyRetiredSkills(t *testing.T) {
+	RetiredSkillIDs["retired-skill"] = true
+	t.Cleanup(func() { delete(RetiredSkillIDs, "retired-skill") })
+	manifest := []string{"sdd-spec", "retired-skill", "future-skill"}
+	own := NewOwnership([]skills.Skill{{ID: "sdd-spec"}}, manifest)
+
+	deleted, retained := SplitCatalogRemovals(own, manifest)
+	if !reflect.DeepEqual(deleted, []string{"retired-skill"}) || !reflect.DeepEqual(retained, []string{"future-skill"}) {
+		t.Fatalf("deleted=%v retained=%v, want only the retired skill deleted and the unknown one retained", deleted, retained)
 	}
 }

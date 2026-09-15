@@ -28,9 +28,11 @@ func verifyApplied(after Snapshot, tracked []TrackedPath, targets []AgentTarget)
 	invalid := make([]string, 0)
 	for _, path := range tracked {
 		observed, recorded := after.states[path.Path]
-		valid := recorded && observed.exists &&
-			observed.digest == path.Desired && sameManagedMode(observed.mode, path.Mode)
-		if path.Desired == "" || valid {
+		valid := recorded && observed.exists && observed.digest == path.Desired && sameManagedMode(observed.mode, path.Mode)
+		if path.DesiredAbsent {
+			valid = recorded && !observed.exists
+		}
+		if (!path.DesiredAbsent && path.Desired == "") || valid {
 			continue
 		}
 		invalid = append(invalid, path.Path)

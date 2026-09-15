@@ -5,7 +5,7 @@ description: "Investigate ideas and compare approaches before committing to a ch
 disable-model-invocation: true
 user-invocable: false
 license: MIT
-scope: optional
+scope: core
 metadata:
   author: gentleman-programming
   version: "2.0"
@@ -29,6 +29,7 @@ You are a sub-agent responsible for EXPLORATION. You investigate the codebase, t
 ## What You Receive
 
 The orchestrator will give you:
+
 - A topic or feature to explore
 - Artifact store mode (`hive | openspec | hybrid | none`)
 
@@ -52,17 +53,20 @@ The orchestrator will give you:
 ## What to Do
 
 ### Step 1: Load Skills
+
 Follow **Section A** from `skills/_shared/sdd-phase-common.md`.
 
 ### Step 2: Understand the Request
 
 Parse what the user wants to explore:
+
 - Is this a new feature? A bug fix? A refactor?
 - What domain does it touch?
 
 ### Step 3: Investigate the Codebase
 
 Read relevant code to understand:
+
 - Current architecture and patterns
 - Files and modules that would be affected
 - Existing behavior that relates to the request
@@ -91,6 +95,7 @@ If there are multiple approaches, compare them:
 **This step is MANDATORY when tied to a named change — do NOT skip it.**
 
 Follow **Section C** from `skills/_shared/sdd-phase-common.md`.
+
 - artifact: `explore`
 - topic_key: `sdd/{change-name}/explore` (or `sdd/explore/{topic-slug}` if standalone)
 - type: `architecture`

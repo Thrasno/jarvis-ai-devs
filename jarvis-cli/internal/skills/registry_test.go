@@ -255,7 +255,7 @@ func TestListSkills_WorkflowSkillsExposeRegistryMetadata(t *testing.T) {
 		t.Fatal("expected retired sdd-workflow to be absent from skill list")
 	}
 
-	for _, id := range []string{"hive", "sdd-init", "sdd-apply", "sdd-verify", "sdd-archive"} {
+	for _, id := range []string{"hive", "sdd-init", "sdd-explore", "sdd-propose", "sdd-spec", "sdd-design", "sdd-tasks", "sdd-apply", "sdd-verify", "sdd-archive"} {
 		s, exists := byID[id]
 		if !exists {
 			t.Fatalf("expected core skill %q to be in skill list", id)
@@ -263,6 +263,9 @@ func TestListSkills_WorkflowSkillsExposeRegistryMetadata(t *testing.T) {
 		if s.Scope != "core" {
 			t.Fatalf("core skill %q scope = %q, want core", id, s.Scope)
 		}
+	}
+	if onboard := byID["sdd-onboard"]; onboard.Scope == "core" || onboard.IsCore {
+		t.Fatalf("sdd-onboard is guidance, not a lifecycle phase: %+v", onboard)
 	}
 }
 

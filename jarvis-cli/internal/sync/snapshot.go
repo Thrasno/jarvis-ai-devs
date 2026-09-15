@@ -13,8 +13,10 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
 )
@@ -47,6 +49,9 @@ type TrackedPath struct {
 	// in memory answers nothing a 32-byte hash does not. Empty means unknown,
 	// which is never a match.
 	Desired string
+	// DesiredAbsent makes deletion a first-class desired state. It tracks one
+	// managed skill directory and converges only after that directory is absent.
+	DesiredAbsent bool
 	// Semantic contains only the managed top-level fragments of a shared JSON file.
 	// Unmanaged siblings are deliberately excluded from convergence.
 	Semantic *ManagedJSON
@@ -142,8 +147,18 @@ func readFileState(tracked TrackedPath) (fileState, error) {
 			return fileState{}, linkErr
 		}
 		content = []byte(target)
-	} else if content, err = os.ReadFile(path); err != nil {
-		return fileState{}, err
+	} else if info.IsDir() {
+		content, err = directoryDigest(path)
+		if err != nil {
+			return fileState{}, err
+		}
+	} else if info.Mode().IsRegular() {
+		content, err = os.ReadFile(path)
+		if err != nil {
+			return fileState{}, err
+		}
+	} else {
+		return fileState{}, fmt.Errorf("managed path %s is not a regular file", path)
 	}
 	state := fileState{exists: true, digest: managedDigest(tracked, content, symlink), mode: info.Mode()}
 	if tracked.Semantic != nil && !symlink {
@@ -167,7 +182,16 @@ func (s Snapshot) Matches(paths []TrackedPath) bool {
 	}
 	for _, tracked := range paths {
 		state, recorded := s.states[tracked.Path]
-		if !recorded || !state.exists {
+		if !recorded {
+			return false
+		}
+		if tracked.DesiredAbsent {
+			if state.exists {
+				return false
+			}
+			continue
+		}
+		if !state.exists {
 			return false
 		}
 		if tracked.Semantic != nil {
@@ -181,6 +205,51 @@ func (s Snapshot) Matches(paths []TrackedPath) bool {
 		}
 	}
 	return true
+}
+
+// directoryDigest captures a managed skill tree without following links. A
+// symlink is unsafe for recursive removal and therefore fails replay before it can
+// back up or delete anything outside the managed tree.
+func directoryDigest(root string) ([]byte, error) {
+	entries := make([]string, 0)
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == root {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("managed directory %s contains a symlink", path)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		prefix := filepath.ToSlash(rel) + "\x00" + fmt.Sprintf("%#o", info.Mode()) + "\x00"
+		if entry.IsDir() {
+			entries = append(entries, "d\x00"+prefix)
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("managed directory %s contains a non-regular file", path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		entries = append(entries, "f\x00"+prefix+digestOf(data))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(entries)
+	return []byte(strings.Join(entries, "\n")), nil
 }
 
 func managedJSONMatches(actual, desired map[string]any) bool {
@@ -237,6 +306,9 @@ func attributeChanges(report Report, tracked []TrackedPath, changed []string) Re
 // for the writer to replace rather than chmodded through.
 func EnforceModes(paths []TrackedPath) error {
 	for _, tracked := range paths {
+		if tracked.DesiredAbsent {
+			continue
+		}
 		info, err := os.Lstat(tracked.Path)
 		if os.IsNotExist(err) {
 			continue

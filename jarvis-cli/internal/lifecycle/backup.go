@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -26,6 +28,10 @@ func NewBackupStore(homeDir string) BackupStore {
 }
 
 func (s BackupStore) CreateSnapshot(sourceOperation string, targets []BackupTarget) (BackupManifest, error) {
+	expanded, err := s.expandTargets(targets)
+	if err != nil {
+		return BackupManifest{}, err
+	}
 	snapshotID := fmt.Sprintf("snap-%d", time.Now().UnixNano())
 	manifest := BackupManifest{
 		SnapshotID:            snapshotID,
@@ -35,26 +41,90 @@ func (s BackupStore) CreateSnapshot(sourceOperation string, targets []BackupTarg
 		ContractVersion:       sddruntime.DefaultContract().ContractVersion,
 		ProviderSchemaVersion: sddruntime.DefaultContract().ProviderSchemaVersion,
 		ArchivePath:           filepath.Join(s.backupDir(), snapshotID+".tar.gz"),
-		Entries:               make([]BackupEntry, 0, len(targets)),
+		Entries:               make([]BackupEntry, 0, len(expanded)),
 	}
-	for _, target := range targets {
+	for _, target := range expanded {
 		raw, err := os.ReadFile(target.Path)
 		if err != nil {
-			if os.IsNotExist(err) {
-				return BackupManifest{}, fmt.Errorf("backup target does not exist: %s", target.Path)
-			}
 			return BackupManifest{}, err
 		}
 		sum := sha256.Sum256(raw)
 		manifest.Entries = append(manifest.Entries, BackupEntry{Path: target.Path, Checksum: hex.EncodeToString(sum[:])})
 	}
-	if err := s.writeArchive(manifest.ArchivePath, targets); err != nil {
+	if err := s.writeArchive(manifest.ArchivePath, expanded); err != nil {
 		return BackupManifest{}, err
 	}
 	if err := s.saveManifest(manifest); err != nil {
 		return BackupManifest{}, err
 	}
 	return manifest, nil
+}
+
+// expandTargets snapshots regular files only. Recursive skill removal needs this
+// to preserve every file before deletion. A caller-supplied leaf may be a symlink
+// and is read through, as every earlier version did with os.ReadFile; only walked
+// trees refuse links, so a managed tree can never cause a backup to read outside
+// its root.
+func (s BackupStore) expandTargets(targets []BackupTarget) ([]BackupTarget, error) {
+	seen := make(map[string]bool)
+	expanded := make([]BackupTarget, 0, len(targets))
+	add := func(path string) {
+		if !seen[path] {
+			seen[path] = true
+			expanded = append(expanded, BackupTarget{Path: path})
+		}
+	}
+	for _, target := range targets {
+		info, err := os.Lstat(target.Path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, fmt.Errorf("backup target does not exist: %s", target.Path)
+			}
+			return nil, fmt.Errorf("backup target %s: %w", target.Path, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			// A linked directory is refused: walking through it could leave the
+			// managed root. A linked file is archived through the link, as before.
+			if info, err = os.Stat(target.Path); err != nil {
+				return nil, fmt.Errorf("backup target %s: %w", target.Path, err)
+			}
+			if info.IsDir() {
+				return nil, fmt.Errorf("backup target %s is a symlink to a directory", target.Path)
+			}
+		}
+		if !info.IsDir() {
+			if !info.Mode().IsRegular() {
+				return nil, fmt.Errorf("backup target %s is not a regular file", target.Path)
+			}
+			add(target.Path)
+			continue
+		}
+		err = filepath.WalkDir(target.Path, func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.Type()&os.ModeSymlink != 0 {
+				return fmt.Errorf("backup target %s contains a symlink", path)
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("backup target %s is not a regular file", path)
+			}
+			add(path)
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	sort.Slice(expanded, func(i, j int) bool { return expanded[i].Path < expanded[j].Path })
+	return expanded, nil
 }
 
 // CreateSnapshotOfTargets snapshots a target list the caller computed itself,

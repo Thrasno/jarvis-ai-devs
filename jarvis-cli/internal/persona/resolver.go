@@ -43,46 +43,80 @@ func NormalizeSlug(slug string) string {
 	return slug
 }
 
-// ResolveProfile resolves and validates a schema-v2 presentation profile.
+// ResolveProfile resolves legacy manifests. A manifest predating persona replay
+// records neither a slug nor a source, and therefore replays the historic default.
 func ResolveProfile(fsys fs.FS, slug string) (*ResolvedProfile, error) {
+	return ResolveProfileFromSource(fsys, slug, "")
+}
+
+// ResolveProfileFromSource resolves a schema-v2 presentation profile from the
+// source recorded by the manifest. A user profile deliberately wins even when it
+// shares a slug with a built-in; conversely, a recorded built-in is never shadowed
+// by a user file. An empty source preserves the legacy built-in-first lookup.
+func ResolveProfileFromSource(fsys fs.FS, slug string, source PresetSource) (*ResolvedProfile, error) {
 	if fsys == nil {
 		return nil, fmt.Errorf("resolve schema v2 preset %q: persona catalog is unavailable", NormalizeSlug(slug))
 	}
 
 	normalized := NormalizeSlug(slug)
+	if normalized == "" {
+		normalized = "argentino"
+	}
 	if err := validatePresetSlug(normalized); err != nil {
 		return nil, err
 	}
-
 	builtinPath := filepath.ToSlash(filepath.Join("embed", "personas", normalized+".yaml"))
-	if p, err := readProfileFromFS(fsys, builtinPath); err == nil {
-		return &ResolvedProfile{
-			Slug:     normalized,
-			Source:   PresetSourceBuiltin,
-			FilePath: builtinPath,
-			Preset:   p,
-		}, nil
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("load builtin schema v2 preset %q: %w", normalized, err)
-	}
-
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("resolve user home dir: %w", err)
 	}
-
 	userPath := filepath.Join(homeDir, ".jarvis", "personas", normalized+".yaml")
-	if p, err := readProfileFromOS(userPath); err == nil {
-		return &ResolvedProfile{
-			Slug:     normalized,
-			Source:   PresetSourceUser,
-			FilePath: userPath,
-			Preset:   p,
-		}, nil
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("load user schema v2 preset %q: %w", normalized, err)
+	load := func(path string, fromFS bool, resolvedSource PresetSource) (*ResolvedProfile, error) {
+		var p *Profile
+		var readErr error
+		if fromFS {
+			p, readErr = readProfileFromFS(fsys, path)
+		} else {
+			p, readErr = readProfileFromOS(path)
+		}
+		if readErr == nil {
+			return &ResolvedProfile{Slug: normalized, Source: resolvedSource, FilePath: path, Preset: p}, nil
+		}
+		return nil, readErr
 	}
-
+	if source == PresetSourceUser {
+		resolved, err := load(userPath, false, PresetSourceUser)
+		if err == nil {
+			return resolved, nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("load user schema v2 preset %q: %w", normalized, err)
+		}
+		return nil, fmt.Errorf("user schema v2 preset %q not found", normalized)
+	}
+	if source == PresetSourceBuiltin {
+		resolved, err := load(builtinPath, true, PresetSourceBuiltin)
+		if err == nil {
+			return resolved, nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("load builtin schema v2 preset %q: %w", normalized, err)
+		}
+		return nil, fmt.Errorf("builtin schema v2 preset %q not found", normalized)
+	}
+	for _, candidate := range []struct {
+		path   string
+		fromFS bool
+		source PresetSource
+	}{{builtinPath, true, PresetSourceBuiltin}, {userPath, false, PresetSourceUser}} {
+		resolved, err := load(candidate.path, candidate.fromFS, candidate.source)
+		if err == nil {
+			return resolved, nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("load %s schema v2 preset %q: %w", candidate.source, normalized, err)
+		}
+	}
 	available := listProfileNames(fsys)
 	return nil, fmt.Errorf("schema v2 preset %q not found (available built-ins: %s)", normalized, strings.Join(available, ", "))
 }

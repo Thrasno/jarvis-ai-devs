@@ -28,6 +28,11 @@ func ManagedAssetDigest(plan Plan) string {
 		writeDigestField(h, []byte(item.Identity))
 		writeDigestField(h, []byte(item.Mode.String()))
 		writeDigestField(h, []byte(item.Desired))
+		if item.DesiredAbsent {
+			writeDigestField(h, []byte("absent"))
+		} else {
+			writeDigestField(h, []byte("present"))
+		}
 		semantic, _ := json.Marshal(item.Semantic)
 		writeDigestField(h, semantic)
 	}

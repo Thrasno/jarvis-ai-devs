@@ -104,13 +104,30 @@ func runSync() error {
 	// The cloud portion reads one file and writes nothing, so it is decided
 	// before the report and never gates it: `jarvis login` owns what it names.
 	cloud := sync.CloudManualAction(home, manifest.Scope)
+	// Retained skills stay in the desired list on purpose: a skill this build does
+	// not know must survive the post-verification manifest write.
+	additions, removals := sync.SkillLifecycleDeltas(manifest.Skills, appendUniqueSkillIDs(input.State.Skills, input.RetainedSkillIDs))
+	if expansion != nil {
+		additions = excludeSkillIDs(additions, expansion.CandidateIDs)
+	}
 	result, runErr := sync.Run(sync.RunInput{
-		Plan:        plan,
-		Apply:       sync.ApplyInput{Runner: sync.NewRunner(input), Targets: sync.TargetsFor(input)},
-		Backup:      lifecycle.NewBackupStore(home).CreateSnapshotOfTargets,
-		Bookkeeping: &sync.Bookkeeping{ManagedAssetDigest: sync.ManagedAssetDigest(plan), ZohoExpansion: expansion},
+		Plan:   plan,
+		Apply:  sync.ApplyInput{Runner: sync.NewRunner(input), Targets: sync.TargetsFor(input)},
+		Backup: lifecycle.NewBackupStore(home).CreateSnapshotOfTargets,
+		Bookkeeping: &sync.Bookkeeping{
+			ManagedAssetDigest: sync.ManagedAssetDigest(plan),
+			SkillAdditions:     additions,
+			SkillRemovals:      removals,
+			ZohoExpansion:      expansion,
+		},
 	})
+	if runErr == nil && result.Verified {
+		result.AddedSkillIDs = appendUniqueSkillIDs(result.AddedSkillIDs, additions)
+	}
 	fmt.Print(renderSyncReport(input.State, result, cloud, runErr))
+	for _, id := range input.RetainedSkillIDs {
+		fmt.Printf("skill kept, unknown to this jarvis build: %s\n", id)
+	}
 	return syncExit(result.Report, runErr)
 }
 
@@ -139,7 +156,7 @@ func replayInput(home string, manifest *state.State) (sync.ReplayInput, *sync.Zo
 	if err != nil {
 		return sync.ReplayInput{}, nil, fmt.Errorf("open the embedded skill tree: %w", err)
 	}
-	resolved, err := persona.ResolveProfile(jarvis.PersonaFS, manifest.Persona)
+	resolved, err := persona.ResolveProfileFromSource(jarvis.PersonaFS, manifest.Persona, persona.PresetSource(manifest.PersonaSource))
 	if err != nil {
 		return sync.ReplayInput{}, nil, fmt.Errorf("resolve persona %q: %w", manifest.Persona, err)
 	}
@@ -147,8 +164,17 @@ func replayInput(home string, manifest *state.State) (sync.ReplayInput, *sync.Zo
 	if err != nil {
 		return sync.ReplayInput{}, nil, fmt.Errorf("list the embedded skill catalog: %w", err)
 	}
+	ownership := sync.NewOwnership(catalog, manifest.Skills)
+	effective := make([]string, 0, len(catalog))
+	for _, entry := range catalog {
+		switch ownership.ResolveSkill(entry.ID) {
+		case sync.SkillActionUpdate, sync.SkillActionInstall:
+			effective = append(effective, entry.ID)
+		}
+	}
+	deleted, retained := sync.SplitCatalogRemovals(ownership, manifest.Skills)
 	pack := skills.NewZohoPack(catalog)
-	expanded, candidates, eligible := pack.Expand(manifest.Skills)
+	expanded, candidates, eligible := pack.Expand(effective)
 	copy := *manifest
 	copy.Skills = expanded
 	var expansion *sync.ZohoExpansion
@@ -172,16 +198,17 @@ func replayInput(home string, manifest *state.State) (sync.ReplayInput, *sync.Zo
 		installed[normalizeAgentID(detected.Name())] = detected
 	}
 	return sync.ReplayInput{
-		Root:      home,
-		State:     &copy,
-		Templates: jarvis.TemplatesFS,
-		SkillsFS:  skillsSubFS,
-		HooksFS:   jarvis.HooksFS,
-		AgentsFS:  agentsSubFS,
-		Skills:    skillInfos,
-		Layer1:    config.Layer1Content(),
-		Layer2:    persona.RenderLayer2(resolved.Preset),
-		Profile:   resolved.Preset,
+		Root:            home,
+		State:           &copy,
+		Templates:       jarvis.TemplatesFS,
+		SkillsFS:        skillsSubFS,
+		HooksFS:         jarvis.HooksFS,
+		AgentsFS:        agentsSubFS,
+		Skills:          skillInfos,
+		Layer1:          config.Layer1Content(),
+		Layer2:          persona.RenderLayer2(resolved.Preset),
+		Profile:         resolved.Preset,
+		DeletedSkillIDs: deleted,
 		Resolve: func(id string) (agent.Agent, bool) {
 			found, ok := installed[normalizeAgentID(id)]
 			return found, ok
@@ -190,7 +217,40 @@ func replayInput(home string, manifest *state.State) (sync.ReplayInput, *sync.Zo
 			NewExecutor:    func() agentapply.MCPExecutor { return agent.NewProductionExecutor() },
 			HiveDaemonPath: agent.HiveDaemonBinaryPath,
 		},
+		RetainedSkillIDs: retained,
 	}, expansion, nil
+}
+
+// appendUniqueSkillIDs combines independently persisted lifecycle additions for
+// reporting without producing duplicate notices.
+func appendUniqueSkillIDs(existing, additions []string) []string {
+	seen := make(map[string]bool, len(existing)+len(additions))
+	combined := make([]string, 0, len(existing)+len(additions))
+	for _, id := range append(existing, additions...) {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		combined = append(combined, id)
+	}
+	return combined
+}
+
+// excludeSkillIDs leaves lifecycle additions outside a deferred expansion. Zoho
+// candidates are rebased by ZohoExpansion under the lock so a concurrent pack
+// deselection is not undone by the generic skill lifecycle update.
+func excludeSkillIDs(ids, excluded []string) []string {
+	excludedSet := make(map[string]bool, len(excluded))
+	for _, id := range excluded {
+		excludedSet[id] = true
+	}
+	kept := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if !excludedSet[id] {
+			kept = append(kept, id)
+		}
+	}
+	return kept
 }
 
 // normalizeAgentID is the one spelling rule this command applies to an agent
@@ -279,11 +339,11 @@ func renderSyncReport(manifest *state.State, result sync.RunResult, cloud string
 		if result.Verified && runErr != nil {
 			fmt.Fprintf(&out, "state persistence: failed: %v\n", runErr)
 		}
-	} else if runErr != nil {
+	} else {
 		fmt.Fprintf(&out, "verification: failed: %v\n", runErr)
 	}
 	for _, id := range result.AddedSkillIDs {
-		fmt.Fprintf(&out, "zoho skill added to desired state: %s\n", id)
+		fmt.Fprintf(&out, "skill added to desired state: %s\n", id)
 	}
 	if runErr == nil && result.Report.Converged() && len(result.Report.Changed) == 0 {
 		fmt.Fprintln(&out, "this machine is already current; nothing was changed.")

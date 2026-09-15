@@ -61,14 +61,16 @@ value).
 
 ### Requirement: Skill Lifecycle Rules
 
-The system MUST resolve each skill's lifecycle action from exactly two
-memberships — presence in the manifest's `skills` list and presence in the
-embedded catalog — per this table:
+The system MUST resolve each skill's lifecycle action from two memberships —
+presence in the manifest's `skills` list and presence in the embedded
+catalog — plus, for a manifest skill the catalog lacks, whether this build
+explicitly retired it, per this table:
 
-| In manifest | In catalog | Interactive? | Action |
-|---|---|---|---|
+| In manifest | In catalog | Interactive? / Retired? | Action |
+| --- | --- | --- | --- |
 | Yes | Yes | — | Update |
-| Yes | No | — | Delete |
+| Yes | No | Retired by this build | Delete |
+| Yes | No | Not retired | Retain |
 | No | Yes | Non-interactive | Install |
 | No | Yes | Interactive | Do not install |
 | No | No | — | Never touch |
@@ -79,11 +81,20 @@ embedded catalog — per this table:
 - WHEN planning resolves its action
 - THEN the plan updates the skill
 
-#### Scenario: Manifest lists a skill the catalog dropped
+#### Scenario: Manifest lists a skill this build retired
 
-- GIVEN a skill present in the manifest but absent from the catalog
+- GIVEN a skill present in the manifest, absent from the catalog, and retired
+  by this build
 - WHEN planning resolves its action
 - THEN the plan deletes the skill
+
+#### Scenario: Manifest lists a skill unknown to this build
+
+- GIVEN a skill present in the manifest, absent from the catalog, and not
+  retired by this build
+- WHEN planning resolves its action
+- THEN the plan neither renders nor deletes the skill
+- AND the skill remains in the manifest's `skills` list
 
 #### Scenario: Catalog offers a non-interactive skill not yet in the manifest
 
@@ -105,18 +116,41 @@ embedded catalog — per this table:
 - WHEN planning resolves its action
 - THEN the plan does not touch that skill
 
-### Requirement: Manifest Skills List Is Never Filtered on Write
+### Requirement: Resolved Skill State Is Persisted Only After Convergence
 
-The system MUST NOT filter the manifest's `skills` list against the current
-catalog when writing the manifest. The unfiltered list is the only proof
-that authorizes deleting a skill a later version dropped from the catalog.
+The manifest's original `skills` list is retained as the deletion authority
+through planning, snapshotting, application, and verification. Only after the
+replay converges and verifies successfully, under the state lock, the system
+MUST persist the lifecycle-resolved list: catalog-only non-interactive
+additions are included, explicitly retired managed skills are removed, and
+retained skills unknown to this build stay listed. The sync path MUST NOT
+call `config.Save`.
 
-#### Scenario: A catalog-dropped skill remains listed until deleted
+#### Scenario: A retired skill remains listed until verified deletion
 
-- GIVEN a manifest listing a skill no longer in the current catalog
-- WHEN the manifest is written during this sync run
-- THEN the skill remains listed in the manifest until its deletion is
-  applied, and the write does not silently drop it from the list
+- GIVEN a manifest listing a skill this build retired and no longer offers
+- WHEN `jarvis sync` plans and applies that deletion
+- THEN the original manifest membership authorizes only that managed skill tree
+- AND the skill remains in durable state until deletion and verification succeed
+- AND the post-verification locked write removes it from the manifest
+
+### Requirement: Desired Absence Is Planned and Protected
+
+An explicitly retired manifest skill MUST be represented as explicit desired
+absence in the plan. Its managed directory MUST be recursively snapshotted
+before deletion and replay MUST reject malformed IDs, traversal, separators,
+unsafe roots, and symlinked trees. It MUST NOT use an unconstrained recursive
+remove operation.
+
+#### Scenario: Retired managed skill tree is removed safely
+
+- GIVEN a manifest-owned skill this build retired and an existing managed
+  skill directory
+- WHEN replay applies the plan
+- THEN all regular files in that tree are included in the pre-apply snapshot
+- AND replay removes only that managed tree
+- AND verification passes only when the directory is absent
+- AND `_shared` and unowned skill directories remain untouched
 
 ### Requirement: No Filesystem Redetection
 
