@@ -148,7 +148,7 @@ func TestRunSync_SecondRunOverAnAlreadyCurrentMachineConvergesWithoutApplying(t 
 	}
 }
 
-func TestRunSync_ConvergesAndPersistsALegacyZohoPackOnce(t *testing.T) {
+func TestRunSync_ResolvesCatalogLifecycleAndPersistsLegacyZohoPackOnce(t *testing.T) {
 	home := newSyncFixtureHome(t)
 	seedReplayManifest(t, openCodeAgent(home))
 	manifest, err := state.Load()
@@ -165,19 +165,46 @@ func TestRunSync_ConvergesAndPersistsALegacyZohoPackOnce(t *testing.T) {
 	if first != nil {
 		t.Fatalf("legacy sync: %v\n%s", first, out)
 	}
-	for _, id := range []string{"zoho-analytics", "zoho-books", "zoho-creator", "zoho-crm", "zoho-people", "zoho-projects"} {
-		if !strings.Contains(out, "zoho skill added to desired state: "+id) {
-			t.Errorf("missing durable addition %q:\n%s", id, out)
+	for _, id := range []string{"zoho-analytics", "zoho-books", "zoho-creator", "zoho-crm", "zoho-people", "zoho-projects", "sdd-explore"} {
+		line := "skill added to desired state: " + id
+		if strings.Count(out, line) != 1 {
+			t.Errorf("report occurrences of durable addition %q = %d, want exactly one:\n%s", id, strings.Count(out, line), out)
 		}
 	}
 	loaded, err := state.Load()
-	if err != nil || len(loaded.Skills) != 7 {
-		t.Fatalf("persisted skills = %v, %v; want all V0 members", loaded.Skills, err)
+	if err != nil {
+		t.Fatalf("load persisted state: %v", err)
+	}
+	want := map[string]bool{}
+	for _, id := range []string{
+		"branch-pr", "chained-pr", "cognitive-doc-design", "comment-writer", "git-workflow", "hive", "issue-creation", "judgment-day", "qa-checklist",
+		"sdd-apply", "sdd-archive", "sdd-design", "sdd-explore", "sdd-init", "sdd-onboard", "sdd-propose", "sdd-spec", "sdd-tasks", "sdd-verify",
+		"skill-creator", "skill-improver", "skill-registry", "work-unit-commits",
+		"zoho-analytics", "zoho-books", "zoho-creator", "zoho-crm", "zoho-deluge", "zoho-people", "zoho-projects",
+	} {
+		want[id] = true
+	}
+	got := make(map[string]bool, len(loaded.Skills))
+	for _, id := range loaded.Skills {
+		got[id] = true
+	}
+	for id := range want {
+		if !got[id] {
+			t.Errorf("resolved desired skills omit %q: %v", id, loaded.Skills)
+		}
+	}
+	for _, id := range []string{"phpunit-testing", "laravel-architecture", "go-testing"} {
+		if got[id] {
+			t.Errorf("unselected interactive skill %q was persisted: %v", id, loaded.Skills)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("resolved desired skills = %v, want exactly %d policy-approved skills", loaded.Skills, len(want))
 	}
 
 	var second error
 	out = captureStdout(t, func() { second = runSync() })
-	if second != nil || strings.Contains(out, "zoho skill added to desired state") {
+	if second != nil || strings.Contains(out, "skill added to desired state") {
 		t.Fatalf("second sync must be silent and idempotent: %v\n%s", second, out)
 	}
 }

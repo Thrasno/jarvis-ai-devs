@@ -48,6 +48,268 @@ func planWithTrackedFile(t *testing.T, home, content string) (Plan, string) {
 // touched it. PR 4b discards a managed CLAUDE.md carrying no Jarvis sentinels
 // and renders it fresh, so the archived pre-mutation bytes are the whole answer
 // to "where did my file go".
+func TestRemoveManagedSkillTreeDeletesOnlyValidatedManagedTree(t *testing.T) {
+	root := t.TempDir()
+	skillsRoot := filepath.Join(root, "skills")
+	managed := filepath.Join(skillsRoot, "retired-skill", "references", "notes.md")
+	unowned := filepath.Join(skillsRoot, "team-notes", "SKILL.md")
+	shared := filepath.Join(skillsRoot, "_shared", "common.md")
+	for _, path := range []string{managed, unowned, shared} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("content"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	evidence := snapshotOrFail(t, []TrackedPath{{Path: filepath.Join(skillsRoot, "retired-skill")}}).states[filepath.Join(skillsRoot, "retired-skill")]
+	if err := removeManagedSkillTreeWithEvidence(root, skillsRoot, "retired-skill", evidence); err != nil {
+		t.Fatalf("remove managed skill: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(skillsRoot, "retired-skill")); !os.IsNotExist(err) {
+		t.Fatalf("retired tree remains: %v", err)
+	}
+	for _, path := range []string{unowned, shared} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("unowned path %s was changed: %v", path, err)
+		}
+	}
+	for _, id := range []string{"", "..", "a/b", "_shared"} {
+		if err := removeManagedSkillTreeWithEvidence(root, skillsRoot, id, fileState{}); err == nil {
+			t.Fatalf("unsafe ID %q was accepted", id)
+		}
+	}
+}
+
+func TestRemoveManagedSkillTreeRejectsChangesAfterItsSnapshot(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(string) error
+	}{
+		{name: "late file", mutate: func(tree string) error { return os.WriteFile(filepath.Join(tree, "late.md"), []byte("late"), 0o644) }},
+		{name: "modified file", mutate: func(tree string) error {
+			return os.WriteFile(filepath.Join(tree, "SKILL.md"), []byte("changed"), 0o644)
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			skillsRoot := filepath.Join(root, "skills")
+			tree := filepath.Join(skillsRoot, "retired-skill")
+			file := filepath.Join(tree, "SKILL.md")
+			writeFile(t, file, "archived")
+			before := snapshotOrFail(t, []TrackedPath{{Path: tree}})
+			if err := tt.mutate(tree); err != nil {
+				t.Fatalf("mutate: %v", err)
+			}
+			if err := removeManagedSkillTreeWithEvidence(root, skillsRoot, "retired-skill", before.states[tree]); err == nil {
+				t.Fatal("deletion succeeded after the archived tree changed")
+			}
+			if _, err := os.Stat(file); err != nil {
+				t.Fatalf("tree was mutated on rejected deletion: %v", err)
+			}
+		})
+	}
+}
+
+func TestRemoveManagedSkillTreeRejectsASymlinkedSkillsAncestor(t *testing.T) {
+	agentRoot := t.TempDir()
+	skillsRoot := filepath.Join(agentRoot, ".claude", "skills")
+	externalRoot := t.TempDir()
+	externalSkill := filepath.Join(externalRoot, "skills", "retired-skill", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(externalSkill), 0o755); err != nil {
+		t.Fatalf("mkdir external skill: %v", err)
+	}
+	if err := os.WriteFile(externalSkill, []byte("unowned"), 0o644); err != nil {
+		t.Fatalf("write external skill: %v", err)
+	}
+	if err := os.Symlink(externalRoot, filepath.Join(agentRoot, ".claude")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if err := removeManagedSkillTreeWithEvidence(agentRoot, skillsRoot, "retired-skill", fileState{}); err == nil {
+		t.Fatal("a symlinked skills ancestor was accepted for deletion")
+	}
+	if _, err := os.Stat(externalSkill); err != nil {
+		t.Fatalf("symlink target was changed: %v", err)
+	}
+}
+
+func TestRemoveManagedSkillTreeFailsClosedWhenIntermediateAncestorChangesDuringAcquisition(t *testing.T) {
+	root := t.TempDir()
+	agentRoot := filepath.Join(root, "agent")
+	skillsRoot := filepath.Join(agentRoot, ".claude", "skills")
+	managed := filepath.Join(skillsRoot, "retired-skill", "SKILL.md")
+	external := filepath.Join(agentRoot, "unowned-claude", "skills", "retired-skill", "SKILL.md")
+	for _, path := range []string{managed, external} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+	}
+	if err := os.WriteFile(managed, []byte("managed"), 0o644); err != nil {
+		t.Fatalf("write managed file: %v", err)
+	}
+	const victim = "unowned intermediate ancestor"
+	if err := os.WriteFile(external, []byte(victim), 0o644); err != nil {
+		t.Fatalf("write external file: %v", err)
+	}
+
+	err := removeManagedSkillTreeAfterAncestorLstat(agentRoot, skillsRoot, "retired-skill", func(component string) error {
+		if component != ".claude" {
+			return nil
+		}
+		if err := os.Rename(filepath.Join(agentRoot, ".claude"), filepath.Join(agentRoot, "parked-claude")); err != nil {
+			return err
+		}
+		if err := os.Symlink("unowned-claude", filepath.Join(agentRoot, ".claude")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		return nil
+	})
+	if err == nil {
+		t.Fatal("deletion succeeded after an intermediate ancestor changed during acquisition")
+	}
+	if got, readErr := os.ReadFile(external); readErr != nil || string(got) != victim {
+		t.Fatalf("external intermediate-ancestor victim = %q, %v; want %q", got, readErr, victim)
+	}
+}
+
+func TestRemoveManagedSkillTreeFailsClosedWhenSkillsRootChangesDuringAcquisition(t *testing.T) {
+	root := t.TempDir()
+	skillsRoot := filepath.Join(root, "skills")
+	managed := filepath.Join(skillsRoot, "retired-skill", "SKILL.md")
+	external := filepath.Join(root, "unowned-skills", "retired-skill", "SKILL.md")
+	for _, path := range []string{managed, external} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+	}
+	if err := os.WriteFile(managed, []byte("managed"), 0o644); err != nil {
+		t.Fatalf("write managed file: %v", err)
+	}
+	const victim = "unowned skill root"
+	if err := os.WriteFile(external, []byte(victim), 0o644); err != nil {
+		t.Fatalf("write external file: %v", err)
+	}
+
+	err := removeManagedSkillTreeAfterAcquisition(root, skillsRoot, "retired-skill", func() error {
+		if err := os.Rename(skillsRoot, filepath.Join(root, "parked-skills")); err != nil {
+			return err
+		}
+		if err := os.Symlink("unowned-skills", skillsRoot); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		return nil
+	}, nil)
+	if err == nil {
+		t.Fatal("deletion succeeded after the skills root changed during acquisition")
+	}
+	if got, readErr := os.ReadFile(external); readErr != nil || string(got) != victim {
+		t.Fatalf("external skills-root victim = %q, %v; want %q", got, readErr, victim)
+	}
+}
+
+func TestRemoveManagedSkillTreeFailsClosedWhenSkillEntryChangesDuringAcquisition(t *testing.T) {
+	root := t.TempDir()
+	skillsRoot := filepath.Join(root, "skills")
+	managedDir := filepath.Join(skillsRoot, "retired-skill")
+	managed := filepath.Join(managedDir, "SKILL.md")
+	external := filepath.Join(skillsRoot, "unowned-skill", "SKILL.md")
+	for _, path := range []string{managed, external} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+	}
+	if err := os.WriteFile(managed, []byte("managed"), 0o644); err != nil {
+		t.Fatalf("write managed file: %v", err)
+	}
+	const victim = "unowned skill entry"
+	if err := os.WriteFile(external, []byte(victim), 0o644); err != nil {
+		t.Fatalf("write external file: %v", err)
+	}
+
+	err := removeManagedSkillTreeAfterAcquisition(root, skillsRoot, "retired-skill", nil, func() error {
+		if err := os.Rename(managedDir, filepath.Join(skillsRoot, "parked-retired-skill")); err != nil {
+			return err
+		}
+		if err := os.Symlink("unowned-skill", managedDir); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		return nil
+	})
+	if err == nil {
+		t.Fatal("deletion succeeded after the skill entry changed during acquisition")
+	}
+	if got, readErr := os.ReadFile(external); readErr != nil || string(got) != victim {
+		t.Fatalf("external skill-entry victim = %q, %v; want %q", got, readErr, victim)
+	}
+}
+
+func TestRemoveManagedSkillTreeFailsClosedWhenAnInventoriedDirectoryBecomesAnExternalSymlink(t *testing.T) {
+	root := t.TempDir()
+	skillsRoot := filepath.Join(root, "skills")
+	skillDir := filepath.Join(skillsRoot, "retired-skill")
+	inventoriedDir := filepath.Join(skillDir, "references")
+	inventoriedFile := filepath.Join(inventoriedDir, "notes.md")
+	externalFile := filepath.Join(skillsRoot, "unowned", "notes.md")
+	parkedDir := filepath.Join(skillsRoot, "parked-references")
+	for _, path := range []string{inventoriedFile, externalFile} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+	}
+	if err := os.WriteFile(inventoriedFile, []byte("managed"), 0o644); err != nil {
+		t.Fatalf("write inventoried file: %v", err)
+	}
+	const victim = "unowned victim"
+	if err := os.WriteFile(externalFile, []byte(victim), 0o644); err != nil {
+		t.Fatalf("write external file: %v", err)
+	}
+
+	err := removeManagedSkillTreeAfterInventory(root, skillsRoot, "retired-skill", func() error {
+		if err := os.Rename(inventoriedDir, parkedDir); err != nil {
+			return err
+		}
+		return os.Symlink(filepath.Join("..", "unowned"), inventoriedDir)
+	})
+	if err == nil {
+		t.Fatal("deletion succeeded after an inventoried directory became an external symlink")
+	}
+	got, readErr := os.ReadFile(externalFile)
+	if readErr != nil {
+		t.Fatalf("read external victim: %v", readErr)
+	}
+	if string(got) != victim {
+		t.Fatalf("external victim = %q, want %q", got, victim)
+	}
+}
+
+func TestRemoveManagedSkillTreeDoesNotSweepAChildAddedAfterInventory(t *testing.T) {
+	root := t.TempDir()
+	skillsRoot := filepath.Join(root, "skills")
+	skillDir := filepath.Join(skillsRoot, "retired-skill")
+	managed := filepath.Join(skillDir, "SKILL.md")
+	late := filepath.Join(skillDir, "late-arrival.md")
+	if err := os.MkdirAll(filepath.Dir(managed), 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	if err := os.WriteFile(managed, []byte("managed"), 0o644); err != nil {
+		t.Fatalf("write managed file: %v", err)
+	}
+
+	err := removeManagedSkillTreeAfterInventory(root, skillsRoot, "retired-skill", func() error {
+		return os.WriteFile(late, []byte("late"), 0o644)
+	})
+	if err == nil {
+		t.Fatal("deletion swept a child introduced after inventory")
+	}
+	if got, readErr := os.ReadFile(late); readErr != nil || string(got) != "late" {
+		t.Fatalf("late child = %q, %v; want untouched late child", got, readErr)
+	}
+	if _, statErr := os.Stat(skillDir); statErr != nil {
+		t.Fatalf("skill directory was removed despite late child: %v", statErr)
+	}
+}
+
 func TestRun_ArchivesTrackedPathsAsTheyWereBeforeTheFirstMutation(t *testing.T) {
 	home := t.TempDir()
 	plan, tracked := planWithTrackedFile(t, home, "hand-written notes")

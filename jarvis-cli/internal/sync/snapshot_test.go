@@ -249,6 +249,28 @@ func TestBuildPlan_TrackedPathsCoverEveryManagedArtifactWithItsAssertedMode(t *t
 	assertTrackedPaths(t, in, want)
 }
 
+func TestSnapshotMatchesExplicitDesiredAbsenceForManagedSkillTree(t *testing.T) {
+	root := t.TempDir()
+	tree := filepath.Join(root, "skills", "retired-skill")
+	file := filepath.Join(tree, "SKILL.md")
+	writeFile(t, file, "retired")
+	tracked := []TrackedPath{{Path: tree, DesiredAbsent: true}}
+	before := snapshotOrFail(t, tracked)
+	if before.Matches(tracked) {
+		t.Fatal("existing retired skill tree converged to desired absence")
+	}
+	if err := removeManagedSkillTreeWithEvidence(root, filepath.Dir(tree), "retired-skill", before.states[tree]); err != nil {
+		t.Fatalf("remove tree: %v", err)
+	}
+	after := snapshotOrFail(t, tracked)
+	if !after.Matches(tracked) {
+		t.Fatal("absent managed skill tree did not converge")
+	}
+	if changed := Diff(before, after); !reflect.DeepEqual(changed, []string{tree}) {
+		t.Fatalf("Diff = %v, want removed tree", changed)
+	}
+}
+
 func TestSnapshotMatchesManagedJSONFragmentsOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	tracked := []TrackedPath{{Path: path, Mode: ManagedFileMode, Semantic: &ManagedJSON{Fragments: map[string]any{"statusLine": map[string]any{"type": "command", "command": "run"}}}}}
@@ -297,6 +319,40 @@ func TestSnapshot_MatchesRefusesAnEmptyPathListSoTheRunStillApplies(t *testing.T
 	}
 	if result.Report.Converged() {
 		t.Fatal("a plan tracking nothing converged nothing; it must not claim convergence")
+	}
+}
+
+// Desired absence authorizes removal only; it never authorizes a mode mutation
+// of a file deletion rejected earlier in the replay. Run reaches EnforceModes even
+// after an apply failure, so this direct boundary protects that path too.
+func TestEnforceModes_DoesNotMutateARejectedDesiredAbsentSkill(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose POSIX modes needed to detect an unwanted chmod")
+	}
+
+	path := filepath.Join(t.TempDir(), "skills", "retired-skill")
+	const content = "unowned regular file"
+	writeFile(t, path, content)
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatalf("chmod fixture: %v", err)
+	}
+
+	if err := EnforceModes([]TrackedPath{{Path: path, DesiredAbsent: true}}); err != nil {
+		t.Fatalf("EnforceModes: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read rejected file: %v", err)
+	}
+	if string(got) != content {
+		t.Fatalf("rejected desired-absent file content = %q, want %q", got, content)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("lstat rejected file: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("rejected desired-absent file mode = %04o, want 0600", info.Mode().Perm())
 	}
 }
 

@@ -211,7 +211,7 @@ func TestSyncReport_IsTheWholeObservabilityContract(t *testing.T) {
 	}
 }
 
-func TestSyncReport_PostVerificationPersistenceFailureReportsNoZohoAddition(t *testing.T) {
+func TestSyncReport_PostVerificationPersistenceFailureReportsNoSkillAddition(t *testing.T) {
 	manifest := &state.State{SchemaVersion: 1, Persona: "neutral"}
 	result := sync.RunResult{
 		Verified: true,
@@ -223,8 +223,8 @@ func TestSyncReport_PostVerificationPersistenceFailureReportsNoZohoAddition(t *t
 			t.Errorf("report is missing %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "zoho skill added to desired state:") {
-		t.Fatalf("persistence failure must not report a successful Zoho addition:\n%s", out)
+	if strings.Contains(out, "skill added to desired state:") {
+		t.Fatalf("persistence failure must not report a successful skill addition:\n%s", out)
 	}
 }
 
@@ -317,6 +317,63 @@ func TestReplayInput_ResolvesEveryDetectedAgentThroughTheSharedIdentifierRule(t 
 	// refuse it instead of replaying into nothing.
 	if found, ok := input.Resolve("no-such-agent"); ok {
 		t.Fatalf("Resolve(no-such-agent) = (%v, true), want a miss", found.Name())
+	}
+}
+
+func TestReplayInput_ResolvesCatalogRemovalsAndPreservesInteractiveSelection(t *testing.T) {
+	sync.RetiredSkillIDs["retired-skill"] = true
+	t.Cleanup(func() { delete(sync.RetiredSkillIDs, "retired-skill") })
+
+	input, _, err := replayInput(t.TempDir(), &state.State{
+		SchemaVersion: 1,
+		Persona:       "neutra",
+		Skills:        []string{"retired-skill", "go-testing"},
+	})
+	if err != nil {
+		t.Fatalf("replayInput: %v", err)
+	}
+	if len(input.DeletedSkillIDs) != 1 || input.DeletedSkillIDs[0] != "retired-skill" {
+		t.Fatalf("deleted skill IDs = %v, want only the manifest-owned catalog removal", input.DeletedSkillIDs)
+	}
+	resolved := make(map[string]bool, len(input.State.Skills))
+	for _, id := range input.State.Skills {
+		resolved[id] = true
+	}
+	if !resolved["sdd-explore"] {
+		t.Fatalf("catalog-only non-interactive skill was not resolved for installation: %v", input.State.Skills)
+	}
+	if resolved["retired-skill"] || !resolved["go-testing"] {
+		t.Fatalf("resolved skills did not apply manifest deletion/selection lifecycle: %v", input.State.Skills)
+	}
+	for _, id := range []string{"phpunit-testing", "laravel-architecture"} {
+		if resolved[id] {
+			t.Fatalf("unselected interactive skill %q was resolved: %v", id, input.State.Skills)
+		}
+	}
+}
+
+// A manifest may have been written by a newer jarvis. A skill this build's
+// catalog does not offer and did not retire is therefore neither rendered nor
+// deleted: it is retained so the post-verification write keeps it recorded.
+func TestReplayInput_RetainsManifestSkillsUnknownToThisBuild(t *testing.T) {
+	input, _, err := replayInput(t.TempDir(), &state.State{
+		SchemaVersion: 1,
+		Persona:       "neutra",
+		Skills:        []string{"future-skill", "go-testing"},
+	})
+	if err != nil {
+		t.Fatalf("replayInput: %v", err)
+	}
+	if len(input.DeletedSkillIDs) != 0 {
+		t.Fatalf("deleted skill IDs = %v, want none for a skill this build never retired", input.DeletedSkillIDs)
+	}
+	if len(input.RetainedSkillIDs) != 1 || input.RetainedSkillIDs[0] != "future-skill" {
+		t.Fatalf("retained skill IDs = %v, want only the unknown manifest skill", input.RetainedSkillIDs)
+	}
+	for _, id := range input.State.Skills {
+		if id == "future-skill" {
+			t.Fatalf("an unknown skill must not be rendered: %v", input.State.Skills)
+		}
 	}
 }
 

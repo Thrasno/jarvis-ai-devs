@@ -26,6 +26,21 @@ of `config.yaml`'s schema version.
 - THEN it contains configured agents, selected skills, per-phase model
   assignments, persona, setup scope, and statusline consent
 
+### Requirement: Replay Persona Source Compatibility
+
+The manifest MUST retain persona source when it is known. Replay MUST resolve a
+recorded user persona from the user profile even if its slug collides with a
+builtin, and MUST resolve a recorded builtin without user-profile shadowing.
+For legacy manifests with no persona value, replay MUST default to the
+`argentino` builtin.
+
+#### Scenario: User profile wins for an explicitly recorded user source
+
+- GIVEN a builtin and a user profile with the same slug
+- AND the manifest records that slug with user source
+- WHEN replay resolves the persona
+- THEN it uses the user profile
+
 ### Requirement: Statusline Tri-State Consent
 
 The system MUST persist statusline consent as a tri-state: not-decided,
@@ -82,6 +97,22 @@ the write completes, and it MUST NOT leave fields duplicated in both stores.
 - WHEN the command exits
 - THEN no migration-success notice is reported
 - AND `config.yaml` remains at its pre-migration schema version
+
+### Requirement: Verified Resolved Skills Persistence
+
+The manifest MUST retain its original skill IDs until replay has converged and
+verified. After successful verification, the state-lock-protected replay write
+MUST persist the resolved skill lifecycle set, including automatic catalog
+additions and excluding successfully removed skills this build explicitly
+retired. A failed
+or unverifiable replay MUST leave the previous skill list intact.
+
+#### Scenario: Failed replay preserves skill deletion authority
+
+- GIVEN a manifest skill this build retired and removed from the catalog
+- WHEN replay fails before verification
+- THEN the manifest still records that skill
+- AND a later replay can use that membership as deletion authority
 
 ### Requirement: Store Disjointness
 

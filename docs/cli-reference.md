@@ -17,7 +17,7 @@ jarvis timeline --project <project>
 ## Command groups
 
 | Command | Public? | Purpose | Example |
-|---------|---------|---------|---------|
+| --------- | --------- | --------- | --------- |
 | `jarvis` | Yes | Launch setup or reconfiguration wizard. | `jarvis` |
 | `jarvis --no-tui` | Yes | Use non-TUI setup prompts. | `jarvis --no-tui` |
 | `jarvis verify` | Yes | Verify managed runtime integrity. | `jarvis verify --provider all` |
@@ -55,13 +55,15 @@ jarvis sync
 ```
 
 | Property | Behavior |
-|----------|----------|
+| ---------- | ---------- |
 | Flags | None. `jarvis sync --dry-run` and any other flag are usage errors, and nothing is written. |
 | Prompts | None. The run is non-interactive from start to finish. |
 | Already current | Zero writes, and the report says `this machine is already current; nothing was changed.` |
 | Backup | A snapshot lands in `~/.jarvis/backups/` before the first write. A converged run takes none, because it mutates nothing. |
 | Output | Always reports the changed paths, each agent's outcome, and the verification result. |
 | Exit code | Non-zero when any configured agent failed to converge, or when verification failed. |
+| Skills | Catalog and manifest identity decide lifecycle: recorded catalog skills update, catalog-only non-interactive skills install, unselected interactive skills remain absent, recorded skills this build explicitly retired are safely removed after snapshotting their managed tree, and recorded skills unknown to this build are kept. User skills and `_shared` are never removed. |
+| Persona | Replay honors the recorded builtin/user source. Legacy manifests without a persona replay the `argentino` builtin. |
 
 There is no `--dry-run` on purpose. Replay is the whole command, and describing changes without making them would require a second path through the applier that could drift from the real one.
 

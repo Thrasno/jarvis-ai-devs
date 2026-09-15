@@ -13,6 +13,11 @@ package sync
 import (
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/lifecycle"
 )
@@ -20,6 +25,299 @@ import (
 // BackupSourceOperation labels every snapshot replay takes, so a recovering user
 // can tell a sync archive from a reconcile or restore one in ~/.jarvis/backups.
 const BackupSourceOperation = "sync"
+
+// validSkillID keeps deletion identity-based and path-safe. A manifest can prove
+// ownership, but it never grants a path traversal capability.
+func validSkillID(id string) bool {
+	if id == "" || id == "." || id == ".." || id == "_shared" || filepath.IsAbs(id) || strings.ContainsAny(id, `/\\`) {
+		return false
+	}
+	for i, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || (r == '-' && i > 0) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// managedSkillDeletionHooks provides deterministic test seams around the two
+// pathname-to-handle acquisitions and the held-tree inventory. Production passes
+// no hooks.
+type managedSkillDeletionHooks struct {
+	afterAncestorLstat   func(component string) error
+	afterSkillsRootLstat func() error
+	afterSkillLstat      func() error
+	afterInventory       func() error
+}
+
+// removeManagedSkillTreeWithEvidence removes one manifest-owned tree only after
+// it matches the pre-apply evidence passed by Runner.
+func removeManagedSkillTreeWithEvidence(agentRoot, skillsRoot, id string, evidence fileState) error {
+	return removeManagedSkillTreeWithHooks(agentRoot, skillsRoot, id, evidence, managedSkillDeletionHooks{})
+}
+
+func removeManagedSkillTreeWithCurrent(agentRoot, skillsRoot, id string, hooks managedSkillDeletionHooks) error {
+	evidence, err := readFileState(TrackedPath{Path: filepath.Join(skillsRoot, id)})
+	if err != nil {
+		return err
+	}
+	return removeManagedSkillTreeWithHooks(agentRoot, skillsRoot, id, evidence, hooks)
+}
+
+func removeManagedSkillTreeAfterInventory(agentRoot, skillsRoot, id string, afterInventory func() error) error {
+	return removeManagedSkillTreeWithCurrent(agentRoot, skillsRoot, id, managedSkillDeletionHooks{afterInventory: afterInventory})
+}
+
+func removeManagedSkillTreeAfterAcquisition(agentRoot, skillsRoot, id string, afterSkillsRootLstat, afterSkillLstat func() error) error {
+	return removeManagedSkillTreeWithCurrent(agentRoot, skillsRoot, id, managedSkillDeletionHooks{afterSkillsRootLstat: afterSkillsRootLstat, afterSkillLstat: afterSkillLstat})
+}
+
+func removeManagedSkillTreeAfterAncestorLstat(agentRoot, skillsRoot, id string, afterAncestorLstat func(component string) error) error {
+	return removeManagedSkillTreeWithCurrent(agentRoot, skillsRoot, id, managedSkillDeletionHooks{afterAncestorLstat: afterAncestorLstat})
+}
+
+// removeManagedSkillTreeWithHooks binds each pathname validation to the opened
+// handle with os.SameFile before inventory. A held os.Root then keeps every removal
+// beneath the validated skill directory even if a descendant is replaced after the
+// inventory. It cannot distinguish a same-user replacement of an inventoried
+// regular entry by another regular entry at the same relative name.
+func removeManagedSkillTreeWithHooks(agentRoot, skillsRoot, id string, evidence fileState, hooks managedSkillDeletionHooks) error {
+	if !validSkillID(id) {
+		return fmt.Errorf("unsafe managed skill ID %q", id)
+	}
+	skillsDirectory, err := openHeldSkillsDirectory(agentRoot, skillsRoot, hooks)
+	if err != nil {
+		return err
+	}
+	if skillsDirectory == nil {
+		return nil
+	}
+	defer skillsDirectory.Close()
+
+	skillInfo, err := skillsDirectory.Lstat(id)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !skillInfo.IsDir() || skillInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("managed skill root %s is not a directory", id)
+	}
+	if hooks.afterSkillLstat != nil {
+		if err := hooks.afterSkillLstat(); err != nil {
+			return err
+		}
+	}
+
+	skillRoot, err := skillsDirectory.OpenRoot(id)
+	if err != nil {
+		return err
+	}
+	defer skillRoot.Close()
+	openedSkillInfo, err := skillRoot.Stat(".")
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(skillInfo, openedSkillInfo) {
+		return fmt.Errorf("managed skill root %s changed during acquisition", id)
+	}
+
+	entries := make([]string, 0)
+	err = fs.WalkDir(skillRoot.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if name == "." {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("managed skill tree %s contains a symlink", name)
+		}
+		if entry.IsDir() || entry.Type().IsRegular() {
+			entries = append(entries, name)
+			return nil
+		}
+		return fmt.Errorf("managed skill tree %s contains an unsafe entry", name)
+	})
+	if err != nil {
+		return err
+	}
+	if hooks.afterInventory != nil {
+		if err := hooks.afterInventory(); err != nil {
+			return err
+		}
+	}
+	current, err := heldSkillEvidence(skillRoot)
+	if err != nil {
+		return err
+	}
+	if !evidence.exists || evidence.mode != current.mode || evidence.digest != current.digest {
+		return fmt.Errorf("managed skill root %s changed after backup", id)
+	}
+
+	sort.Slice(entries, func(i, j int) bool { return len(entries[i]) > len(entries[j]) })
+	for _, name := range entries {
+		if err := skillRoot.Remove(name); err != nil {
+			return fmt.Errorf("remove inventoried managed skill entry %s: %w", name, err)
+		}
+	}
+	remaining, err := fs.ReadDir(skillRoot.FS(), ".")
+	if err != nil {
+		return err
+	}
+	if len(remaining) != 0 {
+		return fmt.Errorf("managed skill root %s is not empty after inventory removal", id)
+	}
+	if err := skillRoot.Close(); err != nil {
+		return err
+	}
+	if err := skillsDirectory.Remove(id); err != nil {
+		return fmt.Errorf("remove emptied managed skill root %s: %w", id, err)
+	}
+	return nil
+}
+
+func heldSkillEvidence(root *os.Root) (fileState, error) {
+	info, err := root.Stat(".")
+	if err != nil {
+		return fileState{}, err
+	}
+	entries := []string{}
+	err = fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil || name == "." {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 || (!entry.IsDir() && !entry.Type().IsRegular()) {
+			return fmt.Errorf("managed skill tree %s contains an unsafe entry", name)
+		}
+		entryInfo, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		prefix := name + "\x00" + fmt.Sprintf("%#o", entryInfo.Mode()) + "\x00"
+		if entry.IsDir() {
+			entries = append(entries, "d\x00"+prefix)
+			return nil
+		}
+		data, err := root.ReadFile(name)
+		if err != nil {
+			return err
+		}
+		entries = append(entries, "f\x00"+prefix+digestOf(data))
+		return nil
+	})
+	if err != nil {
+		return fileState{}, err
+	}
+	sort.Strings(entries)
+	return fileState{exists: true, digest: digestOf([]byte(strings.Join(entries, "\n"))), mode: info.Mode()}, nil
+}
+
+// openHeldSkillsDirectory anchors traversal at the trusted agent root. Every
+// component is validated with a no-follow Lstat and then identity-bound to its
+// opened child root, so a pathname replacement cannot redirect later traversal.
+func openHeldSkillsDirectory(agentRoot, skillsRoot string, hooks managedSkillDeletionHooks) (*os.Root, error) {
+	components, err := managedSkillsRootComponents(agentRoot, skillsRoot)
+	if err != nil {
+		return nil, err
+	}
+	agentInfo, err := os.Lstat(agentRoot)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !agentInfo.IsDir() || agentInfo.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("trusted agent root %s is not a directory", agentRoot)
+	}
+	current, err := os.OpenRoot(agentRoot)
+	if err != nil {
+		return nil, err
+	}
+	openedAgentInfo, err := current.Stat(".")
+	if err != nil {
+		_ = current.Close()
+		return nil, err
+	}
+	if !os.SameFile(agentInfo, openedAgentInfo) {
+		_ = current.Close()
+		return nil, fmt.Errorf("trusted agent root %s changed during acquisition", agentRoot)
+	}
+
+	for index, component := range components {
+		childInfo, err := current.Lstat(component)
+		if os.IsNotExist(err) {
+			_ = current.Close()
+			return nil, nil
+		}
+		if err != nil {
+			_ = current.Close()
+			return nil, err
+		}
+		if !childInfo.IsDir() || childInfo.Mode()&os.ModeSymlink != 0 {
+			_ = current.Close()
+			return nil, fmt.Errorf("managed skills ancestor %s is not a directory", component)
+		}
+		if hooks.afterAncestorLstat != nil {
+			if err := hooks.afterAncestorLstat(component); err != nil {
+				_ = current.Close()
+				return nil, err
+			}
+		}
+		if index == len(components)-1 && hooks.afterSkillsRootLstat != nil {
+			if err := hooks.afterSkillsRootLstat(); err != nil {
+				_ = current.Close()
+				return nil, err
+			}
+		}
+
+		next, err := current.OpenRoot(component)
+		if err != nil {
+			_ = current.Close()
+			return nil, err
+		}
+		openedChildInfo, err := next.Stat(".")
+		if err != nil {
+			_ = next.Close()
+			_ = current.Close()
+			return nil, err
+		}
+		if !os.SameFile(childInfo, openedChildInfo) {
+			_ = next.Close()
+			_ = current.Close()
+			return nil, fmt.Errorf("managed skills ancestor %s changed during acquisition", component)
+		}
+		if err := current.Close(); err != nil {
+			_ = next.Close()
+			return nil, err
+		}
+		current = next
+	}
+	return current, nil
+}
+
+// managedSkillsRootComponents rejects a skills root outside the trusted agent
+// root before any handle-relative traversal begins.
+func managedSkillsRootComponents(agentRoot, skillsRoot string) ([]string, error) {
+	root := filepath.Clean(agentRoot)
+	rel, err := filepath.Rel(root, filepath.Clean(skillsRoot))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("managed skills root %s escapes trusted agent root %s", skillsRoot, agentRoot)
+	}
+	if rel == "." {
+		return nil, nil
+	}
+	components := strings.Split(rel, string(filepath.Separator))
+	for _, component := range components {
+		if component == "" || component == "." || component == ".." {
+			return nil, fmt.Errorf("managed skills root %s has an invalid relative component", skillsRoot)
+		}
+	}
+	return components, nil
+}
 
 // ErrNoBackup refuses a replay pass that was handed no way to take a backup.
 // Failing closed matters more than convenience here: a nil seam would otherwise
@@ -113,6 +411,9 @@ func Run(in RunInput) (RunResult, error) {
 	manifest, err := in.Backup(BackupSourceOperation, BackupTargets(in.Plan))
 	if err != nil {
 		return RunResult{}, fmt.Errorf("back up %d tracked paths before replay: %w", len(in.Plan.Tracked), err)
+	}
+	if runner, ok := in.Apply.Runner.(interface{ SetPreApplyEvidence(Plan, Snapshot) }); ok {
+		runner.SetPreApplyEvidence(in.Plan, before)
 	}
 	result := RunResult{Backup: manifest, Report: Apply(in.Apply)}
 	// Mode assertion is part of the mutation pass and runs before the closing

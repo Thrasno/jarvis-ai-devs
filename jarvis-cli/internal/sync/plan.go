@@ -138,6 +138,17 @@ func trackedPaths(in PlanInput, artifacts []PlannedArtifact, ownerByLocation map
 				Desired:  digestOf(file.Bytes),
 			})
 		}
+		for _, id := range in.DeletedSkillIDs {
+			if !validSkillID(id) {
+				return nil, fmt.Errorf("deleted skill ID %q is unsafe", id)
+			}
+			tracked = append(tracked, TrackedPath{
+				Agent:         configured.ID,
+				Identity:      filepath.ToSlash(filepath.Join(filepath.Dir(location), skillsDirName, id)),
+				Path:          filepath.Join(dir, skillsDirName, id),
+				DesiredAbsent: true,
+			})
+		}
 		if configured.ID == "claude" {
 			settingsPath := filepath.Join(dir, "settings.json")
 			if configured.ConfigPath != "" {
@@ -257,6 +268,10 @@ type PlanInput struct {
 	SkillsFS fs.FS
 	HooksFS  fs.FS
 	Profile  *persona.Profile
+	// DeletedSkillIDs are manifest-owned skills removed from the current catalog.
+	// They are tracked as desired absence so backup, diff and verification cover
+	// their safe removal rather than silently forgetting their trees.
+	DeletedSkillIDs []string
 }
 
 // BuildPlan renders the desired targets recorded by the last installation.
