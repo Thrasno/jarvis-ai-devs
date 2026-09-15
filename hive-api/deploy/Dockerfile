@@ -18,7 +18,7 @@ RUN npm run build
 # Stage 2: Hive API builder
 # ============================================================
 # Use the official Go Alpine image to produce a static binary for the target platform.
-FROM golang:1.26-alpine AS api-builder
+FROM golang:1.26.6-alpine AS api-builder
 
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
