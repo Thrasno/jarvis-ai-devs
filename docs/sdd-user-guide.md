@@ -14,7 +14,7 @@ Spec-Driven Development (SDD) in Jarvis is a guided workflow for moving from int
 ## User-level flow
 
 | Phase | Purpose | Expected output |
-|-------|---------|-----------------|
+| ------- | --------- | ----------------- |
 | Init | Detect stack, testing commands, and workflow context. | Project SDD/testing capability context. |
 | Explore | Clarify the problem and constraints. | Exploration notes. |
 | Proposal | Decide intent, scope, and approach. | Proposal artifact. |
@@ -24,6 +24,8 @@ Spec-Driven Development (SDD) in Jarvis is a guided workflow for moving from int
 | Apply | Implement assigned tasks. | Code/docs changes plus apply progress. |
 | Verify | Independently prove the work matches spec/design/tasks. | Verification report with evidence. |
 | Archive | Consolidate completed change knowledge. | Archived SDD record. |
+
+The nine canonical lifecycle phases are `sdd-init`, `sdd-explore`, `sdd-propose`, `sdd-spec`, `sdd-design`, `sdd-tasks`, `sdd-apply`, `sdd-verify`, and `sdd-archive`; Jarvis installs them as core workflow capability. `sdd-onboard` remains automatic and non-interactive guidance, but is not a lifecycle phase or core requirement.
 
 ## Activation and preflight policy
 

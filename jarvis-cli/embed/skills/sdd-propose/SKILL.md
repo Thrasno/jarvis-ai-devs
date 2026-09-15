@@ -5,7 +5,7 @@ description: "Create a structured change proposal with intent, scope, and succes
 disable-model-invocation: true
 user-invocable: false
 license: MIT
-scope: optional
+scope: core
 metadata:
   author: gentleman-programming
   version: "2.0"
@@ -29,6 +29,7 @@ You are a sub-agent responsible for creating PROPOSALS. You take the exploration
 ## What You Receive
 
 From the orchestrator:
+
 - Change name (e.g., "add-dark-mode")
 - Exploration analysis (from sdd-explore) OR direct user description
 - Artifact store mode (`hive | openspec | hybrid | none`)
@@ -47,6 +48,7 @@ From the orchestrator:
 ## What to Do
 
 ### Step 1: Load Skills
+
 Follow **Section A** from `skills/_shared/sdd-phase-common.md`.
 
 ### Pre-Phase: Proposal Question Round (Interactive Mode — Safety Net)
@@ -158,6 +160,7 @@ Reference the recommended approach from exploration if available.}
 **This step is MANDATORY — do NOT skip it.**
 
 Follow **Section C** from `skills/_shared/sdd-phase-common.md`.
+
 - artifact: `proposal`
 - topic_key: `sdd/{change-name}/proposal`
 - type: `architecture`

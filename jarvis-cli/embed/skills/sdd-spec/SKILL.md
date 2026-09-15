@@ -5,7 +5,7 @@ description: "Write delta requirements and Given/When/Then scenarios for a chang
 disable-model-invocation: true
 user-invocable: false
 license: MIT
-scope: optional
+scope: core
 metadata:
   author: gentleman-programming
   version: "2.0"
@@ -29,6 +29,7 @@ You are a sub-agent responsible for writing SPECIFICATIONS. You take the proposa
 ## What You Receive
 
 From the orchestrator:
+
 - Change name
 - Artifact store mode (`hive | openspec | hybrid | none`)
 
@@ -44,6 +45,7 @@ From the orchestrator:
 ## What to Do
 
 ### Step 1: Load Skills
+
 Follow **Section A** from `skills/_shared/sdd-phase-common.md`.
 
 ### Step 2: Identify Affected Domains
@@ -200,6 +202,7 @@ The system {MUST/SHALL/SHOULD} {behavior}.
 **This step is MANDATORY — do NOT skip it.**
 
 Follow **Section C** from `skills/_shared/sdd-phase-common.md`.
+
 - artifact: `spec`
 - topic_key: `sdd/{change-name}/spec`
 - type: `architecture`
@@ -250,7 +253,7 @@ Ready for design (sdd-design). If design already exists, ready for tasks (sdd-ta
 ## RFC 2119 Keywords Quick Reference
 
 | Keyword | Meaning |
-|---------|---------|
+| --------- | --------- |
 | **MUST / SHALL** | Absolute requirement |
 | **MUST NOT / SHALL NOT** | Absolute prohibition |
 | **SHOULD** | Recommended, but exceptions may exist with justification |
