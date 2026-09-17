@@ -5,6 +5,7 @@ Evidence snapshot: 2026-09-01. This skill is derived from approved issue #608 an
 - Creator integration-task allowlist: <https://www.zoho.com/deluge/help/creator-tasks.html>
 - Native insert: <https://www.zoho.com/deluge/help/data-access/add-record.html>
 - Native fetch: <https://www.zoho.com/deluge/help/fetch-records/fetch-collection-records.html>
+- Native for each record: <https://www.zoho.com/deluge/help/data-access/for-each-record.html>
 - Native update: <https://www.zoho.com/deluge/help/data-access/update-records.html>
 - Native delete: <https://www.zoho.com/deluge/help/data-access/delete-records.html>
 - API v2 OpenAPI index: <https://www.zoho.com/creator/help/api/v2/openapi-specification.html>
