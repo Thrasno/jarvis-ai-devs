@@ -10,6 +10,8 @@ Sources:
 - `containsKey` (COLLECTION): https://www.zoho.com/deluge/help/functions/collection/containskey.html
 - `put` (KEY-VALUE): https://www.zoho.com/deluge/help/functions/map/put.html
 - `toString`: https://www.zoho.com/deluge/help/functions/common/tostring.html
+- `for each` element: https://www.zoho.com/deluge/help/list-manipulations/for-each-element.html
+- `for each index`: https://www.zoho.com/deluge/help/list-manipulations/for-each-index.html
 
 There is no combined Map index page. Map members are documented one page at a time under `functions/map/`; confirm the individual page before relying on a member this file does not list.
 
@@ -111,6 +113,11 @@ for each entry in items
 
 ## Iteration
 
+Use only these verified documented forms:
+
+- Element iteration: `for each <element> in <iterable>` — https://www.zoho.com/deluge/help/list-manipulations/for-each-element.html
+- List-only index iteration: `for each index <index> in <list>` — https://www.zoho.com/deluge/help/list-manipulations/for-each-index.html
+
 ```deluge
 totals = Map();
 for each item in items
@@ -123,7 +130,15 @@ for each item in items
 	running = ifNull(totals.get(key), 0);
 	totals.put(key, running + 1);
 }
+
+for each index itemIndex in items
+{
+	item = items.get(itemIndex);
+	info item;
+}
 ```
+
+Bounded nested `for each` loops are valid. Application-specific limits stay outside this language core.
 
 Filter and deduplicate before iterating, not inside the loop body:
 

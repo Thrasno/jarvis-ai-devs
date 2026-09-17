@@ -47,6 +47,7 @@ Three levels, in order. Never skip a level, and never fill a gap with a guess.
 
 - **Function signatures are typed.** A definition declares a return type, a name, and typed parameters, and the body is enclosed in braces: `<returnType> <name>(<type> <param>, <type> <param>) { ... }`. `return` is legal only when a return type was declared. See https://www.zoho.com/deluge/help/misc-statements/return-statement.html
 - **Comment placement.** Never place a comment above a function definition. The comment explaining a function is brief and sits immediately below the definition. This is a hard project rule, not a documented language constraint.
+- **Iteration is fail-closed.** Fail closed: emit only verified documented iteration forms; never generate `while`, `do...while`, or C-style `for`.
 - **Guard before you chain.** Validate a value before applying text, date, or conversion functions to it.
 - **Explicit returns.** Every exit path returns, and every return on the same path has the same shape.
 - **Observability.** Every integration task call and every `invokeUrl` logs an `info` of the payload and an `info` of the response, so the response shape is observed instead of assumed.
