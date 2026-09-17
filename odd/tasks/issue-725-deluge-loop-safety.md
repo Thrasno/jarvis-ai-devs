@@ -7,7 +7,7 @@ Prevent the canonical Zoho skills from generating undocumented loop syntax while
 ## Tasks
 
 - [x] Enforce the application-neutral Deluge iteration contract with strict RED/GREEN evidence and commit the work unit.
-- [ ] Document Creator-only `for each record` applicability and effects with strict RED/GREEN evidence and commit the work unit.
+- [x] Document Creator-only `for each record` applicability and effects with strict RED/GREEN evidence and commit the work unit.
 - [ ] Run focused and repository-required verification, complete native review when offered, and record final evidence.
 
 ## Constraints
@@ -25,6 +25,8 @@ Prevent the canonical Zoho skills from generating undocumented loop syntax while
 - Task 1 commit: `5aa1cf2b` (`fix(skills): enforce documented Deluge loops`)
 - Task 1 RED: `cd jarvis-cli && go test ./internal/skills -run '^TestCatalogContract_ZohoDeluge' -count=1` failed before the canonical assets were updated.
 - Task 1 GREEN: the same focused command passed after the implementation; independent verification repeated it successfully.
-- Task 2 commit: pending
+- Task 2 commit: `0b5fe3ad` (`fix(skills): scope record iteration to Creator`)
+- Task 2 RED: `cd jarvis-cli && go test ./internal/skills -run '^TestZohoCreatorEmbeddedSkill_' -count=1` failed before Creator-owned documentation was updated.
+- Task 2 GREEN: the same focused command passed after implementation; independent verification repeated it successfully.
 - Final verification: pending
 - Native review: pending
