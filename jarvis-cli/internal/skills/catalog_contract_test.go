@@ -2568,6 +2568,66 @@ func TestCatalogContract_ZohoDelugeSkillCarriesRoutingAnchors(t *testing.T) {
 	}
 }
 
+// TestCatalogContract_ZohoDelugeIterationContractFailsClosed preserves the
+// application-neutral iteration forms verified by Zoho's Deluge documentation.
+// It checks forbidden forms only inside fenced Deluge examples, so explanatory
+// prose can name them when teaching the fail-closed policy.
+func TestCatalogContract_ZohoDelugeIterationContractFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	const skillPath = "embed/skills/zoho-deluge/SKILL.md"
+	const collectionsPath = "embed/skills/zoho-deluge/references/collections.md"
+	const conventionsPath = "embed/skills/zoho-deluge/references/conventions.md"
+
+	skill := readEmbeddedSkillAsset(t, skillPath)
+	collections := readEmbeddedSkillAsset(t, collectionsPath)
+	conventions := readEmbeddedSkillAsset(t, conventionsPath)
+
+	for _, required := range []string{
+		"Fail closed: emit only verified documented iteration forms; never generate `while`, `do...while`, or C-style `for`.",
+	} {
+		if !strings.Contains(skill, required) {
+			t.Fatalf("expected %s to contain iteration policy %q", skillPath, required)
+		}
+	}
+
+	for _, required := range []string{
+		"`for each <element> in <iterable>`",
+		"`for each index <index> in <list>`",
+		"List-only",
+		"for each item in items",
+		"for each index itemIndex in items",
+		"Bounded nested `for each` loops are valid.",
+		"Application-specific limits stay outside this language core.",
+		"https://www.zoho.com/deluge/help/list-manipulations/for-each-element.html",
+		"https://www.zoho.com/deluge/help/list-manipulations/for-each-index.html",
+	} {
+		if !strings.Contains(collections, required) {
+			t.Fatalf("expected %s to contain iteration contract %q", collectionsPath, required)
+		}
+	}
+
+	if strings.Contains(conventions, "numeric loop") {
+		t.Fatalf("%s must not use the misleading numeric loop alias", conventionsPath)
+	}
+
+	fencedDeluge := regexp.MustCompile("(?s)```deluge\\r?\\n(.*?)```").FindAllStringSubmatch(collections, -1)
+	if len(fencedDeluge) == 0 {
+		t.Fatalf("expected %s to include fenced Deluge examples", collectionsPath)
+	}
+	for _, block := range fencedDeluge {
+		for _, forbidden := range []*regexp.Regexp{
+			regexp.MustCompile(`(?m)^\s*while\s*\(`),
+			regexp.MustCompile(`(?m)^\s*do(?:\s*\{|\s*$)`),
+			regexp.MustCompile(`(?m)^\s*for\s*\(`),
+		} {
+			if forbidden.MatchString(block[1]) {
+				t.Fatalf("%s fenced Deluge example must not use undocumented iteration form %q", collectionsPath, forbidden)
+			}
+		}
+	}
+}
+
 // zohoDelugeVerifiedDocumentationURLs is the closed set of Zoho documentation
 // URLs the skill tree may cite. Every entry was requested and answered 200 on
 // 2026-08-16. A citation outside this set is treated as unverified: the skill
@@ -2588,6 +2648,8 @@ var zohoDelugeVerifiedDocumentationURLs = map[string]bool{
 	"https://www.zoho.com/deluge/help/functions/list/removeelement.html":                       true,
 	"https://www.zoho.com/deluge/help/functions/list/sort.html":                                true,
 	"https://www.zoho.com/deluge/help/functions/list/sublist.html":                             true,
+	"https://www.zoho.com/deluge/help/list-manipulations/for-each-element.html":                true,
+	"https://www.zoho.com/deluge/help/list-manipulations/for-each-index.html":                  true,
 	"https://www.zoho.com/deluge/help/functions/map/containkey.html":                           true,
 	"https://www.zoho.com/deluge/help/functions/map/put.html":                                  true,
 	"https://www.zoho.com/deluge/help/functions/text.html":                                     true,

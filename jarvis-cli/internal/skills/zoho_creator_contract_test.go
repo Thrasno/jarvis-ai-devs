@@ -139,9 +139,14 @@ func TestZohoCreatorEmbeddedSkill_CatalogsNativeStatements(t *testing.T) {
 		"delete from <form_link_name>[<criteria>]",
 		"input.<subform>.insert(<collection>)",
 		"input.<subform_link_name>.clear()",
+		"for each <record> in <form_link_name>[<criteria>] [sort by <field_link_name>] [range from <start_index> to <end_index>]",
+		"Applicable only to Zoho Creator",
+		"Criteria is optional",
+		"explicit `sort by` is required when order matters",
+		"`range from ... to ...` bounds the records iterated",
 	)
-	if got := countZohoCreatorRows(content, "| `"); got != 6 {
-		t.Fatalf("native statement catalog has %d rows; want exactly 6", got)
+	if got := countZohoCreatorRows(content, "| `"); got != 7 {
+		t.Fatalf("native statement catalog has %d rows; want exactly 7", got)
 	}
 }
 

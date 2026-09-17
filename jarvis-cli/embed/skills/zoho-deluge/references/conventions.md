@@ -72,7 +72,7 @@ Variables and functions in camelCase: `invoiceTotal`, `buildContactPayload`. Sta
 
 ## 8. Domain names, no cryptic abbreviations
 
-Name the concept, not its abbreviation. `attendeeEmail`, not `attEml`. `pendingInvoices`, not `pInv`. Single letters are acceptable only as a loop index in a numeric loop.
+Name the concept, not its abbreviation. `attendeeEmail`, not `attEml`. `pendingInvoices`, not `pInv`. Single letters are acceptable only as an index variable in a documented `for each index` loop.
 
 ## 9. Log the payload and the response
 
