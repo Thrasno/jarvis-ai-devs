@@ -2611,7 +2611,7 @@ func TestCatalogContract_ZohoDelugeIterationContractFailsClosed(t *testing.T) {
 		t.Fatalf("%s must not use the misleading numeric loop alias", conventionsPath)
 	}
 
-	fencedDeluge := regexp.MustCompile("(?s)```deluge\\n(.*?)```").FindAllStringSubmatch(collections, -1)
+	fencedDeluge := regexp.MustCompile("(?s)```deluge\\r?\\n(.*?)```").FindAllStringSubmatch(collections, -1)
 	if len(fencedDeluge) == 0 {
 		t.Fatalf("expected %s to include fenced Deluge examples", collectionsPath)
 	}
