@@ -3,12 +3,11 @@ package lifecycle
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/project"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/projectregistry"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 )
 
@@ -54,32 +53,7 @@ func ObserveProjectRegistryQuality(projectRoot string) sddruntime.ObservedRegist
 }
 
 func resolveRegistryQualityWorktreeRoot(projectRoot string) (string, bool) {
-	if strings.TrimSpace(projectRoot) == "" {
-		return "", false
-	}
-	abs, err := filepath.Abs(projectRoot)
-	if err != nil {
-		return "", false
-	}
-	info, err := os.Stat(abs)
-	if err != nil || !info.IsDir() {
-		return "", false
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel")
-	cmd.Dir = abs
-	output, err := cmd.Output()
-	if err != nil || ctx.Err() != nil {
-		return "", false
-	}
-
-	root := strings.TrimSpace(string(output))
-	if root == "" {
-		return "", false
-	}
-	root, err = filepath.Abs(root)
+	root, err := projectregistry.ResolveRoot(context.Background(), projectRoot)
 	if err != nil {
 		return "", false
 	}
