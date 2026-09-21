@@ -195,6 +195,7 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - 2026-09-21: Promoted-predecessor correction committed as `636f1eb8`. Native high-risk four-lens review approved and was acknowledged under lineage `review-ea77ae2b7efb61a7` with no findings.
 - 2026-09-21: Final integrated verification evidence committed as `a2be7d37`. Published and read back the bilingual #722 completion update: https://github.com/Thrasno/jarvis-ai-devs/issues/722#issuecomment-5763084255. The update explicitly states that the branch is not merged or released.
 - 2026-09-21: User authorized Feature Branch Chain delivery and explicit `size:exception` labels for the four already verified work-unit boundaries.
+- 2026-09-21: Approved issue #722 for delivery, created draft tracker PR #729 and child PRs #730–#733, read back exact bases/heads/labels/bodies/budgets, waited for current-head CI to pass, and completed independent chain verification.
 
 ## Verification Evidence
 
@@ -228,6 +229,18 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - Delivery branches may replay the reviewed commits onto the tracker ancestry, producing new delivery commit IDs while preserving the original reviewed branch and exact work-unit trees.
 - Every PR links approved issue #722, uses exactly one `type:*` label, includes bilingual chain context, and is read back after publication.
 
+## Delivery Evidence
+
+- Issue #722 is `OPEN` with `status:approved` and no `status:needs-review`.
+- Draft/no-merge tracker: PR #729 — https://github.com/Thrasno/jarvis-ai-devs/pull/729
+- Child 1: PR #730 — canonical project keys (`type:bug`, `size:exception`).
+- Child 2: PR #731 — workspace promotion (`type:feature`, `size:exception`).
+- Child 3: PR #732 — ingress reconciliation (`type:feature`, `size:exception`).
+- Child 4: PR #733 — archive/purge lifecycle (`type:feature`, `size:exception`).
+- Delivery trees match reviewed boundaries after excluding the shared 25-line tracker document. All PR bodies were read back with bilingual template sections, exact dependencies, diagrams, budgets, and one `type:*` label.
+- Latest CI is green on all five PRs. PR #733 had one superseded Windows timeout in an earlier run; its current-head run passed all seven jobs.
+- Independent PR-chain verification passed after adding the missing bilingual size-exception rationale to PR #733.
+
 ## Next Step
 
-Approve issue #722 for delivery, create the draft tracker, then publish and validate the four child PRs in dependency order.
+Review and integrate child PRs #730 → #731 → #732 → #733 into the draft tracker, then merge tracker #729 only after the complete chain is accepted. No merge or release is authorized by this record.
