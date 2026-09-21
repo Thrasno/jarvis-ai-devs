@@ -1266,7 +1266,7 @@ func TestExecuteProjectDelete_Success(t *testing.T) {
 
 	require.NoError(t, err)
 	require.True(t, result.Mutated)
-	require.NotEmpty(t, result.CloudHandoffNote)
+	require.Equal(t, "Project purged locally only. This does not delete Hive API data. A later sync can pull remote project data back; administer or delete the project in Hive API to prevent its return.", result.CloudHandoffNote)
 	require.Equal(t, "alpha", result.Project)
 }
 

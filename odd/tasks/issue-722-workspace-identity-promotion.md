@@ -127,13 +127,14 @@ The split produces a false data-loss signal, weakens project continuity, and can
 
 - Route: delegated direct writer.
 - Trigger evidence: coordinated DB, governance service/HTTP/client, confirmation, and tests.
-- [ ] Preserve bindings, identities, and redirects during archive.
-- [ ] Purge all local project-bearing states, identity registry rows, aliases in both directions, workspace bindings, sync state, governance records, and applicable SDD state atomically.
-- [ ] Confirm a later observation recreates the same name as a new project.
-- [ ] State clearly that local purge does not delete Hive API data.
+- [x] Preserve bindings, identities, and redirects during archive.
+- [x] Purge all local project-bearing states, identity registry rows, aliases in both directions, workspace bindings, sync state, governance records, and applicable SDD state atomically.
+- [x] Confirm a later observation recreates the same name as a new project.
+- [x] State clearly that local purge does not delete Hive API data.
 - Checks:
   - Focused DB/governance/http/client tests for archive retention, purge completeness, idempotency, recreation, and cloud-handoff wording.
-- Commit: pending.
+- Commit: pending native review and final work-unit commit.
+- Authored code lines: 812 (705 additions + 107 deletions), including a 464-line focused purge lifecycle regression file. The unit exceeds the review heuristic because complete atomic deletion, indirect evidence batching, receipt-trigger rollback, lifecycle locking, recreation, and five local UX/wire surfaces form one inseparable lifecycle contract.
 
 ### WU-06 — Integrated verification and delivery slices
 
@@ -155,9 +156,9 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - [x] Local project DTOs expose canonical key separately from display name; no Hive API/dashboard identity change is required.
 - [x] Local TUI renders display names but queries/filters/mutates by canonical key; the dashboard uses one exact API literal and has no equivalent split.
 - [ ] The complete #721 promotion scenario shows the surviving memories exactly once under B; display-vs-key viewing, A→B promotion, and universal ingress/state migration are covered.
-- [ ] Archive retains bindings and redirects.
-- [ ] Purge removes all local traces and permits later recreation as a new project.
-- [ ] Local purge does not claim to delete Hive API data.
+- [x] Archive retains bindings and redirects.
+- [x] Purge removes every directly attributable local trace and permits later recreation as a new project; globally orphaned evidence without owner/project coordinates is intentionally not attributable.
+- [x] Local purge does not claim to delete Hive API data.
 - [x] Protected SDD apply progress is never rewritten and blocks promotion with an actionable #724 dependency.
 - [ ] Existing project literals remain compatible through migration.
 - [ ] Focused checks, `go test ./...`, and `go vet ./...` pass.
@@ -185,6 +186,8 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - 2026-09-21: Independent verification rejected successive candidates until they added typed mutation payload rekeying, transaction-scoped resolution, namespace-safe cursors, reproject-first ordering, explicit local/remote/outcome evidence, request-scoped dispatch tokens, soft-delete presence, lifecycle serialization, and capability-gated follow-up withholding. The final candidate passed with no blocking or medium findings.
 - 2026-09-21: Native RDD approved and acknowledged the exact WU-04 workspace candidate under lineage `review-75c7168e7e8b3ce9`; commit `ee100265` preserves that reviewed tree. Two non-blocking advisories remain follow-up work: `R3-001` and `R4-unsupported-relocation-starvation` at `hive-daemon/internal/db/sync.go:502`.
 - 2026-09-21: Read-only scope audit confirmed WU-06 API identity and WU-07 dashboard work were unnecessary scope expansion. Hive API intentionally stores exact project literals after migrations 021/022 removed unsafe identity folds/registry; existing reproject and `from_project` relocation cover #722. The dashboard uses that same literal for display, route, and filter. User removed both work units; cloud administration remains separate.
+- 2026-09-21: WU-05 implemented lifecycle-serialized non-destructive archive and archive-gated atomic local purge across direct project state, reverse aliases, SDD topology/bindings, WU-04 evidence/dispatch coordinates, identities/bindings, recovery tokens, and sync/governance state. Exact local-only Hive API handoff wording now propagates through service, HTTP, hiveclient, and hiveui.
+- 2026-09-21: Initial WU-05 verification found SQLite parameter-limit exposure and inflated deletion counts. Corrections added deterministic 500-coordinate batches, DELETE-only counting, post-receipt-exception rollback coverage, recovery-token coordinate isolation, and directly attributable trace idempotency. Final independent verification passed with no blocking or medium findings.
 
 ## Verification Evidence
 
@@ -206,8 +209,9 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - Exact WU-03 RDD retry (`2c1232b8..2e361374`) closed approved and was acknowledged: lineage `review-c46e8c8873b86ee7`, high risk, four lenses, 11 paths / 1,306 changed lines. Advisory-only findings `R3-git-alias-repromotion` and `R4-retired-git-target` are assigned to WU-04; neither opened a correction or invalidated approval.
 - Final WU-04 independent verification passed with no blocking or medium findings: `cd hive-daemon && go test -count=1 ./internal/db ./internal/project ./internal/sync`, full affected-package `-race` run, and `git diff --check` all passed. Limitations: no live Hive API, full repository suite, dedicated backup-restore exercise, or build.
 - Native WU-04 RDD closed approved and was acknowledged: lineage `review-75c7168e7e8b3ce9`, high risk, four lenses, 27 paths / 1,801 changed lines. Advisory-only findings `R3-001` and `R4-unsupported-relocation-starvation` did not open a correction or invalidate approval.
+- Final WU-05 independent verification passed: fresh DB/governance/HTTP tests, full affected daemon `-race` tests, fresh hiveclient/hiveui tests, and `git diff --check`. Limitations: no live Hive API, full repository suite, or deletion of unowned historical evidence that has no surviving project coordinate.
 - No integrated test suite has been run yet.
 
 ## Next Step
 
-Complete WU-05 archive preservation and complete local purge, then run WU-06 integrated verification.
+Run native review and commit WU-05, then execute WU-06 integrated verification.
