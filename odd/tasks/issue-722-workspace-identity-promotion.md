@@ -107,7 +107,7 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - [x] Fail closed when protected SDD apply progress exists, naming #724-compatible recovery.
 - Checks:
   - Focused DB/project/validator tests covering first observation, restart, promotion, retry, conflicts, alias/session ordering, provenance, sibling bindings, and protected-progress rollback.
-- Commit: pending final work-unit commit after accepted verification.
+- Commit: `2e361374` (`feat(hive): promote workspace project identities`).
 - Authored code lines: 1,273 (1,204 additions + 69 deletions); the coherent transaction/schema/validator unit substantially exceeds the heuristic because three review rounds added required upgrade, rollback, alias, provenance, session, sibling-binding, and restart regression coverage. No size-only code-golf applied.
 
 ### WU-04 — Universal ingress resolution and complete local-state migration
@@ -177,11 +177,11 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - [ ] The retired source cannot be recreated by supported session, memory, prompt, import, passive observation, or sync ingress paths.
 - [x] Local project DTOs expose canonical key separately from display name; Hive API/dashboard projection remains pending.
 - [x] Local TUI renders display names but queries/filters/mutates by canonical key; dashboard remains pending.
-- [ ] The complete #721 promotion scenario shows the surviving memories exactly once under B; the display-vs-key Viewer regression is covered, while A→B promotion remains pending.
+- [ ] The complete #721 promotion scenario shows the surviving memories exactly once under B; display-vs-key viewing and core A→B promotion are covered, while universal ingress/state migration remains pending.
 - [ ] Archive retains bindings and redirects.
 - [ ] Purge removes all local traces and permits later recreation as a new project.
 - [ ] Local purge does not claim to delete Hive API data.
-- [ ] Protected SDD apply progress is never rewritten and blocks promotion with an actionable #724 dependency.
+- [x] Protected SDD apply progress is never rewritten and blocks promotion with an actionable #724 dependency.
 - [ ] Existing project literals remain compatible through migration.
 - [ ] Focused checks, `go test ./...`, `go vet ./...`, and dashboard tests pass.
 
@@ -200,6 +200,8 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - 2026-09-21: Independent committed-range verification of `public/master..2c1232b8` passed all focused checks with no blocking findings. WU-02 is complete.
 - 2026-09-21: WU-03 first candidate passed focused tests but failed independent verification on four gaps: upgrade did not adopt historical directory identity, session mismatch could be detected after a committed promotion, only the initiating workspace binding moved, and a nonempty unusable Git origin could misclassify basename fallback as Git-derived.
 - 2026-09-21: Three bounded correction/re-verification rounds fixed alias persistence, session ordering, basename provenance, sibling bindings, protected rollback, and historical upgrade compatibility. Final independent verification passed with no blocking or medium findings; parent spot-check passed.
+- 2026-09-21: Committed WU-03 as `2e361374`. Independent committed-range verification of `2c1232b8..2e361374` passed with no blocking or medium findings.
+- 2026-09-21: Native RDD review could not start: after one correctly rejected abbreviated base, fresh full-SHA committed-only negotiation repeatedly surfaced expired consent state for an empty-workspace projection and created no lineage. The occurrence was added bilingually to upstream issue `Gentleman-Programming/gentle-ai#4754`; independent verification remains the accepted WU-03 gate.
 
 ## Verification Evidence
 
@@ -213,10 +215,12 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - `git diff --check` passed for all eight WU-02 files.
 - Independent committed-range verification passed: `cd hive-daemon && go test ./internal/db`, `cd jarvis-cli && go test ./internal/hiveclient ./internal/hiveui`, and `git diff --check public/master..2c1232b8`.
 - WU-03 writer checks passed in every round; earlier independent failures were retained and corrected rather than waived.
-- Final independent WU-03 verification passed: `cd hivederive && go test ./...`, daemon DB/project/httpapi/mcp focused suites, and `git diff --check`.
+- Final independent WU-03 pre-commit verification passed: `cd hivederive && go test ./...`, daemon DB/project/httpapi/mcp focused suites, and `git diff --check`.
 - Parent spot-check `cd hive-daemon && go test ./internal/project` passed.
+- Independent committed-range verification passed for `2c1232b8841e468623e434f8119f2af6b6257789..2e361374773d0e4e7a0f81776cdb42363f3d7c58`: clean tree, source inspection, focused package tests, and diff checks; no blocking or medium findings. The verifier noted no fresh race/stress/full-ecosystem run, schema-upgrade behavior was mainly source-inspected, and CodeGraph timed out.
+- Native RDD produced no lineage, verdict, or receipt because the consent-binding defect blocked START. Upstream occurrence: `https://github.com/Gentleman-Programming/gentle-ai/issues/4754#issuecomment-5758905286`.
 - No integrated test suite has been run yet.
 
 ## Next Step
 
-Commit WU-03, record its commit and committed-candidate verification outcome, then begin WU-04 universal ingress and complete local-state migration.
+Begin WU-04 universal ingress resolution and complete local-state migration from the verified WU-03 boundary.
