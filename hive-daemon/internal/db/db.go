@@ -403,6 +403,19 @@ ON passive_observations(session_id);
 CREATE INDEX IF NOT EXISTS idx_passive_observations_project
 ON passive_observations(project, created_at DESC);
 
+-- sdd_store_bindings records one immutable artifact-store decision per canonical
+-- project and validated change. It deliberately has no foreign key: #722 owns
+-- canonical project identity promotion and will compare these immutable rows.
+CREATE TABLE IF NOT EXISTS sdd_store_bindings (
+    project        TEXT NOT NULL CHECK (length(trim(project, char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288))) > 0),
+    change_name    TEXT NOT NULL CHECK (length(trim(change_name, char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288))) > 0),
+    schema_version TEXT NOT NULL CHECK (length(trim(schema_version, char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288))) > 0),
+    mode           TEXT NOT NULL CHECK (mode IN ('hive', 'hybrid')),
+    provenance     TEXT NOT NULL CHECK (length(trim(provenance, char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288))) > 0),
+    created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (project, change_name)
+);
+
 -- Dedicated guarded v2 apply-progress topology. These tables are additive and
 -- deliberately separate from general memory SaveMemory/mem_save semantics.
 CREATE TABLE IF NOT EXISTS sdd_apply_heads (
@@ -624,6 +637,10 @@ func initSchema(sqlDB *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS passive_observations (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL DEFAULT '', project TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, sync_id TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
 		`CREATE INDEX IF NOT EXISTS idx_passive_observations_session ON passive_observations(session_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_passive_observations_project ON passive_observations(project, created_at DESC)`,
+		// sdd_store_bindings is intentionally independent from project_identities.
+		// #722 owns later canonical identity promotion and must compare immutable
+		// source/target rows without this slice mutating either one.
+		`CREATE TABLE IF NOT EXISTS sdd_store_bindings (project TEXT NOT NULL CHECK (length(trim(project, char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288))) > 0), change_name TEXT NOT NULL CHECK (length(trim(change_name, char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288))) > 0), schema_version TEXT NOT NULL CHECK (length(trim(schema_version, char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288))) > 0), mode TEXT NOT NULL CHECK (mode IN ('hive', 'hybrid')), provenance TEXT NOT NULL CHECK (length(trim(provenance, char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288))) > 0), created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (project, change_name))`,
 		// pull_cursors: additive table for bounded legacy-pull pagination resume
 		// positions (PR 2a/2b, hive-sync-batched-drain). See the base schema
 		// declaration above for field semantics.
