@@ -133,7 +133,7 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - [x] State clearly that local purge does not delete Hive API data.
 - Checks:
   - Focused DB/governance/http/client tests for archive retention, purge completeness, idempotency, recreation, and cloud-handoff wording.
-- Initial commit: `3853f0b5` (`feat(hive): complete project purge lifecycle`); promoted-predecessor correction pending native review and commit.
+- Commits: `3853f0b5` (`feat(hive): complete project purge lifecycle`) and `636f1eb8` (`fix(hive): purge retired project predecessors`).
 - Initial authored code lines: 812 (705 additions + 107 deletions), including a 464-line focused purge lifecycle regression file. Promoted-predecessor correction: 587 source/test lines (488 additions + 99 deletions). The unit exceeds the review heuristic because complete atomic deletion, transitive ownership closure, indirect evidence batching, receipt-trigger rollback, lifecycle locking, real resolver recreation, and five local UX/wire surfaces form one inseparable lifecycle contract.
 
 ### WU-06 — Integrated verification and delivery slices
@@ -191,6 +191,7 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - 2026-09-21: WU-05 committed as `3853f0b5`. Native high-risk four-lens review approved and was acknowledged under lineage `review-cecca56c6ed047e4`; advisory-only finding `R3-001` did not open a correction or invalidate approval.
 - 2026-09-21: Final integrated verification reopened WU-05: A→B promotion intentionally retained acknowledged mutations and the retired A identity for audit/redirect purposes, but purging B removed only B-owned rows and the A→B redirect. That orphaned attributable A state and violated complete local purge/fresh recreation.
 - 2026-09-21: The correction now derives a deterministic, cycle-safe, governance-corroborated reverse predecessor closure, applies every purge surface and indirect-coordinate snapshot across that closure with a 500-parameter ceiling, and never follows outbound aliases into unrelated targets. A composed validator regression uses real directory/Git discovery and no explicit project after purge, then writes and observes only fresh B state. Independent focused/race verification passed with no blocking or medium findings.
+- 2026-09-21: Promoted-predecessor correction committed as `636f1eb8`. Native high-risk four-lens review approved and was acknowledged under lineage `review-ea77ae2b7efb61a7` with no findings.
 
 ## Verification Evidence
 
@@ -218,4 +219,4 @@ The split produces a false data-loss signal, weakens project continuity, and can
 
 ## Next Step
 
-Run native review and commit the promoted-predecessor purge correction, then rerun WU-06 integrated verification.
+Rerun WU-06 full-module tests, vet, and the composed #721/#722 lifecycle verification.
