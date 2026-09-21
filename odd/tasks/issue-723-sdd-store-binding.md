@@ -57,7 +57,7 @@ A stable binding prevents accidental split authority, misleading `not_found` dia
   - Correction required after independent verification: reject YAML merge/duplicate-key ambiguity, avoid replay/error lock mutations, make containment race-safe, preserve existing permissions, eliminate post-commit ordinary errors, provide functional Windows parity, and reject special files before blocking opens.
   - Focused check: `go test ./internal/sddbinding` plus `go test ./internal/sddruntime ./internal/sddbinding`.
 
-- [ ] **ODD-723-02 — Persist and expose the Hive binding**
+- [x] **ODD-723-02 — Persist and expose the Hive binding**
   - Route: delegated direct writer; multi-file write trigger.
   - Add SQLite persistence plus daemon/client read and atomic adopt-if-absent operations without silent overwrite.
   - Coordinate the migration-list insertion in `hive-daemon/internal/db/db.go` with #722 before editing it; `jarvis-cli/internal/hiveclient/client.go` is currently stable.
@@ -143,9 +143,13 @@ A stable binding prevents accidental split authority, misleading `not_found` dia
 - Native DB review lineage `review-297bad791c44363e` ran risk, resilience, readability, and reliability lenses over the 606-line frozen candidate, approved, and was acknowledged. The DB implementation commit contains 597 added lines across schema, repository, and tests; the cohesive SQLite authority contract exceeds the preferred slice size but was reviewed as one security boundary.
 - Commit `40003775` was handed to #722 for its separately owned `ProjectKeyedStates()` and atomic identity-promotion integration.
 - The ODD-723-02 governance/HTTP slice exposes exact GET/adopt routes, typed status envelopes, pre-artifact adoption, bounded strict JSON, sanitized unavailable logs, and fail-closed timestamp projection without adding client or lifecycle routing. Final independent and native review passed; it was committed as `47093c48` (`feat(hive): expose SDD store bindings`).
+- The bounded Hive client slice exposes strict GET/adopt methods, a conflict sentinel and typed exact-value conflict, 64-KiB response limits, exact-key decoding at every envelope level, future-schema reads, status/value coherence, and authenticated conflict projections without adding legacy or lifecycle routing. It was committed as `41820fce` (`feat(cli): add SDD store binding client`).
 - Governance/HTTP RED was initially missing symbols/routes. The first GREEN passed focused and package tests; independent verification then proved standard JSON decoding accepted duplicate/case-aliased authority keys and duplicate project queries, and emitted zero timestamps. Adversarial RED reproduced all cases; token-level exact-key/string-value decoding, single-query enforcement, sanitized logs, and zero-timestamp rejection restored GREEN.
 - Final governance/HTTP reverification passed with no remaining findings. Native review lineage `review-d1f853c5817099db` approved and was acknowledged over the 449-line frozen candidate; the implementation commit contains 445 added lines across service, HTTP, and tests.
+- Hive client RED first failed on missing public symbols. GREEN/refactor passed `go test ./internal/hiveclient -run 'SDDStoreBinding'`, `go test ./internal/hiveclient`, and scoped `git diff --check` after adding strict bounded decoding.
+- Parent readback found that a syntactically valid 409 could misrepresent the submitted immutable request. An adversarial RED covered future schema, mode/provenance mismatch, and equivalent existing/requested projections; the correction authenticates the requested projection against the normalized submission and rejects non-divergent conflicts.
+- Independent verification passed the client transport and authority boundary. Native review lineage `review-5c0b2c43ec11fd3c` approved and was acknowledged over the complete 620-line frozen candidate. This cohesive security boundary exceeds the preferred slice size because the client must validate every success, absence, error, and conflict envelope before lifecycle code may trust it.
 
 ## Next step
 
-Implement the bounded `hiveclient` read/adopt slice against the frozen HTTP contract, with strict response validation and typed missing/conflict behavior, but no legacy resolution or lifecycle routing.
+Implement ODD-723-03 legacy binding inspection/adoption and surface binding provenance in status, without adding protected-write routing or #722/#724 behavior.
