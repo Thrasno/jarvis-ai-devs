@@ -144,7 +144,7 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - [x] Run `go vet ./...` in all four Go modules.
 - [x] Verify #721 scenario end to end: A before Git, B after Git, data under both, promotion, one visible B, archive/purge, and fresh no-explicit-project recreation.
 - [x] Record authored line totals and PR slice boundaries.
-- Checks: all commands and composed regressions passed at `1849777d`; final evidence commit pending.
+- Checks: all commands and composed regressions passed at `1849777d`; final verification evidence committed as `a2be7d37`.
 - Total branch delta from `a315902a`: 5,491 changed lines (5,085 additions + 406 deletions).
 - Review/delivery boundaries: WU-02 `a315902a..2c1232b8` (623 lines); WU-03 `2c1232b8..76a694c6` (1,317); WU-04 plus required #723 DB dependency `76a694c6..156dbf8f` (2,400); scope decision and WU-05 `156dbf8f..1849777d` (1,279). Each boundary is independently verified/reviewed; delivery should use chained PRs rather than one 5.5k-line review.
 
@@ -193,6 +193,7 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - 2026-09-21: Final integrated verification reopened WU-05: A→B promotion intentionally retained acknowledged mutations and the retired A identity for audit/redirect purposes, but purging B removed only B-owned rows and the A→B redirect. That orphaned attributable A state and violated complete local purge/fresh recreation.
 - 2026-09-21: The correction now derives a deterministic, cycle-safe, governance-corroborated reverse predecessor closure, applies every purge surface and indirect-coordinate snapshot across that closure with a 500-parameter ceiling, and never follows outbound aliases into unrelated targets. A composed validator regression uses real directory/Git discovery and no explicit project after purge, then writes and observes only fresh B state. Independent focused/race verification passed with no blocking or medium findings.
 - 2026-09-21: Promoted-predecessor correction committed as `636f1eb8`. Native high-risk four-lens review approved and was acknowledged under lineage `review-ea77ae2b7efb61a7` with no findings.
+- 2026-09-21: Final integrated verification evidence committed as `a2be7d37`. Published and read back the bilingual #722 completion update: https://github.com/Thrasno/jarvis-ai-devs/issues/722#issuecomment-5763084255. The update explicitly states that the branch is not merged or released.
 
 ## Verification Evidence
 
@@ -220,4 +221,4 @@ The split produces a false data-loss signal, weakens project continuity, and can
 
 ## Next Step
 
-Commit the final verification evidence, publish the bilingual #722 completion update, then prepare chained PRs only if the user authorizes delivery.
+Issue #722 implementation is complete locally. Await explicit user authorization before pushing or preparing the recorded chained PR delivery slices.
