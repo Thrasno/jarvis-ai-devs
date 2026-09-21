@@ -140,12 +140,13 @@ The split produces a false data-loss signal, weakens project continuity, and can
 
 - Route: delegated verification according to native risk assessment after each work-unit commit; parent spot-checks one reported command.
 - Trigger evidence: verification commands must route through the verifier under repository orchestration policy.
-- [ ] Run `go test ./...`.
-- [ ] Run `go vet ./...`.
-- [ ] Verify #721 scenario end to end: A before Git, B after Git, data under both, promotion, one visible B, memories visible exactly once.
-- [ ] Record authored line totals and PR slice boundaries.
-- Checks: all commands and manual scenario above.
-- Commit: pending if integration fixes are needed.
+- [x] Run uncached `go test ./...` in all four Go modules.
+- [x] Run `go vet ./...` in all four Go modules.
+- [x] Verify #721 scenario end to end: A before Git, B after Git, data under both, promotion, one visible B, archive/purge, and fresh no-explicit-project recreation.
+- [x] Record authored line totals and PR slice boundaries.
+- Checks: all commands and composed regressions passed at `1849777d`; final evidence commit pending.
+- Total branch delta from `a315902a`: 5,491 changed lines (5,085 additions + 406 deletions).
+- Review/delivery boundaries: WU-02 `a315902a..2c1232b8` (623 lines); WU-03 `2c1232b8..76a694c6` (1,317); WU-04 plus required #723 DB dependency `76a694c6..156dbf8f` (2,400); scope decision and WU-05 `156dbf8f..1849777d` (1,279). Each boundary is independently verified/reviewed; delivery should use chained PRs rather than one 5.5k-line review.
 
 ## Acceptance Criteria
 
@@ -155,13 +156,13 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - [x] The retired source cannot be recreated by supported session, memory, prompt, import, passive observation, or sync ingress paths.
 - [x] Local project DTOs expose canonical key separately from display name; no Hive API/dashboard identity change is required.
 - [x] Local TUI renders display names but queries/filters/mutates by canonical key; the dashboard uses one exact API literal and has no equivalent split.
-- [ ] The complete #721 promotion scenario shows the surviving memories exactly once under B; display-vs-key viewing, A→B promotion, and universal ingress/state migration are covered.
+- [x] The complete #721 promotion scenario shows canonical B through real no-explicit-project resolution with fresh state exactly once; display-vs-key viewing, A→B promotion, universal ingress/state migration, archive/purge, and recreation are covered.
 - [x] Archive retains bindings and redirects.
 - [x] Purge removes every directly attributable local trace across the canonical project and its transitive retired predecessors, then permits later recreation as a new project; globally orphaned evidence without owner/project coordinates is intentionally not attributable.
 - [x] Local purge does not claim to delete Hive API data.
 - [x] Protected SDD apply progress is never rewritten and blocks promotion with an actionable #724 dependency.
-- [ ] Existing project literals remain compatible through migration.
-- [ ] Focused checks, `go test ./...`, and `go vet ./...` pass.
+- [x] Existing project literals remain compatible through migration.
+- [x] Focused checks, uncached full-module `go test ./...`, and full-module `go vet ./...` pass.
 
 ## Progress
 
@@ -215,8 +216,8 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - Native WU-04 RDD closed approved and was acknowledged: lineage `review-75c7168e7e8b3ce9`, high risk, four lenses, 27 paths / 1,801 changed lines. Advisory-only findings `R3-001` and `R4-unsupported-relocation-starvation` did not open a correction or invalidate approval.
 - Final WU-05 independent verification passed: fresh DB/governance/HTTP tests, full affected daemon `-race` tests, fresh hiveclient/hiveui tests, and `git diff --check`. Limitations: no live Hive API, full repository suite, or deletion of unowned historical evidence that has no surviving project coordinate.
 - Native WU-05 RDD approved and was acknowledged: lineage `review-cecca56c6ed047e4`, high risk, four lenses, 8 paths / 834 changed lines. Advisory-only finding `R3-001` did not open a correction or invalidate approval.
-- No integrated test suite has been run yet.
+- Final integrated verification at `1849777d` passed: uncached `go test ./...` and `go vet ./...` in `hivederive`, `hive-daemon`, `hive-api`, and `jarvis-cli`; explicit uncached #721/#722 lifecycle regressions; `git diff --check`; and clean-tree confirmation. Hive API's repository suite completed in 264.346s with no retry, timeout, failure, or flake.
 
 ## Next Step
 
-Rerun WU-06 full-module tests, vet, and the composed #721/#722 lifecycle verification.
+Commit the final verification evidence, publish the bilingual #722 completion update, then prepare chained PRs only if the user authorizes delivery.
