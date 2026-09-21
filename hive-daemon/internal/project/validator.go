@@ -300,6 +300,16 @@ func resolveUnboundWorkspaceProject(ctx context.Context, store Store, known []Kn
 		return workspaceResolution{candidates: candidates}, err
 	}
 	derived, hasDerivedIdentity, fromGit, _ := deriveProjectIdentity(input.Directory)
+	if fromGit {
+		// A Git remote can still spell a retired identity after a prior local
+		// promotion. Resolve it before comparing against a binding so B never
+		// tries to promote back to its own alias source A, and fail closed when
+		// the derived target has itself been retired.
+		derived, err = resolveWorkspaceAlias(ctx, store, derived)
+		if err != nil {
+			return workspaceResolution{}, err
+		}
+	}
 	if historical != "" {
 		historical, err = resolveWorkspaceAlias(ctx, store, historical)
 		if err != nil {
@@ -339,6 +349,15 @@ func resolveBoundWorkspaceProject(ctx context.Context, store Store, bound string
 	if err != nil {
 		// A durable binding remains valid if the directory is temporarily absent.
 		fromGit = false
+	}
+	if fromGit {
+		// Treat the Git name as an ingress coordinate, not a promotion target.
+		// This resolves both the A→B re-promotion loop and a Git target B that
+		// has since been retired in favor of C.
+		gitProject, err = resolveWorkspaceAlias(ctx, store, gitProject)
+		if err != nil {
+			return workspaceResolution{}, err
+		}
 	}
 	comparisonProject := ""
 	if fromGit {

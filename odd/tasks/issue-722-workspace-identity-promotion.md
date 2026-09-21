@@ -114,13 +114,14 @@ The split produces a false data-loss signal, weakens project continuity, and can
 
 - Route: delegated direct writer.
 - Trigger evidence: multi-file write across sessions, memories, prompts, imports, passive observations, sync ingestion, and migration inventory.
-- [ ] Resolve redirects before every supported local write/import/pull path.
-- [ ] Promote/reconcile the complete applicable `ProjectKeyedStates()` inventory.
-- [ ] Prevent offline/import/session ingress from recreating retired A after promotion.
-- [ ] Preserve relocation provenance needed by sync.
+- [x] Resolve redirects before every supported local write/import/pull path.
+- [x] Promote/reconcile the complete applicable `ProjectKeyedStates()` inventory.
+- [x] Prevent offline/import/session ingress from recreating retired A after promotion.
+- [x] Preserve relocation provenance needed by sync.
 - Checks:
   - Focused DB/import/sync tests for delayed writes, imports, pull ingestion, and retry safety.
-- Commit: pending.
+- Commit: pending native review and final work-unit commit.
+- Authored code lines: 1,784 (1,617 additions + 167 deletions), including 450 lines across three new focused regression files. This exceeds the review heuristic because independent verification forced durable provenance state, request-scoped dispatch evidence, lifecycle leases, capability-safe relocation ordering, and SDD-binding reconciliation; no size-only code-golf applied.
 
 ### WU-05 — Archive and complete local purge lifecycle
 
@@ -174,7 +175,7 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - [x] A workspace first observed without Git is durably bound to its canonical project.
 - [x] Adding or renaming to a usable Git repository promotes the workspace core state to the Git-derived key when unambiguous; full state inventory remains WU-04.
 - [x] Core promotion is atomic and idempotent with source/target revalidation; complete inventory and backup integration remain scoped to WU-04/WU-05.
-- [ ] The retired source cannot be recreated by supported session, memory, prompt, import, passive observation, or sync ingress paths.
+- [x] The retired source cannot be recreated by supported session, memory, prompt, import, passive observation, or sync ingress paths.
 - [x] Local project DTOs expose canonical key separately from display name; Hive API/dashboard projection remains pending.
 - [x] Local TUI renders display names but queries/filters/mutates by canonical key; dashboard remains pending.
 - [ ] The complete #721 promotion scenario shows the surviving memories exactly once under B; display-vs-key viewing and core A→B promotion are covered, while universal ingress/state migration remains pending.
@@ -203,6 +204,9 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - 2026-09-21: Committed WU-03 as `2e361374`. Independent committed-range verification of `2c1232b8..2e361374` passed with no blocking or medium findings.
 - 2026-09-21: The first native RDD attempt could not start: after one correctly rejected abbreviated base, fresh full-SHA committed-only negotiation repeatedly surfaced expired consent state for an empty-workspace projection and created no lineage. The occurrence was added bilingually to upstream issue `Gentleman-Programming/gentle-ai#4754`.
 - 2026-09-21: Exact detached-worktree retries succeeded. WU-02 received medium-risk reliability review and approval; WU-03 received high-risk risk/resilience/readability/reliability review and approval. Both approvals were acknowledged and burned. WU-03 retained two informational warnings for WU-04 follow-up: Git-alias re-promotion and retired Git target handling.
+- 2026-09-21: WU-04 implemented DB-boundary alias resolution, full applicable state reconciliation, atomic sync relocation provenance, process-local promotion/sync lifecycle leases, canonical import/passive/session/prompt ingress, safe cursor resets, and both WU-03 RDD advisory fixes.
+- 2026-09-21: WU-04 integrated #723's SDD store-binding DB slice as dependency commit `e2deb60f`; promotion moves source-only bindings, converges identical bindings, and fails closed on immutable conflicts after the protected-progress guard.
+- 2026-09-21: Independent verification rejected successive candidates until they added typed mutation payload rekeying, transaction-scoped resolution, namespace-safe cursors, reproject-first ordering, explicit local/remote/outcome evidence, request-scoped dispatch tokens, soft-delete presence, lifecycle serialization, and capability-gated follow-up withholding. The final candidate passed with no blocking or medium findings.
 
 ## Verification Evidence
 
@@ -222,6 +226,7 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - Initial native RDD attempts produced no lineage, verdict, or receipt because the consent-binding defect blocked START. Upstream occurrence: `https://github.com/Gentleman-Programming/gentle-ai/issues/4754#issuecomment-5758905286`.
 - Exact WU-02 RDD retry (`public/master..2c1232b8`) closed approved and was acknowledged: lineage `review-dd857147cea7b955`, medium risk, reliability lens, 9 paths / 623 changed lines.
 - Exact WU-03 RDD retry (`2c1232b8..2e361374`) closed approved and was acknowledged: lineage `review-c46e8c8873b86ee7`, high risk, four lenses, 11 paths / 1,306 changed lines. Advisory-only findings `R3-git-alias-repromotion` and `R4-retired-git-target` are assigned to WU-04; neither opened a correction or invalidated approval.
+- Final WU-04 independent verification passed with no blocking or medium findings: `cd hive-daemon && go test -count=1 ./internal/db ./internal/project ./internal/sync`, full affected-package `-race` run, and `git diff --check` all passed. Limitations: no live Hive API, full repository suite, dedicated backup-restore exercise, or build.
 - No integrated test suite has been run yet.
 
 ## Next Step

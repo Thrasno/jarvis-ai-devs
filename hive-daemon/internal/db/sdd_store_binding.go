@@ -191,6 +191,55 @@ func canonicalSDDStoreBindingKey(project, change string) (string, string, error)
 	return project, change, nil
 }
 
+// reconcileSDDStoreBindingsTx moves immutable source bindings only after the
+// protected SDD progress guard has approved the promotion. It preserves every
+// stored immutable field exactly; unequal same-change rows fail before either
+// source binding is removed.
+func reconcileSDDStoreBindingsTx(ctx context.Context, tx *sql.Tx, source, target string) error {
+	rows, err := tx.QueryContext(ctx, `SELECT change_name, schema_version, mode, provenance, created_at FROM sdd_store_bindings WHERE project = ?`, source)
+	if err != nil {
+		return fmt.Errorf("read source SDD store bindings: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var sourceBindings []SDDStoreBinding
+	for rows.Next() {
+		var binding SDDStoreBinding
+		var createdAt string
+		if err := rows.Scan(&binding.Change, &binding.SchemaVersion, &binding.Mode, &binding.Provenance, &createdAt); err != nil {
+			return fmt.Errorf("scan source SDD store binding: %w", err)
+		}
+		binding.Project = source
+		binding.CreatedAt, err = parseTimeStr(createdAt)
+		if err != nil {
+			return fmt.Errorf("parse source SDD store binding timestamp: %w", err)
+		}
+		sourceBindings = append(sourceBindings, binding)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate source SDD store bindings: %w", err)
+	}
+	for _, binding := range sourceBindings {
+		targetBinding, found, err := getSDDStoreBinding(ctx, tx, target, binding.Change)
+		if err != nil {
+			return fmt.Errorf("read target SDD store binding: %w", err)
+		}
+		requested := binding
+		requested.Project = target
+		if found && !sameSDDStoreBinding(targetBinding, requested) {
+			return &SDDStoreBindingConflictError{Existing: targetBinding, Requested: requested}
+		}
+	}
+	for _, binding := range sourceBindings {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO sdd_store_bindings (project, change_name, schema_version, mode, provenance, created_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(project, change_name) DO NOTHING`, target, binding.Change, binding.SchemaVersion, binding.Mode, binding.Provenance, binding.CreatedAt.UTC().Format("2006-01-02 15:04:05")); err != nil {
+			return fmt.Errorf("move SDD store binding: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sdd_store_bindings WHERE project = ?`, source); err != nil {
+		return fmt.Errorf("delete moved SDD store bindings: %w", err)
+	}
+	return nil
+}
+
 func sameSDDStoreBinding(left, right SDDStoreBinding) bool {
 	return left.Project == right.Project &&
 		left.Change == right.Change &&

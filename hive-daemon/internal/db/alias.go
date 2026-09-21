@@ -5,9 +5,71 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 )
+
+// projectLifecycle is process-local because one daemon owns its SQLite file.
+// Read leases cover a complete sync network cycle; write leases cover a project
+// promotion before its SQLite transaction begins. Keys are ordered to avoid
+// source/target lock inversion.
+var projectLifecycle = struct {
+	mu    sync.Mutex
+	locks map[string]*sync.RWMutex
+}{locks: make(map[string]*sync.RWMutex)}
+
+// AcquireProjectLifecycleRead serializes a sync cycle with promotion.
+func AcquireProjectLifecycleRead(projects ...string) func() {
+	return acquireProjectLifecycle(false, projects...)
+}
+
+// AcquireProjectLifecycleWrite serializes promotion with every sync cycle for
+// the source and target keys.
+func AcquireProjectLifecycleWrite(projects ...string) func() {
+	return acquireProjectLifecycle(true, projects...)
+}
+
+func acquireProjectLifecycle(write bool, projects ...string) func() {
+	keys := make([]string, 0, len(projects))
+	seen := map[string]bool{}
+	for _, project := range projects {
+		project = canonicalProjectKey(project)
+		if project != "" && !seen[project] {
+			seen[project] = true
+			keys = append(keys, project)
+		}
+	}
+	sort.Strings(keys)
+	projectLifecycle.mu.Lock()
+	locks := make([]*sync.RWMutex, 0, len(keys))
+	for _, key := range keys {
+		lock := projectLifecycle.locks[key]
+		if lock == nil {
+			lock = &sync.RWMutex{}
+			projectLifecycle.locks[key] = lock
+		}
+		locks = append(locks, lock)
+	}
+	projectLifecycle.mu.Unlock()
+	for _, lock := range locks {
+		if write {
+			lock.Lock()
+		} else {
+			lock.RLock()
+		}
+	}
+	return func() {
+		for i := len(locks) - 1; i >= 0; i-- {
+			if write {
+				locks[i].Unlock()
+			} else {
+				locks[i].RUnlock()
+			}
+		}
+	}
+}
 
 // ErrAliasSourceEqualsTarget is returned when source and target are the same.
 var ErrAliasSourceEqualsTarget = errors.New("alias source and target must differ")
@@ -46,6 +108,8 @@ func (d *DB) AddAlias(ctx context.Context, source, target, scope, reason string)
 	if source == target {
 		return ErrAliasSourceEqualsTarget
 	}
+	release := AcquireProjectLifecycleWrite(source, target)
+	defer release()
 
 	// Cycle guard: reject if target is already a source_project.
 	var existing string
@@ -107,10 +171,19 @@ WHERE project_aliases.target_project = excluded.target_project`,
 // alias exists. Resolution is intentionally single-hop; chains are not followed.
 // Returns ("", false, nil) when no alias exists for the given project.
 func (d *DB) ResolveAlias(ctx context.Context, project string) (string, bool, error) {
+	original := strings.TrimSpace(project)
 	var target string
-	err := d.sqlDB.QueryRowContext(ctx,
-		`SELECT target_project FROM project_aliases WHERE source_project = ?`, project,
-	).Scan(&target)
+	err := d.sqlDB.QueryRowContext(ctx, `SELECT target_project FROM project_aliases WHERE source_project = ?`, original).Scan(&target)
+	if errors.Is(err, sql.ErrNoRows) {
+		canonical := canonicalProjectKey(original)
+		if canonical == "" || canonical == original {
+			return "", false, nil
+		}
+		err = d.sqlDB.QueryRowContext(ctx, `SELECT target_project FROM project_aliases WHERE source_project = ?`, canonical).Scan(&target)
+		if err == nil {
+			return canonicalProjectKey(target), true, nil
+		}
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
@@ -118,6 +191,52 @@ func (d *DB) ResolveAlias(ctx context.Context, project string) (string, bool, er
 		return "", false, fmt.Errorf("resolve alias: %w", err)
 	}
 	return target, true, nil
+}
+
+// resolveProjectIngressTx resolves a retired project before a local ingress
+// can write any project-keyed row. It deliberately runs inside the caller's
+// transaction: resolving before opening the transaction leaves a race where a
+// concurrent promotion can retire the source after validation but before the
+// insert. Aliases are stored under canonical keys, so fold before lookup and
+// fold the target again defensively.
+func resolveProjectIngressTx(ctx context.Context, tx *sql.Tx, project string) (string, error) {
+	project = canonicalProjectKey(project)
+	if project == "" {
+		return "", nil
+	}
+	var target string
+	err := tx.QueryRowContext(ctx, `SELECT target_project FROM project_aliases WHERE source_project = ?`, project).Scan(&target)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Compatibility for historical aliases created before canonical storage.
+		// The canonical lookup above is authoritative; this fallback only admits
+		// a case-only legacy spelling and still returns the canonical target.
+		err = tx.QueryRowContext(ctx, `SELECT target_project FROM project_aliases WHERE lower(source_project) = lower(?)`, project).Scan(&target)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return project, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("resolve project ingress alias: %w", err)
+	}
+	return canonicalProjectKey(target), nil
+}
+
+// resolveProjectIngress is the non-transactional counterpart for boundaries
+// that open their own transaction after resolving. Transactional writers must
+// prefer resolveProjectIngressTx.
+func (d *DB) resolveProjectIngress(ctx context.Context, project string) (string, error) {
+	project = canonicalProjectKey(project)
+	if project == "" {
+		return "", nil
+	}
+	target, found, err := d.ResolveAlias(ctx, project)
+	if err != nil {
+		return "", err
+	}
+	if found {
+		return canonicalProjectKey(target), nil
+	}
+	return project, nil
 }
 
 // RemoveAlias hard-deletes the alias row for the given source_project. After

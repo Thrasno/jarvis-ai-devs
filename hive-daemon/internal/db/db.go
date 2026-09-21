@@ -159,6 +159,44 @@ CREATE TABLE IF NOT EXISTS memory_mutations (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_mutations_event_id ON memory_mutations(event_id);
 CREATE INDEX IF NOT EXISTS idx_memory_mutations_project_unsynced ON memory_mutations(project, sequence) WHERE synced_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_memory_mutations_entity ON memory_mutations(entity_type, entity_sync_id, sequence);
+
+-- Remote-presence is explicit durable evidence that Hive has accepted or sent
+-- an entity. It is deliberately separate from mutation timestamps: a terminal
+-- rejection also stops retries but proves nothing about remote presence.
+CREATE TABLE IF NOT EXISTS memory_remote_presence (
+    entity_sync_id TEXT PRIMARY KEY,
+    confirmed_at   DATETIME NOT NULL,
+    source         TEXT NOT NULL CHECK (source IN ('remote_pull', 'mutation_accept'))
+);
+CREATE TABLE IF NOT EXISTS memory_mutation_outcomes (
+    event_id       TEXT PRIMARY KEY,
+    entity_sync_id TEXT NOT NULL,
+    outcome        TEXT NOT NULL CHECK (outcome IN ('accepted', 'rejected')),
+    terminal_at    DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_mutation_outcomes_entity ON memory_mutation_outcomes(entity_sync_id, outcome);
+-- A dispatch is recorded immediately before a mutation batch crosses the
+-- network boundary. It is intentionally not terminal evidence.
+CREATE TABLE IF NOT EXISTS memory_mutation_dispatches (
+    event_id      TEXT PRIMARY KEY,
+    dispatched_at DATETIME NOT NULL
+);
+-- Legacy memories[] pushes have no guarantee their create mutation appears in
+-- the separately paged v2 batch, so their network crossing is entity-scoped.
+CREATE TABLE IF NOT EXISTS memory_entity_dispatches (
+    dispatch_id    TEXT NOT NULL,
+    entity_sync_id TEXT NOT NULL,
+    dispatched_at  DATETIME NOT NULL,
+    PRIMARY KEY (dispatch_id, entity_sync_id)
+);
+-- Local-origin is explicit evidence that this daemon created an entity before
+-- it ever crossed the network. It is keyed by stable sync id, not project: the
+-- memory row remains the sole project-bearing owner through promotion.
+CREATE TABLE IF NOT EXISTS memory_local_origins (
+    entity_sync_id TEXT PRIMARY KEY,
+    recorded_at    DATETIME NOT NULL,
+    source         TEXT NOT NULL CHECK (source IN ('local_save', 'engram_import'))
+);
 -- idx_memory_mutations_request_id is created in the migrations slice, AFTER the
 -- ALTER TABLE that adds request_id. Declaring it here breaks upgraded DBs whose
 -- memory_mutations predates the column: CREATE TABLE IF NOT EXISTS is a no-op,
@@ -590,6 +628,12 @@ func initSchema(sqlDB *sql.DB) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_mutations_event_id ON memory_mutations(event_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_mutations_project_unsynced ON memory_mutations(project, sequence) WHERE synced_at IS NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_mutations_entity ON memory_mutations(entity_type, entity_sync_id, sequence)`,
+		`CREATE TABLE IF NOT EXISTS memory_remote_presence (entity_sync_id TEXT PRIMARY KEY, confirmed_at DATETIME NOT NULL, source TEXT NOT NULL CHECK (source IN ('remote_pull', 'mutation_accept')))`,
+		`CREATE TABLE IF NOT EXISTS memory_mutation_outcomes (event_id TEXT PRIMARY KEY, entity_sync_id TEXT NOT NULL, outcome TEXT NOT NULL CHECK (outcome IN ('accepted', 'rejected')), terminal_at DATETIME NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_mutation_outcomes_entity ON memory_mutation_outcomes(entity_sync_id, outcome)`,
+		`CREATE TABLE IF NOT EXISTS memory_mutation_dispatches (event_id TEXT PRIMARY KEY, dispatched_at DATETIME NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS memory_entity_dispatches (dispatch_id TEXT NOT NULL, entity_sync_id TEXT NOT NULL, dispatched_at DATETIME NOT NULL, PRIMARY KEY (dispatch_id, entity_sync_id))`,
+		`CREATE TABLE IF NOT EXISTS memory_local_origins (entity_sync_id TEXT PRIMARY KEY, recorded_at DATETIME NOT NULL, source TEXT NOT NULL CHECK (source IN ('local_save', 'engram_import')))`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_mutations_request_id ON memory_mutations(request_id) WHERE request_id IS NOT NULL`,
 		`CREATE TABLE IF NOT EXISTS mutation_receipts (request_id TEXT PRIMARY KEY, operation TEXT NOT NULL, target_id INTEGER NOT NULL, project TEXT NOT NULL, entity_sync_id TEXT NOT NULL, event_id TEXT NOT NULL, actor_id TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '', local_status TEXT NOT NULL, shared_status TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
 		`CREATE TABLE IF NOT EXISTS mutation_cursors (consumer TEXT NOT NULL, project TEXT NOT NULL, sequence INTEGER NOT NULL DEFAULT 0, event_id TEXT NOT NULL DEFAULT '', updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (consumer, project))`,
