@@ -71,9 +71,10 @@ A stable binding prevents accidental split authority, misleading `not_found` dia
 
 - [ ] **ODD-723-04 — Route protected writes and archive through the binding**
   - Route: delegated direct writer; multi-file write trigger.
-  - Make progress checkpoint/advance/upgrade and archive consume the binding.
-  - Prevent environment changes from silently switching a bound change.
-  - Support logical Hive archive without requiring an OpenSpec move.
+  - Slice 04-A: make progress checkpoint/advance/upgrade consume the binding; keep the existing hybrid progress receipt and fail closed on divergent backends.
+  - Slice 04-B: treat executor-authored `archive-report` as the Hive logical-closure signal; add no typed closure state and no archive receipt.
+  - OpenSpec archive keeps the existing validated rename; hybrid requires equivalent reports in both stores before that rename.
+  - Prevent environment changes from silently switching a bound change; never choose an arbitrary hybrid copy when protected state diverges.
   - Focused checks: command-level progress and archive tests.
 
 - [ ] **ODD-723-05 — Update diagnostics, guidance, and regression coverage**
