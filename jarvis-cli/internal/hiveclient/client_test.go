@@ -1022,7 +1022,7 @@ func TestDeleteProject_BuildsCorrectRequest(t *testing.T) {
 			t.Fatalf("delete request = %+v, want exact project delete payload", req)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"result":{"operation":"purge","target_type":"project","project":"alpha","backup_id":"backup-1","rows_deleted":5,"mutated":true,"cloud_handoff_note":"Project purged locally. Cloud data not removed — no tombstone sync protocol exists yet."}}`))
+		_, _ = w.Write([]byte(`{"result":{"operation":"purge","target_type":"project","project":"alpha","backup_id":"backup-1","rows_deleted":5,"mutated":true,"cloud_handoff_note":"Project purged locally only. This does not delete Hive API data. A later sync can pull remote project data back; administer or delete the project in Hive API to prevent its return."}}`))
 	}))
 	defer server.Close()
 	client, err := New(server.URL)
@@ -1040,8 +1040,12 @@ func TestDeleteProject_BuildsCorrectRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DeleteProject: %v", err)
 	}
-	if !result.Mutated || result.Project != "alpha" || result.RowsDeleted != 5 || result.CloudHandoffNote == "" {
-		t.Fatalf("delete result = %+v, want mutated alpha with rows_deleted=5 and cloud handoff note", result)
+	if !result.Mutated || result.Project != "alpha" || result.RowsDeleted != 5 {
+		t.Fatalf("delete result = %+v, want mutated alpha with rows_deleted=5", result)
+	}
+	const wantCloudHandoff = "Project purged locally only. This does not delete Hive API data. A later sync can pull remote project data back; administer or delete the project in Hive API to prevent its return."
+	if result.CloudHandoffNote != wantCloudHandoff {
+		t.Fatalf("cloud handoff note = %q, want %q", result.CloudHandoffNote, wantCloudHandoff)
 	}
 }
 

@@ -213,6 +213,122 @@ func TestValidateWriteProjectBindsAndPromotesWorkspaceGitIdentity(t *testing.T) 
 	}
 }
 
+func TestValidateWriteProjectRecreatesFreshWorkspaceAfterPurgingPromotedTarget(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	ctx := context.Background()
+	d, err := hivedb.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open DB: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	workspace := t.TempDir()
+
+	first, err := project.ValidateWriteProject(ctx, d, project.WriteInput{Directory: workspace})
+	if err != nil {
+		t.Fatalf("initial directory validation: %v", err)
+	}
+	if _, err := d.EnsureManualSaveSession(first.Project); err != nil {
+		t.Fatalf("ensure source session: %v", err)
+	}
+	if err := d.CreateSession("purge-source-session", first.Project, workspace, "dev", "test"); err != nil {
+		t.Fatalf("create source session: %v", err)
+	}
+	if _, err := d.SaveMemory(&models.Memory{Project: first.Project, SessionID: "manual-save-" + first.Project, Title: "retired history", Content: "must purge"}); err != nil {
+		t.Fatalf("save source memory: %v", err)
+	}
+	// An acknowledged mutation intentionally remains under the predecessor after
+	// promotion, which makes this exercise the completed local-purge boundary.
+	if _, err := d.RawDB().Exec(`UPDATE memory_mutations SET synced_at = CURRENT_TIMESTAMP WHERE project = ?`, first.Project); err != nil {
+		t.Fatalf("acknowledge predecessor mutation: %v", err)
+	}
+
+	initValidatorGitRepo(t, workspace, "https://github.com/org/fresh-git.git")
+	promoted, err := project.ValidateWriteProject(ctx, d, project.WriteInput{Directory: workspace, SessionID: "purge-source-session"})
+	if err != nil || promoted.Project != "fresh-git" {
+		t.Fatalf("promoted validation = (%+v, %v), want fresh-git nil", promoted, err)
+	}
+	if _, err := d.ArchiveGovernanceProject(ctx, promoted.Project, "tester", "purge promoted workspace", time.Now().UTC()); err != nil {
+		t.Fatalf("archive promoted project: %v", err)
+	}
+	if deleted, err := d.DeleteGovernanceProject(ctx, promoted.Project, "tester", "purge promoted workspace"); err != nil || deleted == 0 {
+		t.Fatalf("purge promoted project = (%d, %v), want positive nil", deleted, err)
+	}
+
+	for _, check := range []struct {
+		label string
+		query string
+		args  []any
+	}{
+		{"identities", `SELECT COUNT(*) FROM project_identities WHERE project_key IN (?, 'fresh-git')`, []any{first.Project}},
+		{"aliases", `SELECT COUNT(*) FROM project_aliases WHERE source_project IN (?, 'fresh-git') OR target_project IN (?, 'fresh-git')`, []any{first.Project, first.Project}},
+		{"governance", `SELECT COUNT(*) FROM hive_project_governance WHERE project IN (?, 'fresh-git') OR merge_target IN (?, 'fresh-git')`, []any{first.Project, first.Project}},
+		{"mutations", `SELECT COUNT(*) FROM memory_mutations WHERE project IN (?, 'fresh-git')`, []any{first.Project}},
+		{"project state", `SELECT COUNT(*) FROM memories WHERE project IN (?, 'fresh-git') UNION ALL SELECT COUNT(*) FROM sessions WHERE project IN (?, 'fresh-git') UNION ALL SELECT COUNT(*) FROM user_prompts WHERE project IN (?, 'fresh-git') UNION ALL SELECT COUNT(*) FROM workspace_project_bindings WHERE project IN (?, 'fresh-git')`, []any{first.Project, first.Project, first.Project, first.Project}},
+	} {
+		label := check.label
+		rows, err := d.RawDB().Query(check.query, check.args...)
+		if err != nil {
+			t.Fatalf("read purged %s: %v", label, err)
+		}
+		for rows.Next() {
+			var count int
+			if err := rows.Scan(&count); err != nil {
+				_ = rows.Close()
+				t.Fatalf("scan purged %s: %v", label, err)
+			}
+			if count != 0 {
+				_ = rows.Close()
+				t.Fatalf("purged %s count = %d, want 0", label, count)
+			}
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatalf("close purged %s rows: %v", label, err)
+		}
+	}
+
+	fresh, err := project.ValidateWriteProject(ctx, d, project.WriteInput{Directory: workspace})
+	if err != nil || fresh.Project != "fresh-git" {
+		t.Fatalf("fresh no-project validation = (%+v, %v), want fresh-git nil", fresh, err)
+	}
+	bound, found, err := d.ResolveWorkspaceProjectBinding(ctx, workspace)
+	if err != nil || !found || bound != "fresh-git" {
+		t.Fatalf("fresh workspace binding = (%q, %t, %v), want fresh-git true nil", bound, found, err)
+	}
+	// The normal resolver supplied the freshly discovered Git key without an
+	// explicit project. Its following write creates only fresh B-owned state.
+	if _, err := d.SaveMemoryWithManualSession(&models.Memory{Project: fresh.Project, Title: "fresh history", Content: "new"}); err != nil {
+		t.Fatalf("save fresh resolved project: %v", err)
+	}
+	for label, query := range map[string]string{
+		"retired identity": `SELECT COUNT(*) FROM project_identities WHERE project_key = ?`,
+		"fresh identity":   `SELECT COUNT(*) FROM project_identities WHERE project_key = 'fresh-git'`,
+		"aliases":          `SELECT COUNT(*) FROM project_aliases`,
+		"governance":       `SELECT COUNT(*) FROM hive_project_governance`,
+		"mutations":        `SELECT COUNT(*) FROM memory_mutations`,
+		"memories":         `SELECT COUNT(*) FROM memories`,
+		"sessions":         `SELECT COUNT(*) FROM sessions`,
+		"prompts":          `SELECT COUNT(*) FROM user_prompts`,
+	} {
+		var count int
+		args := []any{}
+		if label == "retired identity" {
+			args = append(args, first.Project)
+		}
+		if err := d.RawDB().QueryRow(query, args...).Scan(&count); err != nil {
+			t.Fatalf("count fresh %s: %v", label, err)
+		}
+		want := 0
+		if label == "fresh identity" || label == "memories" || label == "sessions" || label == "mutations" {
+			want = 1
+		}
+		if count != want {
+			t.Fatalf("fresh %s count = %d, want %d", label, count, want)
+		}
+	}
+}
+
 func TestValidateWriteProjectAdoptsHistoricalDirectoryBeforeGitPromotion(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
