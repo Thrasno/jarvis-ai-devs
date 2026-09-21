@@ -320,6 +320,231 @@ func sharedApplyProgressGetFixture(t *testing.T) []byte {
 	return data
 }
 
+func TestGetSDDStoreBindingContractAndAbsence(t *testing.T) {
+	const project = "project%_"
+	const change = "change%_"
+	client := newSDDClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.EscapedPath() != "/sdd/changes/change%25_/store-binding" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.EscapedPath())
+		}
+		if got := r.URL.Query().Get("project"); got != project {
+			t.Fatalf("project query = %q", got)
+		}
+		_, _ = w.Write([]byte(sddStoreBindingResponse(hiveclient.CanonicalProjectKey(project), change, "1", "hive", "cli", "2026-08-01T10:00:00Z", nil)))
+	})
+
+	binding, found, err := client.GetSDDStoreBinding(context.Background(), project, change)
+	if err != nil || !found {
+		t.Fatalf("binding=%#v found=%t err=%v", binding, found, err)
+	}
+	if binding.Project != hiveclient.CanonicalProjectKey(project) || binding.Change != change || binding.Mode != hiveclient.SDDStoreModeHive || binding.Provenance != "cli" || binding.CreatedAt.IsZero() {
+		t.Fatalf("binding = %#v", binding)
+	}
+
+	missing := newSDDClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"code":"not_found"}`))
+	})
+	_, found, err = missing.GetSDDStoreBinding(context.Background(), "project", "change")
+	if err != nil || found {
+		t.Fatalf("found=%t err=%v", found, err)
+	}
+}
+
+func TestAdoptSDDStoreBindingCreatedAndReplay(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		status  int
+		created bool
+	}{
+		{name: "created", status: http.StatusCreated, created: true},
+		{name: "replay", status: http.StatusOK, created: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newSDDClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.EscapedPath() != "/sdd/changes/change%25_/store-binding/adopt" {
+					t.Fatalf("request = %s %s", r.Method, r.URL.EscapedPath())
+				}
+				var request map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Fatal(err)
+				}
+				if len(request) != 3 || request["project"] != "project%_" || request["mode"] != "hive" || request["provenance"] != "cli" {
+					t.Fatalf("request = %#v", request)
+				}
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(sddStoreBindingResponse(hiveclient.CanonicalProjectKey("project%_"), "change%_", "1", "hive", "cli", "2026-08-01T10:00:00Z", &tt.created)))
+			})
+
+			binding, created, err := client.AdoptSDDStoreBinding(context.Background(), "project%_", "change%_", hiveclient.SDDStoreBindingRequest{Mode: hiveclient.SDDStoreModeHive, Provenance: "cli"})
+			if err != nil || created != tt.created || binding.Mode != hiveclient.SDDStoreModeHive {
+				t.Fatalf("binding=%#v created=%t err=%v", binding, created, err)
+			}
+		})
+	}
+}
+
+func TestAdoptSDDStoreBindingReturnsTypedConflict(t *testing.T) {
+	client := newSDDClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"code":"binding_conflict","existing":{"project":"project","change":"change","schema_version":"1","mode":"hive","provenance":"first","created_at":"2026-08-01T10:00:00Z"},"requested":{"project":"project","change":"change","schema_version":"1","mode":"hybrid","provenance":"second"}}`))
+	})
+
+	_, _, err := client.AdoptSDDStoreBinding(context.Background(), "project", "change", hiveclient.SDDStoreBindingRequest{Mode: hiveclient.SDDStoreModeHybrid, Provenance: "second"})
+	var conflict *hiveclient.SDDStoreBindingConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("error = %#v, want typed conflict", err)
+	}
+	if !errors.Is(err, hiveclient.ErrSDDStoreBindingConflict) {
+		t.Fatalf("error = %#v, want conflict sentinel", err)
+	}
+	if conflict.Existing.Provenance != "first" || conflict.Existing.CreatedAt.IsZero() || conflict.Requested.Provenance != "second" || !conflict.Requested.CreatedAt.IsZero() {
+		t.Fatalf("conflict = %#v", conflict)
+	}
+}
+
+func TestAdoptSDDStoreBindingRejectsConflictThatDoesNotMatchRequest(t *testing.T) {
+	validRequested := `{"project":"project","change":"change","schema_version":"1","mode":"hybrid","provenance":"second"}`
+	for _, tt := range []struct {
+		name      string
+		existing  string
+		requested string
+	}{
+		{name: "future requested schema", existing: `{"project":"project","change":"change","schema_version":"1","mode":"hive","provenance":"first","created_at":"2026-08-01T10:00:00Z"}`, requested: `{"project":"project","change":"change","schema_version":"2","mode":"hybrid","provenance":"second"}`},
+		{name: "requested mode mismatch", existing: `{"project":"project","change":"change","schema_version":"1","mode":"hive","provenance":"first","created_at":"2026-08-01T10:00:00Z"}`, requested: `{"project":"project","change":"change","schema_version":"1","mode":"hive","provenance":"second"}`},
+		{name: "requested provenance mismatch", existing: `{"project":"project","change":"change","schema_version":"1","mode":"hive","provenance":"first","created_at":"2026-08-01T10:00:00Z"}`, requested: `{"project":"project","change":"change","schema_version":"1","mode":"hybrid","provenance":"other"}`},
+		{name: "existing equals requested", existing: `{"project":"project","change":"change","schema_version":"1","mode":"hybrid","provenance":"second","created_at":"2026-08-01T10:00:00Z"}`, requested: validRequested},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newSDDClient(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"code":"binding_conflict","existing":` + tt.existing + `,"requested":` + tt.requested + `}`))
+			})
+
+			_, _, err := client.AdoptSDDStoreBinding(context.Background(), "project", "change", hiveclient.SDDStoreBindingRequest{Mode: hiveclient.SDDStoreModeHybrid, Provenance: "second"})
+			var protocolErr *hiveclient.SDDStoreBindingProtocolError
+			if !errors.As(err, &protocolErr) {
+				t.Fatalf("error = %#v, want protocol error", err)
+			}
+			if errors.Is(err, hiveclient.ErrSDDStoreBindingConflict) {
+				t.Fatalf("error = %#v, must not authorize conflict", err)
+			}
+		})
+	}
+}
+
+func TestSDDStoreBindingRejectsInvalidAuthorityResponses(t *testing.T) {
+	valid := sddStoreBindingResponse("project", "change", "1", "hive", "cli", "2026-08-01T10:00:00Z", nil)
+	oversized := `{"binding":{"project":"project","change":"change","schema_version":"1","mode":"hive","provenance":"` + strings.Repeat("x", 64<<10) + `","created_at":"2026-08-01T10:00:00Z"}}`
+	for _, tt := range []struct {
+		name string
+		body string
+	}{
+		{name: "missing binding field", body: `{"binding":{"project":"project","change":"change","schema_version":"1","mode":"hive","created_at":"2026-08-01T10:00:00Z"}}`},
+		{name: "unknown field", body: `{"binding":{"project":"project","change":"change","schema_version":"1","mode":"hive","provenance":"cli","created_at":"2026-08-01T10:00:00Z","extra":true}}`},
+		{name: "duplicate field", body: `{"binding":{"project":"project","change":"change","schema_version":"1","mode":"hive","mode":"hybrid","provenance":"cli","created_at":"2026-08-01T10:00:00Z"}}`},
+		{name: "case alias", body: `{"Binding":{}}`},
+		{name: "malformed", body: `{"binding":`},
+		{name: "trailing JSON", body: valid + ` {}`},
+		{name: "oversized", body: oversized},
+		{name: "project mismatch", body: sddStoreBindingResponse("other", "change", "1", "hive", "cli", "2026-08-01T10:00:00Z", nil)},
+		{name: "change mismatch", body: sddStoreBindingResponse("project", "other", "1", "hive", "cli", "2026-08-01T10:00:00Z", nil)},
+		{name: "invalid mode", body: sddStoreBindingResponse("project", "change", "1", "none", "cli", "2026-08-01T10:00:00Z", nil)},
+		{name: "untrimmed provenance", body: sddStoreBindingResponse("project", "change", "1", "hive", " cli ", "2026-08-01T10:00:00Z", nil)},
+		{name: "non UTC timestamp", body: sddStoreBindingResponse("project", "change", "1", "hive", "cli", "2026-08-01T10:00:00+01:00", nil)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newSDDClient(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(tt.body)) })
+			_, _, err := client.GetSDDStoreBinding(context.Background(), "project", "change")
+			if err == nil {
+				t.Fatal("expected fail-closed protocol error")
+			}
+		})
+	}
+}
+
+func TestSDDStoreBindingFutureSchemaAndErrorStatusContracts(t *testing.T) {
+	future := newSDDClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(sddStoreBindingResponse("project", "change", "2", "hybrid", "cli", "2026-08-01T10:00:00Z", nil)))
+	})
+	binding, found, err := future.GetSDDStoreBinding(context.Background(), "project", "change")
+	if err != nil || !found || binding.SchemaVersion != "2" || binding.Mode != hiveclient.SDDStoreModeHybrid {
+		t.Fatalf("binding=%#v found=%t err=%v", binding, found, err)
+	}
+
+	for _, tt := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "unknown 404 is not missing", status: http.StatusNotFound, body: `{"code":"unavailable"}`},
+		{name: "validation is an API error", status: http.StatusUnprocessableEntity, body: `{"code":"validation"}`},
+		{name: "unavailable is an API error", status: http.StatusServiceUnavailable, body: `{"code":"unavailable"}`},
+		{name: "malformed error envelope", status: http.StatusServiceUnavailable, body: `{"error":"unavailable"}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newSDDClient(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			})
+			_, found, err := client.GetSDDStoreBinding(context.Background(), "project", "change")
+			if err == nil || found {
+				t.Fatalf("found=%t err=%v", found, err)
+			}
+		})
+	}
+}
+
+func TestAdoptSDDStoreBindingRejectsSuccessStatusAndValueMismatches(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		status     int
+		created    *bool
+		schema     string
+		mode       string
+		provenance string
+	}{
+		{name: "created status needs created true", status: http.StatusCreated, created: boolPointer(false), schema: "1", mode: "hive", provenance: "cli"},
+		{name: "replay status needs created false", status: http.StatusOK, created: boolPointer(true), schema: "1", mode: "hive", provenance: "cli"},
+		{name: "post schema must be one", status: http.StatusOK, created: boolPointer(false), schema: "2", mode: "hive", provenance: "cli"},
+		{name: "post mode must match", status: http.StatusOK, created: boolPointer(false), schema: "1", mode: "hybrid", provenance: "cli"},
+		{name: "post provenance must match", status: http.StatusOK, created: boolPointer(false), schema: "1", mode: "hive", provenance: "other"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newSDDClient(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(sddStoreBindingResponse("project", "change", tt.schema, tt.mode, tt.provenance, "2026-08-01T10:00:00Z", tt.created)))
+			})
+			_, _, err := client.AdoptSDDStoreBinding(context.Background(), "project", "change", hiveclient.SDDStoreBindingRequest{Mode: hiveclient.SDDStoreModeHive, Provenance: "cli"})
+			if err == nil {
+				t.Fatal("expected fail-closed protocol error")
+			}
+		})
+	}
+}
+
+func sddStoreBindingResponse(project, change, schema, mode, provenance, createdAt string, created *bool) string {
+	binding := map[string]string{
+		"project":        project,
+		"change":         change,
+		"schema_version": schema,
+		"mode":           mode,
+		"provenance":     provenance,
+		"created_at":     createdAt,
+	}
+	response := map[string]any{"binding": binding}
+	if created != nil {
+		response["created"] = *created
+	}
+	body, err := json.Marshal(response)
+	if err != nil {
+		panic(err)
+	}
+	return string(body)
+}
+
+func boolPointer(value bool) *bool { return &value }
+
 func newSDDClient(t *testing.T, handler http.HandlerFunc) *hiveclient.Client {
 	t.Helper()
 	server := httptest.NewServer(handler)
