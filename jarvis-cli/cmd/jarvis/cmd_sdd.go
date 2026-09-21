@@ -256,14 +256,7 @@ func resolveBoundStatusSourceAt(ctx context.Context, projectName, given, working
 		}
 	}
 
-	resolver := sddbinding.LegacyResolver{
-		HiveBindings:      hc,
-		HiveSource:        hiveSource,
-		OpenSpecSource:    openSpecSource,
-		OpenSpecChangeDir: filepath.Join(workingDir, "openspec", "changes", changeName),
-		ResolutionLockDir: workingDir,
-	}
-	binding, err := resolver.ResolveAndAdopt(ctx, projectName, changeName, initialStoreSelection())
+	binding, err := resolveSddStoreBindingAt(ctx, hc, projectName, changeName, workingDir)
 	if err != nil {
 		return "", nil, sddbinding.Resolution{}, fmt.Errorf("resolve SDD store binding: %w", err)
 	}
