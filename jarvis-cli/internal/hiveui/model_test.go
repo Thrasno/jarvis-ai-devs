@@ -1009,6 +1009,116 @@ func TestProjectArchiveRequiresBackupAndExactConfirmationBeforeDispatch(t *testi
 	assertContains(t, m.View(), "Project alpha archive completed locally with backup backup-archive", "Cloud handoff: No cloud project mutation was performed.")
 }
 
+func TestProjectViewerUsesCanonicalKeyForMemoryFilteringAndProjectMutations(t *testing.T) {
+	const sourceKey = "jarvis-dev-workspace"
+	const sourceName = "Jarvis Dev Workspace"
+	const targetKey = "jarvis-platform"
+	const targetName = "Jarvis Platform"
+	snapshot := Snapshot{
+		DashboardState: DashboardHealthy,
+		Projects: []hiveclient.Project{
+			{Key: sourceKey, Name: sourceName, ActiveMemoryCount: 1},
+			{Key: targetKey, Name: targetName},
+		},
+		Memories:        []hiveclient.Memory{{SyncID: "visible", Project: sourceKey, Title: "Visible memory"}},
+		DeletedMemories: []hiveclient.Memory{{SyncID: "deleted", Project: sourceKey, Title: "Deleted memory", Deleted: true}},
+		Backups:         []hiveclient.Backup{{ID: "backup-1"}},
+	}
+
+	viewer := sendKey(NewModelWithSnapshot(snapshot), tea.KeyEnter)
+	viewer = sendKey(viewer, tea.KeyEnter)
+	assertContains(t, viewer.View(), sourceName, "Visible memory")
+	viewer = sendRune(viewer, 'x')
+	assertContains(t, viewer.View(), "Deleted memory")
+
+	t.Run("archive binds the canonical key", func(t *testing.T) {
+		executor := &fakeProjectArchiveExecutor{}
+		m := sendKey(NewModelWithSnapshotAndProjectArchiveExecutor(snapshot, executor), tea.KeyEnter)
+		m = sendRune(m, 'a')
+		m = sendText(m, "backup-1")
+		m = sendKey(m, tea.KeyEnter)
+		m.width = 200
+		assertContains(t, m.View(), "target "+sourceName, "Type exactly: ARCHIVE project "+sourceKey)
+		m = sendText(m, "ARCHIVE project "+sourceKey)
+		m = submitProjectArchiveAndApplyResult(t, m)
+		if len(executor.requests) != 1 || executor.requests[0].Project != sourceKey || executor.requests[0].Confirmation != "ARCHIVE project "+sourceKey {
+			t.Fatalf("archive requests = %#v, want canonical coordinate and confirmation", executor.requests)
+		}
+	})
+
+	t.Run("merge binds canonical source and target keys", func(t *testing.T) {
+		executor := &fakeProjectMergeExecutor{}
+		m := sendKey(NewModelWithSnapshotAndProjectMergeExecutor(snapshot, executor), tea.KeyEnter)
+		m = sendRune(m, 'm')
+		m = sendText(m, targetName)
+		m = sendKey(m, tea.KeyEnter)
+		m = sendText(m, "backup-1")
+		m = sendKey(m, tea.KeyEnter)
+		assertContains(t, m.View(), "source "+sourceName, "Type exactly: MERGE project "+sourceKey+" INTO "+targetKey)
+		m = sendText(m, "MERGE project "+sourceKey+" INTO "+targetKey)
+		m = submitProjectMergeAndApplyResult(t, m)
+		if len(executor.requests) != 1 || executor.requests[0].SourceProject != sourceKey || executor.requests[0].TargetProject != targetKey || executor.requests[0].Confirmation != "MERGE project "+sourceKey+" INTO "+targetKey {
+			t.Fatalf("merge requests = %#v, want canonical coordinates and confirmation", executor.requests)
+		}
+	})
+
+	t.Run("batch merge rejects a selected source entered by display name", func(t *testing.T) {
+		executor := &fakeProjectMergeBatchExecutor{}
+		m := sendKey(NewModelWithSnapshotAndProjectMergeBatchExecutor(snapshot, executor), tea.KeyEnter)
+		m = sendRune(m, 'm')
+		m = sendKey(m, tea.KeySpace)
+		m = sendKey(m, tea.KeyEnter)
+		m = sendText(m, sourceName)
+		m = sendKey(m, tea.KeyEnter)
+		if m.mergeStep != mergeStepPickTarget || executor.callCount != 0 {
+			t.Fatalf("batch self-merge state = step:%v calls:%d, want pick-target with no dispatch", m.mergeStep, executor.callCount)
+		}
+		assertContains(t, m.View(), "Target must not be one of the selected sources")
+	})
+
+	t.Run("batch merge binds canonical source and target keys", func(t *testing.T) {
+		executor := &fakeProjectMergeBatchExecutor{}
+		m := sendKey(NewModelWithSnapshotAndProjectMergeBatchExecutor(snapshot, executor), tea.KeyEnter)
+		m = sendRune(m, 'm')
+		m = sendKey(m, tea.KeySpace)
+		m = sendKey(m, tea.KeyEnter)
+		m = sendText(m, targetName)
+		m = sendKey(m, tea.KeyEnter)
+		m = sendKey(m, tea.KeyEnter)
+		m = sendText(m, "backup-1")
+		m = sendKey(m, tea.KeyEnter)
+		assertContains(t, m.View(), "Type exactly to confirm: MERGE projects INTO "+targetKey)
+		m = sendText(m, "MERGE projects INTO "+targetKey)
+		updated, command := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if command == nil {
+			t.Fatal("batch merge command is nil")
+		}
+		completed, _ := updated.Update(command())
+		m = completed.(Model)
+		if executor.callCount != 1 || len(executor.requests) != 1 || !reflect.DeepEqual(executor.requests[0].Sources, []string{sourceKey}) || executor.requests[0].Target != targetKey || executor.requests[0].Confirmation != "MERGE projects INTO "+targetKey {
+			t.Fatalf("batch merge requests = %#v, want canonical coordinates and confirmation", executor.requests)
+		}
+		if m.mergeBatchResult == nil {
+			t.Fatal("batch merge result is nil")
+		}
+	})
+
+	t.Run("purge binds the canonical key", func(t *testing.T) {
+		executor := &fakeProjectDeleteExecutor{}
+		m := NewModelWithSnapshotAndProjectDeleteExecutor(snapshot, executor).startProjectPurge()
+		m = sendKey(m, tea.KeyEnter)
+		m = sendText(m, "backup-1")
+		m = sendKey(m, tea.KeyEnter)
+		m.width = 200
+		assertContains(t, m.View(), "target "+sourceName, "Type exactly: PURGE project "+sourceKey)
+		m = sendText(m, "PURGE project "+sourceKey)
+		m = submitProjectPurgeAndApplyResult(t, m)
+		if len(executor.requests) != 1 || executor.requests[0].Project != sourceKey || executor.requests[0].Confirmation != "PURGE project "+sourceKey {
+			t.Fatalf("purge requests = %#v, want canonical coordinate and confirmation", executor.requests)
+		}
+	})
+}
+
 func TestProjectArchiveConfirmationCanContainLowercaseQ(t *testing.T) {
 	executor := &fakeProjectArchiveExecutor{note: "No cloud project mutation was performed."}
 	snapshot := projectArchiveSnapshot()
@@ -2356,12 +2466,14 @@ func batchMergeSnapshot() Snapshot {
 
 type fakeProjectMergeBatchExecutor struct {
 	callCount int
+	requests  []hiveclient.ProjectMergeBatchRequest
 	result    hiveclient.ProjectMergeBatchResult
 	err       error
 }
 
 func (f *fakeProjectMergeBatchExecutor) MergeProjects(_ context.Context, req hiveclient.ProjectMergeBatchRequest) (hiveclient.ProjectMergeBatchResult, error) {
 	f.callCount++
+	f.requests = append(f.requests, req)
 	if f.err != nil {
 		return hiveclient.ProjectMergeBatchResult{}, f.err
 	}

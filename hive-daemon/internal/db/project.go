@@ -23,6 +23,7 @@ var (
 )
 
 type GovernanceProject struct {
+	Key                string     `json:"key"`
 	Name               string     `json:"name"`
 	Directory          string     `json:"directory"`
 	ActiveMemoryCount  int        `json:"active_memory_count"`
@@ -775,7 +776,8 @@ WITH project_names AS (
     WHERE synced_at IS NULL AND deleted_at IS NULL
     GROUP BY project
 )
-SELECT COALESCE(NULLIF(identity.remote_spelling, ''), NULLIF(identity.first_spelling, ''), project_names.project),
+SELECT project_names.project,
+       COALESCE(NULLIF(identity.remote_spelling, ''), NULLIF(identity.first_spelling, ''), project_names.project),
        COALESCE(directories.directory, ''),
        COALESCE(memory_counts.active_count, 0),
        COALESCE(memory_counts.deleted_count, 0),
@@ -805,7 +807,7 @@ func scanGovernanceProject(scanner interface{ Scan(...any) error }) (GovernanceP
 	var project GovernanceProject
 	var lastActivity string
 	var archivedAt, mergedAt sql.NullString
-	if err := scanner.Scan(&project.Name, &project.Directory, &project.ActiveMemoryCount, &project.DeletedMemoryCount, &project.SessionCount, &project.PromptCount, &lastActivity, &archivedAt, &project.ArchivedBy, &project.ArchiveReason, &project.MergeTarget, &mergedAt, &project.MergedBy, &project.MergeReason, &project.UnsyncedCount); err != nil {
+	if err := scanner.Scan(&project.Key, &project.Name, &project.Directory, &project.ActiveMemoryCount, &project.DeletedMemoryCount, &project.SessionCount, &project.PromptCount, &lastActivity, &archivedAt, &project.ArchivedBy, &project.ArchiveReason, &project.MergeTarget, &mergedAt, &project.MergedBy, &project.MergeReason, &project.UnsyncedCount); err != nil {
 		return GovernanceProject{}, err
 	}
 	if lastActivity != "" {

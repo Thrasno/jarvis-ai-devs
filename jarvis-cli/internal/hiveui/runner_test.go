@@ -238,6 +238,58 @@ func TestLoadSnapshot_MemoriesEmptyFilterFallback(t *testing.T) {
 	}
 }
 
+func TestLoadSnapshotUsesCanonicalProjectKeyForFallbacksAndTimeline(t *testing.T) {
+	const canonicalKey = "jarvis-dev-workspace"
+	const displayName = "Jarvis Dev Workspace"
+	var timelinePath string
+	var fallbackProjects []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/governance/health":
+			writeJSON(w, map[string]any{"projects": []any{}})
+		case "/governance/projects":
+			writeJSON(w, map[string]any{"projects": []map[string]any{{"key": canonicalKey, "name": displayName}}})
+		case "/governance/memories":
+			project := r.URL.Query().Get("project")
+			if project == "" {
+				http.Error(w, `{"error":"project required"}`, http.StatusBadRequest)
+				return
+			}
+			fallbackProjects = append(fallbackProjects, project)
+			if project != canonicalKey {
+				t.Fatalf("memory request project = %q, want canonical key %q", project, canonicalKey)
+			}
+			writeJSON(w, map[string]any{"memories": []map[string]any{{"sync_id": "memory-1", "project": canonicalKey, "title": "Visible memory", "deleted": r.URL.Query().Get("deleted_only") == "true"}}})
+		case "/governance/projects/" + canonicalKey + "/timeline":
+			timelinePath = r.URL.Path
+			writeJSON(w, map[string]any{"memories": []map[string]any{{"sync_id": "timeline-1", "project": canonicalKey, "title": "Timeline event"}}})
+		case "/governance/warnings":
+			writeJSON(w, map[string]any{"warnings": []any{}})
+		case "/governance/backups":
+			writeJSON(w, map[string]any{"backups": []any{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client, err := hiveclient.New(srv.URL)
+	if err != nil {
+		t.Fatalf("hiveclient.New: %v", err)
+	}
+	snap := LoadSnapshot(context.Background(), client, srv.URL, displayName)
+	if len(snap.Memories) != 1 || len(snap.DeletedMemories) != 1 || len(snap.TimelineMemories) != 1 {
+		t.Fatalf("snapshot memory slices = active:%d deleted:%d timeline:%d, want one each", len(snap.Memories), len(snap.DeletedMemories), len(snap.TimelineMemories))
+	}
+	if timelinePath != "/governance/projects/"+canonicalKey+"/timeline" {
+		t.Fatalf("timeline path = %q, want canonical project key", timelinePath)
+	}
+	if len(fallbackProjects) != 2 {
+		t.Fatalf("fallback project requests = %v, want active and deleted canonical requests", fallbackProjects)
+	}
+}
+
 // ─── LoadSnapshot: TimelineMemories ──────────────────────────────────────────
 
 func TestLoadSnapshot_PopulatesTimelineMemoriesForSelectedProject(t *testing.T) {
