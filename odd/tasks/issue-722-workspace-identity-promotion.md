@@ -93,21 +93,22 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - Checks:
   - Focused daemon governance tests.
   - Focused CLI hiveclient/hiveui tests.
-- Commit: pending final work-unit commit after accepted verification.
+- Commit: `2c1232b8` (`fix(hive): separate project keys from display names`).
 - Authored code lines: 410 (349 additions + 61 deletions); slightly above the ~400 heuristic because DTO, request, rendering, and regression tests form one atomic compatibility unit. No size-only code-golf applied.
 
 ### WU-03 — Workspace binding and guarded local promotion
 
 - Route: delegated direct writer.
 - Trigger evidence: coordinated schema, repository, validator, derivation, and migration changes across more than four files.
-- [ ] Add durable workspace→canonical-project binding storage with migration coverage.
-- [ ] Resolve existing binding before deriving a new identity.
-- [ ] Detect an unambiguous directory→Git transition.
-- [ ] Implement atomic, idempotent promotion with source/target revalidation.
-- [ ] Fail closed when protected SDD apply progress exists, naming #724-compatible recovery.
+- [x] Add durable workspace→canonical-project binding storage with migration coverage.
+- [x] Resolve existing binding before deriving a new identity.
+- [x] Detect an unambiguous directory→Git transition.
+- [x] Implement atomic, idempotent promotion with source/target revalidation.
+- [x] Fail closed when protected SDD apply progress exists, naming #724-compatible recovery.
 - Checks:
-  - Focused DB/project/validator tests covering first observation, restart, promotion, retry, conflicts, and protected-progress rejection.
-- Commit: pending.
+  - Focused DB/project/validator tests covering first observation, restart, promotion, retry, conflicts, alias/session ordering, provenance, sibling bindings, and protected-progress rollback.
+- Commit: pending final work-unit commit after accepted verification.
+- Authored code lines: 1,273 (1,204 additions + 69 deletions); the coherent transaction/schema/validator unit substantially exceeds the heuristic because three review rounds added required upgrade, rollback, alias, provenance, session, sibling-binding, and restart regression coverage. No size-only code-golf applied.
 
 ### WU-04 — Universal ingress resolution and complete local-state migration
 
@@ -170,9 +171,9 @@ The split produces a false data-loss signal, weakens project continuity, and can
 
 ## Acceptance Criteria
 
-- [ ] A workspace first observed without Git is durably bound to its canonical project.
-- [ ] Adding or renaming to a usable Git repository promotes the workspace to the Git-derived key when unambiguous.
-- [ ] Promotion is atomic, idempotent, auditable, backup-protected where required, and loses no supported local state.
+- [x] A workspace first observed without Git is durably bound to its canonical project.
+- [x] Adding or renaming to a usable Git repository promotes the workspace core state to the Git-derived key when unambiguous; full state inventory remains WU-04.
+- [x] Core promotion is atomic and idempotent with source/target revalidation; complete inventory and backup integration remain scoped to WU-04/WU-05.
 - [ ] The retired source cannot be recreated by supported session, memory, prompt, import, passive observation, or sync ingress paths.
 - [x] Local project DTOs expose canonical key separately from display name; Hive API/dashboard projection remains pending.
 - [x] Local TUI renders display names but queries/filters/mutates by canonical key; dashboard remains pending.
@@ -195,6 +196,10 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - 2026-09-21: Closed #721 as `NOT_PLANNED` because it is absorbed into #722; the bilingual closing comment states that implementation is still pending.
 - 2026-09-21: WU-02 writer added canonical/display separation and focused tests, but independent verification rejected the first candidate: display-name confirmation phrases violate daemon canonical-coordinate confirmation contracts, and batch self-merge compares a canonical source against an unresolved display target.
 - 2026-09-21: Corrected both WU-02 defects. Independent re-verification passed the complete eight-file diff, and the parent spot-check passed.
+- 2026-09-21: Committed WU-02 as `2c1232b8`; native committed-candidate assessment was unavailable due a schema-incompatible native response, so the risk plan failed closed to high.
+- 2026-09-21: Independent committed-range verification of `public/master..2c1232b8` passed all focused checks with no blocking findings. WU-02 is complete.
+- 2026-09-21: WU-03 first candidate passed focused tests but failed independent verification on four gaps: upgrade did not adopt historical directory identity, session mismatch could be detected after a committed promotion, only the initiating workspace binding moved, and a nonempty unusable Git origin could misclassify basename fallback as Git-derived.
+- 2026-09-21: Three bounded correction/re-verification rounds fixed alias persistence, session ordering, basename provenance, sibling bindings, protected rollback, and historical upgrade compatibility. Final independent verification passed with no blocking or medium findings; parent spot-check passed.
 
 ## Verification Evidence
 
@@ -206,8 +211,12 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - Post-correction independent verification passed with no blocking findings.
 - Parent spot-check `cd jarvis-cli && go test ./internal/hiveclient ./internal/hiveui` passed.
 - `git diff --check` passed for all eight WU-02 files.
+- Independent committed-range verification passed: `cd hive-daemon && go test ./internal/db`, `cd jarvis-cli && go test ./internal/hiveclient ./internal/hiveui`, and `git diff --check public/master..2c1232b8`.
+- WU-03 writer checks passed in every round; earlier independent failures were retained and corrected rather than waived.
+- Final independent WU-03 verification passed: `cd hivederive && go test ./...`, daemon DB/project/httpapi/mcp focused suites, and `git diff --check`.
+- Parent spot-check `cd hive-daemon && go test ./internal/project` passed.
 - No integrated test suite has been run yet.
 
 ## Next Step
 
-Commit WU-02 as one reviewable compatibility unit, record its commit and slice boundary, assess the committed candidate, then begin WU-03.
+Commit WU-03, record its commit and committed-candidate verification outcome, then begin WU-04 universal ingress and complete local-state migration.

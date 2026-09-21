@@ -88,6 +88,16 @@ type Store interface {
 	ResolveAlias(context.Context, string) (string, bool, error)
 }
 
+// workspaceBindingStore is optional so existing narrow Store fakes and callers
+// retain their contract. DB-backed validator flows opt into durable workspace
+// identity without widening every transport test double.
+type workspaceBindingStore interface {
+	ResolveWorkspaceProjectBinding(context.Context, string) (string, bool, error)
+	EnsureWorkspaceProjectBinding(context.Context, string, string) (string, bool, error)
+	PromoteWorkspaceProject(context.Context, string, string, string) (bool, error)
+	BindAndPromoteWorkspaceProject(context.Context, string, string, string) (bool, error)
+}
+
 type WriteInput struct {
 	Project             string
 	Directory           string
@@ -152,6 +162,10 @@ func ValidateWriteProjectWithConfig(ctx context.Context, store Store, input Writ
 		return validateRecoveryRetry(ctx, store, input, now())
 	}
 
+	if bindings, ok := store.(workspaceBindingStore); ok && strings.TrimSpace(input.Directory) != "" {
+		return validateWorkspaceWriteProject(ctx, store, bindings, input, now, ttl)
+	}
+
 	known, err := store.KnownProjects(ctx)
 	if err != nil {
 		return Result{}, fmt.Errorf("known projects: %w", err)
@@ -188,6 +202,186 @@ func ValidateWriteProjectWithConfig(ctx context.Context, store Store, input Writ
 		return Result{}, err
 	}
 	return Result{Project: projectName}, nil
+}
+
+type workspaceResolution struct {
+	project         string
+	promotionTarget string
+	bind            bool
+	candidates      []Candidate
+}
+
+func validateWorkspaceWriteProject(ctx context.Context, store Store, bindings workspaceBindingStore, input WriteInput, now func() time.Time, ttl time.Duration) (Result, error) {
+	workspace := canonicalPath(input.Directory)
+	bound, found, err := bindings.ResolveWorkspaceProjectBinding(ctx, workspace)
+	if err != nil {
+		return Result{}, fmt.Errorf("resolve workspace project binding: %w", err)
+	}
+
+	var resolution workspaceResolution
+	if found {
+		bound, err = resolveWorkspaceAlias(ctx, store, bound)
+		if err != nil {
+			return Result{}, err
+		}
+		resolution, err = resolveBoundWorkspaceProject(ctx, store, bound, input)
+	} else {
+		known, knownErr := store.KnownProjects(ctx)
+		if knownErr != nil {
+			return Result{}, fmt.Errorf("known projects: %w", knownErr)
+		}
+		resolution, err = resolveUnboundWorkspaceProject(ctx, store, known, input)
+	}
+	if err != nil {
+		return Result{}, err
+	}
+	if len(resolution.candidates) > 1 {
+		createdAt := now()
+		expiresAt := createdAt.Add(ttl)
+		token, err := store.CreateRecoveryToken(ctx, TokenRequest{
+			Reason:           string(CodeProjectAmbiguous),
+			RequestedProject: input.Project,
+			Candidates:       resolution.candidates,
+			ContextHash:      tokenContextHash(input.Project, input.Directory, input.SessionID),
+			CreatedAt:        createdAt,
+			ExpiresAt:        expiresAt,
+		})
+		if err != nil {
+			return Result{}, fmt.Errorf("create recovery token: %w", err)
+		}
+		return Result{}, &ValidationError{Code: CodeProjectAmbiguous, Message: "project resolution is ambiguous", Candidates: resolution.candidates, RecoveryToken: token, ExpiresAt: expiresAt}
+	}
+	if resolution.project == "" || resolution.project == "default" {
+		return Result{}, &ValidationError{Code: CodeProjectUnknown, Message: "project is not known"}
+	}
+
+	// Resolve a fresh candidate's effective alias before session validation. This
+	// keeps an old→new derived alias from accepting a session that belongs only to
+	// retired old, while a real unaliased A remains the valid promotion source.
+	if resolution.bind {
+		resolved, err := resolveWorkspaceAlias(ctx, store, resolution.project)
+		if err != nil {
+			return Result{}, err
+		}
+		resolution.project = resolved
+	}
+	// Validate the effective pre-promotion identity before binding or promotion.
+	if err := validateSessionProject(ctx, store, input.SessionID, resolution.project); err != nil {
+		return Result{}, err
+	}
+	if resolution.bind {
+		if resolution.promotionTarget != "" && normalizeName(resolution.project) != normalizeName(resolution.promotionTarget) {
+			if _, err := bindings.BindAndPromoteWorkspaceProject(ctx, workspace, resolution.project, resolution.promotionTarget); err != nil {
+				return Result{}, err
+			}
+			return Result{Project: normalizeName(resolution.promotionTarget)}, nil
+		}
+		stored, _, err := bindings.EnsureWorkspaceProjectBinding(ctx, workspace, resolution.project)
+		if err != nil {
+			return Result{}, fmt.Errorf("ensure workspace project binding: %w", err)
+		}
+		if normalizeName(stored) != normalizeName(resolution.project) {
+			return validateWorkspaceWriteProject(ctx, store, bindings, input, now, ttl)
+		}
+		resolution.project = stored
+	}
+	if resolution.promotionTarget != "" && normalizeName(resolution.project) != normalizeName(resolution.promotionTarget) {
+		if _, err := bindings.PromoteWorkspaceProject(ctx, workspace, resolution.project, resolution.promotionTarget); err != nil {
+			return Result{}, err
+		}
+		resolution.project = normalizeName(resolution.promotionTarget)
+	}
+	return Result{Project: resolution.project}, nil
+}
+
+func resolveUnboundWorkspaceProject(ctx context.Context, store Store, known []KnownProject, input WriteInput) (workspaceResolution, error) {
+	historical, candidates, err := resolveByDirectory(known, input.Directory)
+	if err != nil || len(candidates) > 1 {
+		return workspaceResolution{candidates: candidates}, err
+	}
+	derived, hasDerivedIdentity, fromGit, _ := deriveProjectIdentity(input.Directory)
+	if historical != "" {
+		historical, err = resolveWorkspaceAlias(ctx, store, historical)
+		if err != nil {
+			return workspaceResolution{}, err
+		}
+		comparisonProject := ""
+		if fromGit {
+			comparisonProject = derived
+		}
+		if explicit := strings.TrimSpace(input.Project); explicit != "" && !matchesWorkspaceIdentity(ctx, store, explicit, historical, comparisonProject) {
+			return workspaceResolution{}, workspaceIdentityMismatch(input, explicit, historical)
+		}
+		resolution := workspaceResolution{project: historical, bind: true}
+		if fromGit && normalizeName(derived) != normalizeName(historical) {
+			resolution.promotionTarget = derived
+		}
+		return resolution, nil
+	}
+	if !hasDerivedIdentity {
+		projectName, fallbackCandidates, err := resolveProject(ctx, store, known, input)
+		return workspaceResolution{project: projectName, candidates: fallbackCandidates, bind: projectName != ""}, err
+	}
+	if explicit := strings.TrimSpace(input.Project); explicit != "" {
+		_, candidates, err := resolveByName(known, explicit)
+		if err != nil || len(candidates) > 1 {
+			return workspaceResolution{candidates: candidates}, err
+		}
+		if normalizeName(explicit) != normalizeName(derived) {
+			return workspaceResolution{}, workspaceIdentityMismatch(input, explicit, derived)
+		}
+	}
+	return workspaceResolution{project: derived, bind: true}, nil
+}
+
+func resolveBoundWorkspaceProject(ctx context.Context, store Store, bound string, input WriteInput) (workspaceResolution, error) {
+	gitProject, fromGit, err := deriveGitProjectIdentity(input.Directory)
+	if err != nil {
+		// A durable binding remains valid if the directory is temporarily absent.
+		fromGit = false
+	}
+	comparisonProject := ""
+	if fromGit {
+		comparisonProject = gitProject
+	}
+	if explicit := strings.TrimSpace(input.Project); explicit != "" && !matchesWorkspaceIdentity(ctx, store, explicit, bound, comparisonProject) {
+		return workspaceResolution{}, workspaceIdentityMismatch(input, explicit, bound)
+	}
+	resolution := workspaceResolution{project: bound}
+	if fromGit && normalizeName(gitProject) != normalizeName(bound) {
+		resolution.promotionTarget = gitProject
+	}
+	return resolution, nil
+}
+
+func resolveWorkspaceAlias(ctx context.Context, store Store, project string) (string, error) {
+	alias, found, err := store.ResolveAlias(ctx, project)
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace alias: %w", err)
+	}
+	if found {
+		return alias, nil
+	}
+	return project, nil
+}
+
+func matchesWorkspaceIdentity(ctx context.Context, store Store, explicit, bound, gitProject string) bool {
+	key := normalizeName(explicit)
+	if key == normalizeName(bound) || key == normalizeName(gitProject) {
+		return true
+	}
+	alias, found, err := store.ResolveAlias(ctx, explicit)
+	return err == nil && found && (normalizeName(alias) == normalizeName(bound) || normalizeName(alias) == normalizeName(gitProject))
+}
+
+func workspaceIdentityMismatch(input WriteInput, explicit string, identities ...string) error {
+	candidates := []Candidate{{Project: explicit}}
+	for _, identity := range identities {
+		if identity != "" && normalizeName(identity) != normalizeName(explicit) {
+			candidates = append(candidates, Candidate{Project: identity, Directory: input.Directory})
+		}
+	}
+	return &ValidationError{Code: CodeProjectIdentityMismatch, Message: "explicit project does not match workspace identity", Candidates: uniqueCandidates(candidates)}
 }
 
 func validateRecoveryRetry(ctx context.Context, store Store, input WriteInput, now time.Time) (Result, error) {
@@ -262,7 +456,7 @@ func recoveryTokenValidationError(err error) error {
 
 func resolveProject(ctx context.Context, store Store, known []KnownProject, input WriteInput) (string, []Candidate, error) {
 	explicit := strings.TrimSpace(input.Project)
-	derived, hasDerivedIdentity, deriveErr := deriveProjectIdentity(input.Directory)
+	derived, hasDerivedIdentity, _, deriveErr := deriveProjectIdentity(input.Directory)
 
 	if explicit != "" {
 		if strings.TrimSpace(input.Directory) != "" {

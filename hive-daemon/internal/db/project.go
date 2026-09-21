@@ -366,14 +366,12 @@ WHERE hive_project_governance.archived_at IS NULL
 }
 
 func (d *DB) MergeGovernanceProject(ctx context.Context, source, target, actorID, reason string, mergedAt time.Time) (bool, error) {
-	source = strings.TrimSpace(source)
-	target = strings.TrimSpace(target)
+	source = canonicalProjectKey(strings.TrimSpace(source))
+	targetSpelling := strings.TrimSpace(target)
+	target = canonicalProjectKey(targetSpelling)
 	if source == "" || target == "" {
 		return false, ErrGovernanceProjectRequired
 	}
-	source = canonicalProjectKey(source)
-	targetSpelling := target
-	target = canonicalProjectKey(target)
 	if source == target {
 		return false, ErrGovernanceProjectMergeInvalid
 	}
@@ -384,11 +382,22 @@ func (d *DB) MergeGovernanceProject(ctx context.Context, source, target, actorID
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Read governance record for source first. This handles idempotency and
-	// conflict detection without relying on row existence (rows may have already
-	// been moved on a prior partial run or idempotent re-call).
+	changed, err := d.MergeGovernanceProjectTx(ctx, tx, source, target, targetSpelling, actorID, reason, mergedAt, false, false)
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit merge governance project: %w", err)
+	}
+	return changed, nil
+}
+
+// MergeGovernanceProjectTx is the single core local-state merge contract. The
+// workspace promotion path adds binding revalidation around this transaction;
+// governance calls use the same migration, redirect, and lifecycle checks.
+func (d *DB) MergeGovernanceProjectTx(ctx context.Context, tx *sql.Tx, source, target, targetSpelling, actorID, reason string, mergedAt time.Time, allowBoundSource, workspacePromotion bool) (bool, error) {
 	var srcMergeTarget, srcMergedAt, srcArchivedAt sql.NullString
-	err = tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
 SELECT COALESCE(merge_target, ''), COALESCE(merged_at, ''), COALESCE(archived_at, '')
 FROM hive_project_governance
 WHERE project = ?`, source).Scan(&srcMergeTarget, &srcMergedAt, &srcArchivedAt)
@@ -396,7 +405,6 @@ WHERE project = ?`, source).Scan(&srcMergeTarget, &srcMergedAt, &srcArchivedAt)
 		return false, fmt.Errorf("read source governance: %w", err)
 	}
 	if srcMergedAt.Valid && srcMergedAt.String != "" {
-		// Idempotency: already merged into the same target is a no-op.
 		if srcMergeTarget.String == target {
 			return false, nil
 		}
@@ -406,8 +414,6 @@ WHERE project = ?`, source).Scan(&srcMergeTarget, &srcMergedAt, &srcArchivedAt)
 		return false, ErrGovernanceProjectArchived
 	}
 
-	// Source must exist: check for rows in at least one write table.
-	// This guard ensures we don't silently merge a typo project name.
 	var srcExists bool
 	err = tx.QueryRowContext(ctx, `
 SELECT EXISTS (
@@ -419,12 +425,10 @@ SELECT EXISTS (
 	if err != nil {
 		return false, fmt.Errorf("check source exists: %w", err)
 	}
-	if !srcExists {
+	if !srcExists && !allowBoundSource {
 		return false, fmt.Errorf("%w: %s", ErrGovernanceProjectNotFound, source)
 	}
 
-	// Target existence guard removed: physical migration creates the target
-	// implicitly. Only check target lifecycle via governance record.
 	var tgtMergedAt, tgtArchivedAt sql.NullString
 	err = tx.QueryRowContext(ctx, `
 SELECT COALESCE(merged_at, ''), COALESCE(archived_at, '')
@@ -439,14 +443,14 @@ WHERE project = ?`, target).Scan(&tgtMergedAt, &tgtArchivedAt)
 	if tgtMergedAt.Valid && tgtMergedAt.String != "" {
 		return false, ErrGovernanceProjectMergeConflict
 	}
-	// Guarded apply-progress records embed their project name in signed immutable
-	// bytes and in receipt payloads. Physical project migration cannot safely
-	// rekey either side, so reject before changing identities or moving rows.
 	guarded, err := governanceMergeHasImmutableApplyProgress(tx, source, target)
 	if err != nil {
 		return false, fmt.Errorf("check immutable apply progress merge guard: %w", err)
 	}
 	if guarded {
+		if workspacePromotion {
+			return false, &WorkspacePromotionProtectedError{Source: source, Target: target}
+		}
 		return false, fmt.Errorf("%w: immutable apply progress topology", ErrGovernanceProjectMergeConflict)
 	}
 	if _, err := registerProjectIdentity(ctx, tx, targetSpelling); err != nil {
@@ -459,41 +463,28 @@ WHERE project = ?`, target).Scan(&tgtMergedAt, &tgtArchivedAt)
 	if mergedAt.IsZero() {
 		mergedAt = time.Now().UTC()
 	}
-
 	mergedAtStr := mergedAt.UTC().Format("2006-01-02 15:04:05")
 
-	// Step (a): migrate memories.
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE memories SET project = ? WHERE project = ?`, target, source); err != nil {
-		return false, fmt.Errorf("migrate memories: %w", err)
+	for _, migration := range []struct {
+		query string
+		label string
+	}{
+		{`UPDATE memories SET project = ? WHERE project = ?`, "migrate memories"},
+		{`UPDATE user_prompts SET project = ? WHERE project = ?`, "migrate user_prompts"},
+		{`UPDATE sessions SET project = ? WHERE project = ?`, "migrate sessions"},
+		{`UPDATE memory_mutations SET project = ? WHERE project = ? AND synced_at IS NULL`, "migrate pending memory mutations"},
+		{`DELETE FROM hive_warnings WHERE source = ?`, "delete hive warnings"},
+		{`DELETE FROM sync_state WHERE project = ? AND project != '__auth__'`, "delete source sync state"},
+	} {
+		args := []any{target, source}
+		if strings.HasPrefix(migration.query, "DELETE FROM") {
+			args = []any{source}
+		}
+		if _, err := tx.ExecContext(ctx, migration.query, args...); err != nil {
+			return false, fmt.Errorf("%s: %w", migration.label, err)
+		}
 	}
-	// Step (b): migrate user_prompts.
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE user_prompts SET project = ? WHERE project = ?`, target, source); err != nil {
-		return false, fmt.Errorf("migrate user_prompts: %w", err)
-	}
-	// Step (c): migrate sessions.
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE sessions SET project = ? WHERE project = ?`, target, source); err != nil {
-		return false, fmt.Errorf("migrate sessions: %w", err)
-	}
-	// Step (d): migrate pending memory_mutations only (synced ones are cloud-historical).
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE memory_mutations SET project = ? WHERE project = ? AND synced_at IS NULL`,
-		target, source); err != nil {
-		return false, fmt.Errorf("migrate memory_mutations: %w", err)
-	}
-	// Step (e): delete hive_warnings for the source project.
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM hive_warnings WHERE source = ?`, source); err != nil {
-		return false, fmt.Errorf("delete hive_warnings: %w", err)
-	}
-	// Step (f): delete sync_state for the source project; never touch __auth__.
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM sync_state WHERE project = ? AND project != '__auth__'`, source); err != nil {
-		return false, fmt.Errorf("delete sync_state: %w", err)
-	}
-	// Step (g): governance record upsert — mark source as merged.
+
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO hive_project_governance (project, merge_target, merged_at, merged_by, merge_reason)
 VALUES (?, ?, ?, ?, ?)
@@ -503,17 +494,11 @@ ON CONFLICT(project) DO UPDATE SET
     merged_by    = excluded.merged_by,
     merge_reason = excluded.merge_reason
 WHERE hive_project_governance.archived_at IS NULL
-  AND hive_project_governance.merged_at IS NULL`,
-		source, target, mergedAtStr, actorID, reason); err != nil {
+  AND hive_project_governance.merged_at IS NULL`, source, target, mergedAtStr, actorID, reason); err != nil {
 		return false, fmt.Errorf("upsert governance merge record: %w", err)
 	}
-	// Step (h): alias safety net — write-redirect for stray cloud writes.
 	if err := addAliasTx(ctx, tx, source, target, "local", reason); err != nil {
 		return false, fmt.Errorf("merge governance project alias: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("commit merge governance project: %w", err)
 	}
 	return true, nil
 }

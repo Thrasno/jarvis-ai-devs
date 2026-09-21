@@ -24,19 +24,29 @@ func DeriveFromDirectory(dir string) string {
 // evidence. It preserves hivederive's Git-origin-first and basename-fallback
 // precedence, while refusing the reserved "default" sentinel as an identity.
 func DeriveProjectIdentity(dir string) (string, bool) {
-	name, ok, _ := deriveProjectIdentity(dir)
+	name, ok, _, _ := deriveProjectIdentity(dir)
 	return name, ok
 }
 
-func deriveProjectIdentity(dir string) (string, bool, error) {
-	name, err := hivederive.Derive(dir)
+func deriveProjectIdentity(dir string) (string, bool, bool, error) {
+	name, fromGit, err := hivederive.DeriveWithProvenance(dir)
 	if err != nil {
-		return "", false, err
+		return "", false, false, err
 	}
 	if strings.TrimSpace(name) == "" || name == "default" {
-		return "", false, nil
+		return "", false, false, nil
 	}
-	return name, true, nil
+	return name, true, fromGit, nil
+}
+
+// deriveGitProjectIdentity reads the shared single-probe provenance result so
+// basename fallback can never be promoted on unrelated origin evidence.
+func deriveGitProjectIdentity(dir string) (string, bool, error) {
+	name, ok, fromGit, err := deriveProjectIdentity(dir)
+	if err != nil || !ok {
+		return "", false, err
+	}
+	return name, fromGit, nil
 }
 
 // ResolveEffectiveProject returns the caller project or a directory-derived

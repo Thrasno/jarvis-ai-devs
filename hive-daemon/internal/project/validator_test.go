@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
+	hivedb "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 )
 
 type fakeStore struct {
@@ -65,6 +69,17 @@ func (f fakeStore) ResolveAlias(_ context.Context, source string) (string, bool,
 	}
 	target, ok := f.aliases[source]
 	return target, ok, nil
+}
+
+func initValidatorGitRepo(t *testing.T, dir, remoteURL string) {
+	t.Helper()
+	for _, args := range [][]string{{"init"}, {"remote", "add", "origin", remoteURL}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
 }
 
 func candidateIncludesProject(candidates []project.Candidate, selected string) bool {
@@ -145,6 +160,353 @@ func TestValidateWriteProject_ExplicitProjectResolution(t *testing.T) {
 
 // TestValidateWriteProject_AliasResolution verifies that a source project that
 // has an active alias is transparently redirected to the target project.
+func TestValidateWriteProjectBindsAndPromotesWorkspaceGitIdentity(t *testing.T) {
+	ctx := context.Background()
+	d, err := hivedb.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open DB: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	workspace := t.TempDir()
+
+	first, err := project.ValidateWriteProject(ctx, d, project.WriteInput{Directory: workspace})
+	if err != nil {
+		t.Fatalf("first workspace validation: %v", err)
+	}
+	if want := projectidentity.Canonical(filepath.Base(workspace)).String(); first.Project != want {
+		t.Fatalf("first project = %q, want %q", first.Project, want)
+	}
+	if _, err := d.EnsureManualSaveSession(first.Project); err != nil {
+		t.Fatalf("ensure source session: %v", err)
+	}
+	if err := d.CreateSession("source-session", first.Project, workspace, "dev", "test"); err != nil {
+		t.Fatalf("create source session: %v", err)
+	}
+	if _, err := d.SaveMemory(&models.Memory{Project: first.Project, Title: "preserved", Content: "content", SessionID: "manual-save-" + first.Project}); err != nil {
+		t.Fatalf("save source memory: %v", err)
+	}
+
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	initValidatorGitRepo(t, workspace, "https://github.com/org/git-identity.git")
+	promoted, err := project.ValidateWriteProject(ctx, d, project.WriteInput{Directory: workspace, SessionID: "source-session"})
+	if err != nil {
+		t.Fatalf("promoted workspace validation: %v", err)
+	}
+	if promoted.Project != "git-identity" {
+		t.Fatalf("promoted project = %q, want git-identity", promoted.Project)
+	}
+	bound, found, err := d.ResolveWorkspaceProjectBinding(ctx, workspace)
+	if err != nil || !found || bound != "git-identity" {
+		t.Fatalf("binding after promotion = (%q, %t, %v), want (git-identity, true, nil)", bound, found, err)
+	}
+	var sourceRows, targetRows int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM memories WHERE project = ?`, first.Project).Scan(&sourceRows); err != nil {
+		t.Fatalf("count source memories: %v", err)
+	}
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM memories WHERE project = 'git-identity'`).Scan(&targetRows); err != nil {
+		t.Fatalf("count target memories: %v", err)
+	}
+	if sourceRows != 0 || targetRows != 1 {
+		t.Fatalf("memory migration = source:%d target:%d, want source:0 target:1", sourceRows, targetRows)
+	}
+}
+
+func TestValidateWriteProjectAdoptsHistoricalDirectoryBeforeGitPromotion(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	ctx := context.Background()
+	d, err := hivedb.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open DB: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	workspace := t.TempDir()
+	if err := d.CreateSession("legacy-session", "legacy-directory", workspace, "dev", "test"); err != nil {
+		t.Fatalf("create historical session: %v", err)
+	}
+	initValidatorGitRepo(t, workspace, "https://github.com/org/git-target.git")
+
+	result, err := project.ValidateWriteProject(ctx, d, project.WriteInput{Directory: workspace, SessionID: "legacy-session"})
+	if err != nil {
+		t.Fatalf("validate historical workspace: %v", err)
+	}
+	if result.Project != "git-target" {
+		t.Fatalf("project = %q, want git-target", result.Project)
+	}
+	alias, found, err := d.ResolveAlias(ctx, "legacy-directory")
+	if err != nil || !found || alias != "git-target" {
+		t.Fatalf("historical alias = (%q, %t, %v), want (git-target, true, nil)", alias, found, err)
+	}
+	var legacyRows, targetRows int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM sessions WHERE project = 'legacy-directory'`).Scan(&legacyRows); err != nil {
+		t.Fatalf("count legacy sessions: %v", err)
+	}
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM sessions WHERE project = 'git-target'`).Scan(&targetRows); err != nil {
+		t.Fatalf("count target sessions: %v", err)
+	}
+	if legacyRows != 0 || targetRows != 1 {
+		t.Fatalf("session migration = legacy:%d target:%d, want legacy:0 target:1", legacyRows, targetRows)
+	}
+}
+
+func TestValidateWriteProjectRejectsUnrelatedSessionBeforePromotionMutation(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	ctx := context.Background()
+	d, err := hivedb.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open DB: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	workspace := t.TempDir()
+	if _, _, err := d.EnsureWorkspaceProjectBinding(ctx, workspace, "source"); err != nil {
+		t.Fatalf("bind source workspace: %v", err)
+	}
+	if err := d.CreateSession("unrelated-session", "unrelated", workspace, "dev", "test"); err != nil {
+		t.Fatalf("create unrelated session: %v", err)
+	}
+	initValidatorGitRepo(t, workspace, "https://github.com/org/target.git")
+
+	_, err = project.ValidateWriteProject(ctx, d, project.WriteInput{Directory: workspace, SessionID: "unrelated-session"})
+	var validationErr *project.ValidationError
+	if !errors.As(err, &validationErr) || validationErr.Code != project.CodeProjectSessionMismatch {
+		t.Fatalf("validation error = %v, want typed session mismatch", err)
+	}
+	bound, found, resolveErr := d.ResolveWorkspaceProjectBinding(ctx, workspace)
+	if resolveErr != nil || !found || bound != "source" {
+		t.Fatalf("binding after rejected validation = (%q, %t, %v), want (source, true, nil)", bound, found, resolveErr)
+	}
+	if _, found, err := d.ResolveAlias(ctx, "source"); err != nil || found {
+		t.Fatalf("source alias after rejected validation = (%t, %v), want (false, nil)", found, err)
+	}
+	var governanceRows int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM hive_project_governance`).Scan(&governanceRows); err != nil {
+		t.Fatalf("count governance rows: %v", err)
+	}
+	if governanceRows != 0 {
+		t.Fatalf("governance rows after rejected validation = %d, want 0", governanceRows)
+	}
+}
+
+func TestValidateWriteProjectPromotesSiblingBindingsAcrossRestart(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "hive.db")
+	d, err := hivedb.Open(path)
+	if err != nil {
+		t.Fatalf("open DB: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	gitWorkspace := t.TempDir()
+	nonGitSibling := t.TempDir()
+	if _, _, err := d.EnsureWorkspaceProjectBinding(ctx, gitWorkspace, "source"); err != nil {
+		t.Fatalf("bind Git workspace: %v", err)
+	}
+	if _, _, err := d.EnsureWorkspaceProjectBinding(ctx, nonGitSibling, "source"); err != nil {
+		t.Fatalf("bind non-Git sibling: %v", err)
+	}
+	initValidatorGitRepo(t, gitWorkspace, "https://github.com/org/target.git")
+	if result, err := project.ValidateWriteProject(ctx, d, project.WriteInput{Directory: gitWorkspace}); err != nil || result.Project != "target" {
+		t.Fatalf("promote Git workspace = (%+v, %v), want target nil", result, err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("close promoted DB: %v", err)
+	}
+	d, err = hivedb.Open(path)
+	if err != nil {
+		t.Fatalf("reopen DB: %v", err)
+	}
+
+	result, err := project.ValidateWriteProject(ctx, d, project.WriteInput{Directory: nonGitSibling})
+	if err != nil || result.Project != "target" {
+		t.Fatalf("non-Git sibling after restart = (%+v, %v), want target nil", result, err)
+	}
+	bound, found, err := d.ResolveWorkspaceProjectBinding(ctx, nonGitSibling)
+	if err != nil || !found || bound != "target" {
+		t.Fatalf("sibling binding after restart = (%q, %t, %v), want (target, true, nil)", bound, found, err)
+	}
+}
+
+func TestValidateWriteProjectRejectsHistoricalUnboundBasenameAsExplicitEvidence(t *testing.T) {
+	ctx := context.Background()
+	d, err := hivedb.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open DB: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	workspace := filepath.Join(t.TempDir(), "basename-a")
+	if err := os.Mkdir(workspace, 0o755); err != nil {
+		t.Fatalf("make workspace: %v", err)
+	}
+	if err := d.CreateSession("historical-session", "historical-b", workspace, "dev", "test"); err != nil {
+		t.Fatalf("seed historical project: %v", err)
+	}
+
+	_, err = project.ValidateWriteProject(ctx, d, project.WriteInput{Project: filepath.Base(workspace), Directory: workspace})
+	var validationErr *project.ValidationError
+	if !errors.As(err, &validationErr) || validationErr.Code != project.CodeProjectIdentityMismatch {
+		t.Fatalf("historical basename conflict = %v, want typed project identity mismatch", err)
+	}
+}
+
+func TestValidateWriteProjectResolvesInitialAliasBeforeSessionValidation(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		sessionProject string
+		wantErr        bool
+	}{
+		{name: "active target session is accepted", sessionProject: "new"},
+		{name: "retired source session is rejected", sessionProject: "old", wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			d, err := hivedb.Open(":memory:")
+			if err != nil {
+				t.Fatalf("open DB: %v", err)
+			}
+			t.Cleanup(func() { _ = d.Close() })
+			if _, err := d.RawDB().Exec(`INSERT INTO project_aliases (source_project, target_project, scope, reason) VALUES ('old', 'new', 'local', 'test')`); err != nil {
+				t.Fatalf("seed alias: %v", err)
+			}
+			workspace := filepath.Join(t.TempDir(), "old")
+			if err := os.Mkdir(workspace, 0o755); err != nil {
+				t.Fatalf("make workspace: %v", err)
+			}
+			if err := d.CreateSession("candidate-session", tt.sessionProject, filepath.Join(t.TempDir(), "other"), "dev", "test"); err != nil {
+				t.Fatalf("seed session: %v", err)
+			}
+
+			result, err := project.ValidateWriteProject(ctx, d, project.WriteInput{Directory: workspace, SessionID: "candidate-session"})
+			if tt.wantErr {
+				var validationErr *project.ValidationError
+				if !errors.As(err, &validationErr) || validationErr.Code != project.CodeProjectSessionMismatch {
+					t.Fatalf("retired alias session error = %v, want typed session mismatch", err)
+				}
+				return
+			}
+			if err != nil || result.Project != "new" {
+				t.Fatalf("active alias session result = (%+v, %v), want new nil", result, err)
+			}
+		})
+	}
+}
+
+func TestValidateWriteProjectResolvesAliasesBeforeBindingOrReturning(t *testing.T) {
+	ctx := context.Background()
+	d, err := hivedb.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open DB: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	if _, err := d.RawDB().Exec(`INSERT INTO project_aliases (source_project, target_project, scope, reason) VALUES ('old', 'new', 'local', 'test')`); err != nil {
+		t.Fatalf("seed alias: %v", err)
+	}
+	derivedOld := filepath.Join(t.TempDir(), "old")
+	if err := os.Mkdir(derivedOld, 0o755); err != nil {
+		t.Fatalf("make derived workspace: %v", err)
+	}
+	result, err := project.ValidateWriteProject(ctx, d, project.WriteInput{Directory: derivedOld})
+	if err != nil || result.Project != "new" {
+		t.Fatalf("derived alias result = (%+v, %v), want new nil", result, err)
+	}
+	var stored string
+	if err := d.RawDB().QueryRow(`SELECT project FROM workspace_project_bindings WHERE workspace = ?`, derivedOld).Scan(&stored); err != nil {
+		t.Fatalf("read initial binding: %v", err)
+	}
+	if stored != "new" {
+		t.Fatalf("initial binding = %q, want new", stored)
+	}
+
+	persisted := t.TempDir()
+	if _, err := d.RawDB().Exec(`INSERT INTO workspace_project_bindings (workspace, project) VALUES (?, 'old')`, persisted); err != nil {
+		t.Fatalf("seed stale binding: %v", err)
+	}
+	result, err = project.ValidateWriteProject(ctx, d, project.WriteInput{Project: "new", Directory: persisted})
+	if err != nil || result.Project != "new" {
+		t.Fatalf("persisted alias result = (%+v, %v), want new nil", result, err)
+	}
+}
+
+func TestValidateWriteProjectRejectsBasenameAsExplicitEvidenceForBoundWorkspace(t *testing.T) {
+	ctx := context.Background()
+	d, err := hivedb.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open DB: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	workspace := t.TempDir()
+	if _, _, err := d.EnsureWorkspaceProjectBinding(ctx, workspace, "bound-project"); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+
+	_, err = project.ValidateWriteProject(ctx, d, project.WriteInput{Project: filepath.Base(workspace), Directory: workspace})
+	var validationErr *project.ValidationError
+	if !errors.As(err, &validationErr) || validationErr.Code != project.CodeProjectIdentityMismatch {
+		t.Fatalf("basename conflict = %v, want typed project identity mismatch", err)
+	}
+}
+
+func TestValidateWriteProjectRollsBackInitialBindingWhenProtectedPromotionFails(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	ctx := context.Background()
+	d, err := hivedb.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open DB: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	workspace := t.TempDir()
+	if err := d.CreateSession("legacy-session", "legacy", workspace, "dev", "test"); err != nil {
+		t.Fatalf("seed legacy session: %v", err)
+	}
+	if _, err := d.RawDB().Exec(`INSERT INTO sdd_apply_heads (project, change_name, snapshot_memory_id, generation, revision, digest) VALUES ('legacy', 'change', 1, 1, 1, 'digest')`); err != nil {
+		t.Fatalf("seed protected head: %v", err)
+	}
+	initValidatorGitRepo(t, workspace, "https://github.com/org/git-target.git")
+
+	_, err = project.ValidateWriteProject(ctx, d, project.WriteInput{Directory: workspace, SessionID: "legacy-session"})
+	if !errors.Is(err, hivedb.ErrWorkspacePromotionProtectedSDD) {
+		t.Fatalf("protected validation error = %v, want protected SDD error", err)
+	}
+	if _, found, resolveErr := d.ResolveWorkspaceProjectBinding(ctx, workspace); resolveErr != nil || found {
+		t.Fatalf("binding after protected validator rollback = (%t, %v), want false nil", found, resolveErr)
+	}
+	var aliases, governance int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM project_aliases WHERE source_project = 'legacy'`).Scan(&aliases); err != nil {
+		t.Fatalf("count aliases: %v", err)
+	}
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM hive_project_governance WHERE project = 'legacy'`).Scan(&governance); err != nil {
+		t.Fatalf("count governance: %v", err)
+	}
+	if aliases != 0 || governance != 0 {
+		t.Fatalf("protected validator rollback persisted alias:%d governance:%d, want zero", aliases, governance)
+	}
+}
+
+func TestValidateWriteProjectRejectsExplicitConflictForUnboundWorkspace(t *testing.T) {
+	d, err := hivedb.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open DB: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	_, err = project.ValidateWriteProject(context.Background(), d, project.WriteInput{Project: "other-project", Directory: t.TempDir()})
+	var validationErr *project.ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("error = %T %v, want ValidationError", err, err)
+	}
+	if validationErr.Code != project.CodeProjectIdentityMismatch {
+		t.Fatalf("error code = %q, want project identity mismatch", validationErr.Code)
+	}
+}
+
 func TestValidateWriteProject_AliasResolution(t *testing.T) {
 	t.Parallel()
 
