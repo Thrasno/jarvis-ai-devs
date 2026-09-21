@@ -121,6 +121,32 @@ func TestDeriveParity(t *testing.T) {
 }
 
 // TestResolveEffectiveProject covers the resolveEffectiveProject helper.
+func TestDeriveGitProjectIdentityDistinguishesOriginFromBasename(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	nonGit := t.TempDir()
+	if _, found, err := deriveGitProjectIdentity(nonGit); err != nil || found {
+		t.Fatalf("non-Git identity = (_, %t, %v), want (_, false, nil)", found, err)
+	}
+
+	gitDir := t.TempDir()
+	initGitRepo(t, gitDir, "https://github.com/org/canonical-project.git")
+	name, found, err := deriveGitProjectIdentity(gitDir)
+	if err != nil || !found || name != "canonical-project" {
+		t.Fatalf("Git identity = (%q, %t, %v), want (canonical-project, true, nil)", name, found, err)
+	}
+
+	unusable := t.TempDir()
+	initGitRepo(t, unusable, "https://github.com/org/!!!.git")
+	name, found, err = deriveGitProjectIdentity(unusable)
+	if err != nil || found || name != filepath.Base(unusable) {
+		t.Fatalf("unusable origin identity = (%q, %t, %v), want (%q, false, nil)", name, found, err, filepath.Base(unusable))
+	}
+}
+
 func TestResolveEffectiveProject(t *testing.T) {
 	t.Parallel()
 

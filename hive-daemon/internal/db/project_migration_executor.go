@@ -19,13 +19,14 @@ import (
 )
 
 var (
-	ErrProjectMigrationPlanUnsafe     = errors.New("project migration plan is not executable")
-	ErrProjectMigrationPlanStale      = errors.New("project migration plan changed before execution")
-	ErrProjectMigrationUnsupported    = errors.New("project migration contains unsupported state")
-	ErrProjectMigrationApplyProgress  = errors.New("project migration cannot rekey immutable apply progress")
-	ErrProjectMigrationConflict       = errors.New("project migration contains an unmergeable composite row")
-	ErrProjectMigrationInProgress     = errors.New("project migration is already executing")
-	ErrProjectIdentityResolutionStale = errors.New("project identity resolution is stale or unrelated")
+	ErrProjectMigrationPlanUnsafe              = errors.New("project migration plan is not executable")
+	ErrProjectMigrationRemotePresenceAmbiguous = errors.New("project migration remote presence is ambiguous")
+	ErrProjectMigrationPlanStale               = errors.New("project migration plan changed before execution")
+	ErrProjectMigrationUnsupported             = errors.New("project migration contains unsupported state")
+	ErrProjectMigrationApplyProgress           = errors.New("project migration cannot rekey immutable apply progress")
+	ErrProjectMigrationConflict                = errors.New("project migration contains an unmergeable composite row")
+	ErrProjectMigrationInProgress              = errors.New("project migration is already executing")
+	ErrProjectIdentityResolutionStale          = errors.New("project identity resolution is stale or unrelated")
 )
 
 // projectMigrationActorID attributes a reproject to the daemon itself. Every
@@ -519,6 +520,18 @@ WHERE project = ? AND synced_at IS NOT NULL`+pushable, record.Project, record.Pr
 	return nil
 }
 
+type ProjectMigrationRemotePresenceAmbiguousError struct {
+	Project string
+	SyncIDs []string
+}
+
+func (e *ProjectMigrationRemotePresenceAmbiguousError) Error() string {
+	return fmt.Sprintf("%v for project %q (%s): sync the project or reconcile the listed rows before promotion", ErrProjectMigrationRemotePresenceAmbiguous, e.Project, strings.Join(e.SyncIDs, ", "))
+}
+func (e *ProjectMigrationRemotePresenceAmbiguousError) Unwrap() error {
+	return ErrProjectMigrationRemotePresenceAmbiguous
+}
+
 // enqueueMemoryReprojections journals one reproject mutation per memory the
 // server already holds under the old spelling.
 //
@@ -527,20 +540,81 @@ WHERE project = ? AND synced_at IS NOT NULL`+pushable, record.Project, record.Pr
 // tombstone payload: hive-api rejects a reproject that does, since such a
 // payload would reach every puller with the weight of a create while never being
 // written to any row.
+// enqueueMemoryReprojections preserves the historical executor behavior for
+// canonical-spelling migrations. Guarded A→B promotion uses the strict variant
+// below because it can refuse ambiguous legacy remote state before relocation.
 func enqueueMemoryReprojections(ctx context.Context, tx *sql.Tx, fromProject, toProject, occurredAt string) (int64, error) {
-	rows, err := tx.QueryContext(ctx,
-		`SELECT sync_id FROM memories WHERE project = ? AND synced_at IS NOT NULL AND sync_id != ''`, fromProject)
+	rows, err := tx.QueryContext(ctx, `SELECT sync_id FROM memories WHERE project = ? AND synced_at IS NOT NULL AND sync_id != ''`, fromProject)
 	if err != nil {
 		return 0, err
 	}
+	defer func() { _ = rows.Close() }()
 	var syncIDs []string
+	for rows.Next() {
+		var syncID string
+		if err := rows.Scan(&syncID); err != nil {
+			return 0, err
+		}
+		syncIDs = append(syncIDs, syncID)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for _, syncID := range syncIDs {
+		if err := insertMemoryMutation(tx, memoryMutationRecord{EventID: uuid.NewString(), EntitySyncID: syncID, Project: toProject, Op: MutationOpReproject, OccurredAt: occurredAt, ActorID: projectMigrationActorID, Payload: mutationPayload{Reproject: &MutationReprojectPayload{FromProject: fromProject, ToProject: toProject}}}); err != nil {
+			return 0, err
+		}
+	}
+	return int64(len(syncIDs)), nil
+}
+
+func enqueuePromotionMemoryReprojections(ctx context.Context, tx *sql.Tx, fromProject, toProject, occurredAt string) (int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT sync_id FROM memories WHERE project = ? AND sync_id != ''`, fromProject)
+	if err != nil {
+		return 0, err
+	}
+	var syncIDs, ambiguous []string
 	for rows.Next() {
 		var syncID string
 		if err := rows.Scan(&syncID); err != nil {
 			_ = rows.Close()
 			return 0, err
 		}
-		syncIDs = append(syncIDs, syncID)
+		var present, localOrigin, rejectedCreate, dispatchedCreate, entityDispatched bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM memory_remote_presence WHERE entity_sync_id = ?)`, syncID).Scan(&present); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM memory_local_origins WHERE entity_sync_id = ?)`, syncID).Scan(&localOrigin); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM memory_mutation_outcomes o JOIN memory_mutations m ON m.event_id = o.event_id WHERE m.entity_sync_id = ? AND m.op = 'create' AND o.outcome = 'rejected')`, syncID).Scan(&rejectedCreate); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM memory_mutation_dispatches d JOIN memory_mutations m ON m.event_id = d.event_id WHERE m.entity_sync_id = ? AND m.op = 'create')`, syncID).Scan(&dispatchedCreate); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM memory_entity_dispatches WHERE entity_sync_id = ?)`, syncID).Scan(&entityDispatched); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		switch {
+		case present:
+			syncIDs = append(syncIDs, syncID)
+		case entityDispatched:
+			// A legacy memories[] request is independent of any v2 result. Until
+			// its own response resolves it, a rejected v2 create cannot prove the
+			// legacy request was never accepted.
+			ambiguous = append(ambiguous, syncID)
+		case localOrigin && !dispatchedCreate, localOrigin && rejectedCreate:
+			// Only an explicit local origin can prove a never-dispatched or
+			// rejected create never established remote presence.
+		default:
+			ambiguous = append(ambiguous, syncID)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
@@ -548,6 +622,9 @@ func enqueueMemoryReprojections(ctx context.Context, tx *sql.Tx, fromProject, to
 	}
 	if err := rows.Close(); err != nil {
 		return 0, err
+	}
+	if len(ambiguous) > 0 {
+		return 0, &ProjectMigrationRemotePresenceAmbiguousError{Project: fromProject, SyncIDs: ambiguous}
 	}
 	for _, syncID := range syncIDs {
 		if err := insertMemoryMutation(tx, memoryMutationRecord{

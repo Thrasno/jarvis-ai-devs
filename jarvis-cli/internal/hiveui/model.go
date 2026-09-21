@@ -1200,7 +1200,7 @@ func (m Model) removeMemoryFromNormalSnapshot(id int64) Model {
 
 	if deletedProject != "" {
 		for i := range m.snapshot.Projects {
-			if m.snapshot.Projects[i].Name != deletedProject {
+			if m.snapshot.Projects[i].CanonicalKey() != deletedProject {
 				continue
 			}
 			if m.snapshot.Projects[i].ActiveMemoryCount > 0 {
@@ -1243,7 +1243,7 @@ func (m Model) restoreMemoryToActiveSnapshot(memory hiveclient.Memory) Model {
 		}
 	}
 	for i := range m.snapshot.Projects {
-		if m.snapshot.Projects[i].Name == memory.Project {
+		if m.snapshot.Projects[i].CanonicalKey() == memory.Project {
 			m.snapshot.Projects[i].ActiveMemoryCount++
 			if m.snapshot.Projects[i].DeletedMemoryCount > 0 {
 				m.snapshot.Projects[i].DeletedMemoryCount--
@@ -1415,7 +1415,7 @@ func (m Model) submitProjectArchive() (tea.Model, tea.Cmd) {
 		m.message = ""
 		return m, nil
 	}
-	expected := projectArchiveConfirmationPhrase(m.projectArchiveProject.Name)
+	expected := projectArchiveConfirmationPhrase(m.projectArchiveProject.CanonicalKey())
 	if !confirmationMatches(m.projectArchiveConfirmation, expected) {
 		m.message = confirmationMismatchMessage
 		return m, nil
@@ -1425,7 +1425,7 @@ func (m Model) submitProjectArchive() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	executor := m.projectArchiveExecutor
-	request := hiveclient.ProjectArchiveRequest{Project: m.projectArchiveProject.Name, BackupID: strings.TrimSpace(m.projectArchiveBackupID), Confirmation: expected}
+	request := hiveclient.ProjectArchiveRequest{Project: m.projectArchiveProject.CanonicalKey(), BackupID: strings.TrimSpace(m.projectArchiveBackupID), Confirmation: expected}
 	m.projectArchiveSubmitting = true
 	return m, func() tea.Msg {
 		result, err := executor.ArchiveProject(context.Background(), request)
@@ -1434,20 +1434,20 @@ func (m Model) submitProjectArchive() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) applyProjectArchiveResult(msg projectArchiveResultMsg) Model {
-	if !m.projectArchiveSubmitting || msg.project != m.projectArchiveProject.Name || msg.backupID != strings.TrimSpace(m.projectArchiveBackupID) {
+	if !m.projectArchiveSubmitting || msg.project != m.projectArchiveProject.CanonicalKey() || msg.backupID != strings.TrimSpace(m.projectArchiveBackupID) {
 		return m
 	}
 	m.screen = ScreenProjects
 	m.projectArchiveSubmitting = false
 	if msg.err != nil {
-		m.message = fmt.Sprintf("Project %s archive failed through hive-daemon: %v", msg.project, msg.err)
+		m.message = fmt.Sprintf("Project %s archive failed through hive-daemon: %v", m.projectArchiveProject.Name, msg.err)
 		return m
 	}
 	status := "already archived locally"
 	if msg.result.Mutated {
 		status = "archive completed locally"
 	}
-	m.message = fmt.Sprintf("Project %s %s with backup %s.", msg.project, status, msg.backupID)
+	m.message = fmt.Sprintf("Project %s %s with backup %s.", m.projectArchiveProject.Name, status, msg.backupID)
 	if strings.TrimSpace(msg.result.CloudHandoffNote) != "" {
 		m.message += " Cloud handoff: " + msg.result.CloudHandoffNote
 	}
@@ -1490,10 +1490,11 @@ func (m Model) projectArchiveView() string {
 	sb.WriteString("\n")
 
 	// REASON panel
+	confirmationProjectKey := m.projectArchiveProject.CanonicalKey()
 	reasonContent := fmt.Sprintf("Backup ID is required: %s\n", visibleInput(m.projectArchiveBackupID)) +
-		fmt.Sprintf("Confirmation must match exactly. Type exactly: %s\n", projectArchiveConfirmationPhrase(project))
+		fmt.Sprintf("Confirmation must match exactly. Type exactly: %s\n", projectArchiveConfirmationPhrase(confirmationProjectKey))
 	if m.projectArchiveStep == memoryGuardConfirmation {
-		reasonContent += fmt.Sprintf("confirmation: %s\n", confirmationField(m.projectArchiveConfirmation, projectArchiveConfirmationPhrase(project)))
+		reasonContent += fmt.Sprintf("confirmation: %s\n", confirmationField(m.projectArchiveConfirmation, projectArchiveConfirmationPhrase(confirmationProjectKey)))
 	}
 	reasonContent += "No archive will run until both fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation."
 	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("REASON — REQUIRED", panelW)+reasonContent, panelW))
@@ -1595,7 +1596,7 @@ func (m Model) submitProjectPurge() (tea.Model, tea.Cmd) {
 		m.message = ""
 		return m, nil
 	}
-	expected := projectPurgeConfirmationPhrase(m.projectDeleteProject.Name)
+	expected := projectPurgeConfirmationPhrase(m.projectDeleteProject.CanonicalKey())
 	if !confirmationMatches(m.projectDeleteConfirmation, expected) {
 		m.message = confirmationMismatchMessage
 		return m, nil
@@ -1606,7 +1607,7 @@ func (m Model) submitProjectPurge() (tea.Model, tea.Cmd) {
 	}
 	executor := m.projectDeleteExecutor
 	request := hiveclient.ProjectDeleteRequest{
-		Project:      m.projectDeleteProject.Name,
+		Project:      m.projectDeleteProject.CanonicalKey(),
 		BackupID:     strings.TrimSpace(m.projectDeleteBackupID),
 		Confirmation: expected,
 	}
@@ -1618,16 +1619,16 @@ func (m Model) submitProjectPurge() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) applyProjectDeleteResult(msg projectDeleteResultMsg) Model {
-	if !m.projectDeleteSubmitting || msg.project != m.projectDeleteProject.Name || msg.backupID != strings.TrimSpace(m.projectDeleteBackupID) {
+	if !m.projectDeleteSubmitting || msg.project != m.projectDeleteProject.CanonicalKey() || msg.backupID != strings.TrimSpace(m.projectDeleteBackupID) {
 		return m
 	}
 	m.screen = ScreenProjects
 	m.projectDeleteSubmitting = false
 	if msg.err != nil {
-		m.message = fmt.Sprintf("Project %s purge failed through hive-daemon: %v", msg.project, msg.err)
+		m.message = fmt.Sprintf("Project %s purge failed through hive-daemon: %v", m.projectDeleteProject.Name, msg.err)
 		return m
 	}
-	m.message = fmt.Sprintf("Project %s purge completed with backup %s. Rows deleted: %d.", msg.project, msg.backupID, msg.result.RowsDeleted)
+	m.message = fmt.Sprintf("Project %s purge completed with backup %s. Rows deleted: %d.", m.projectDeleteProject.Name, msg.backupID, msg.result.RowsDeleted)
 	if strings.TrimSpace(msg.result.CloudHandoffNote) != "" {
 		m.message += " Cloud handoff: " + msg.result.CloudHandoffNote
 	}
@@ -1698,10 +1699,11 @@ func (m Model) projectPurgeView() string {
 
 	// REASON panel — only shown after select step.
 	if m.projectDeleteStep != projectPurgeSelect {
+		confirmationProjectKey := m.projectDeleteProject.CanonicalKey()
 		reasonContent := fmt.Sprintf("Backup ID is required: %s\n", visibleInput(m.projectDeleteBackupID)) +
-			fmt.Sprintf("Confirmation must match exactly. Type exactly: %s\n", projectPurgeConfirmationPhrase(project))
+			fmt.Sprintf("Confirmation must match exactly. Type exactly: %s\n", projectPurgeConfirmationPhrase(confirmationProjectKey))
 		if m.projectDeleteStep == projectPurgeConfirmation {
-			reasonContent += fmt.Sprintf("confirmation: %s\n", confirmationField(m.projectDeleteConfirmation, projectPurgeConfirmationPhrase(project)))
+			reasonContent += fmt.Sprintf("confirmation: %s\n", confirmationField(m.projectDeleteConfirmation, projectPurgeConfirmationPhrase(confirmationProjectKey)))
 		}
 		reasonContent += "No purge will run until both fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation."
 		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("REASON — REQUIRED", panelW)+reasonContent, panelW))
@@ -1765,27 +1767,28 @@ func (m Model) updateProjectMerge(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) submitProjectMerge() (tea.Model, tea.Cmd) {
-	source := strings.TrimSpace(m.projectMergeSource.Name)
-	target := strings.TrimSpace(m.projectMergeTarget)
+	source := m.projectMergeSource
+	targetName := strings.TrimSpace(m.projectMergeTarget)
 	switch m.projectMergeStep {
 	case projectMergeTarget:
-		if source == "" || source == "-" {
+		if source.CanonicalKey() == "" || source.Name == "-" {
 			m.message = "Source project is required before guarded project merge."
 			return m, nil
 		}
-		if target == "" {
+		if targetName == "" {
 			m.message = "Target project is required before guarded project merge."
 			return m, nil
 		}
-		if source == target {
+		target, found := m.snapshotProject(targetName)
+		if !found {
+			m.message = fmt.Sprintf("Target project %s is not in the current snapshot before guarded project merge.", targetName)
+			return m, nil
+		}
+		if source.CanonicalKey() == target.CanonicalKey() {
 			m.message = "Source and target project must be different before guarded project merge."
 			return m, nil
 		}
-		if !m.snapshotHasProject(target) {
-			m.message = fmt.Sprintf("Target project %s is not in the current snapshot before guarded project merge.", target)
-			return m, nil
-		}
-		m.projectMergeTarget = target
+		m.projectMergeTarget = target.Name
 		m.projectMergeStep = projectMergeBackupID
 		m.message = ""
 		return m, nil
@@ -1803,7 +1806,12 @@ func (m Model) submitProjectMerge() (tea.Model, tea.Cmd) {
 		m.message = ""
 		return m, nil
 	}
-	expected := projectMergeConfirmationPhrase(source, target)
+	target, found := m.snapshotProject(targetName)
+	if !found {
+		m.message = fmt.Sprintf("Target project %s is not in the current snapshot before guarded project merge.", targetName)
+		return m, nil
+	}
+	expected := projectMergeConfirmationPhrase(source.CanonicalKey(), target.CanonicalKey())
 	if !confirmationMatches(m.projectMergeConfirmation, expected) {
 		m.message = confirmationMismatchMessage
 		return m, nil
@@ -1813,7 +1821,7 @@ func (m Model) submitProjectMerge() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	executor := m.projectMergeExecutor
-	request := hiveclient.ProjectMergeRequest{SourceProject: source, TargetProject: target, BackupID: strings.TrimSpace(m.projectMergeBackupID), Confirmation: expected}
+	request := hiveclient.ProjectMergeRequest{SourceProject: source.CanonicalKey(), TargetProject: target.CanonicalKey(), BackupID: strings.TrimSpace(m.projectMergeBackupID), Confirmation: expected}
 	m.projectMergeSubmitting = true
 	return m, func() tea.Msg {
 		result, err := executor.MergeProject(context.Background(), request)
@@ -1822,20 +1830,20 @@ func (m Model) submitProjectMerge() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) applyProjectMergeResult(msg projectMergeResultMsg) Model {
-	if !m.projectMergeSubmitting || msg.sourceProject != strings.TrimSpace(m.projectMergeSource.Name) || msg.targetProject != strings.TrimSpace(m.projectMergeTarget) || msg.backupID != strings.TrimSpace(m.projectMergeBackupID) {
+	if !m.projectMergeSubmitting || msg.sourceProject != m.projectMergeSource.CanonicalKey() || msg.targetProject != m.projectKeyForName(m.projectMergeTarget) || msg.backupID != strings.TrimSpace(m.projectMergeBackupID) {
 		return m
 	}
 	m.screen = ScreenProjects
 	m.projectMergeSubmitting = false
 	if msg.err != nil {
-		m.message = fmt.Sprintf("Project %s merge into %s failed through hive-daemon: %v", msg.sourceProject, msg.targetProject, msg.err)
+		m.message = fmt.Sprintf("Project %s merge into %s failed through hive-daemon: %v", m.projectMergeSource.Name, m.projectMergeTarget, msg.err)
 		return m
 	}
 	status := "already recorded locally"
 	if msg.result.Mutated {
 		status = "recorded locally"
 	}
-	m.message = fmt.Sprintf("Project %s merge into %s %s with backup %s.", msg.sourceProject, msg.targetProject, status, msg.backupID)
+	m.message = fmt.Sprintf("Project %s merge into %s %s with backup %s.", m.projectMergeSource.Name, m.projectMergeTarget, status, msg.backupID)
 	if strings.TrimSpace(msg.result.CloudHandoffNote) != "" {
 		m.message += " Cloud handoff: " + msg.result.CloudHandoffNote
 	}
@@ -1892,11 +1900,13 @@ func (m Model) projectMergeView() string {
 	if target == "" {
 		safetyContent += "Confirmation must match exactly after target is provided.\n"
 	} else {
+		confirmationSourceKey := m.projectMergeSource.CanonicalKey()
+		confirmationTargetKey := m.projectKeyForName(target)
 		safetyContent += "Confirmation must match exactly.\n"
-		safetyContent += fmt.Sprintf("Type exactly: %s\n", projectMergeConfirmationPhrase(source, target))
+		safetyContent += fmt.Sprintf("Type exactly: %s\n", projectMergeConfirmationPhrase(confirmationSourceKey, confirmationTargetKey))
 	}
 	if m.projectMergeStep == projectMergeConfirmation {
-		safetyContent += fmt.Sprintf("confirmation: %s\n", confirmationField(m.projectMergeConfirmation, projectMergeConfirmationPhrase(source, target)))
+		safetyContent += fmt.Sprintf("confirmation: %s\n", confirmationField(m.projectMergeConfirmation, projectMergeConfirmationPhrase(m.projectMergeSource.CanonicalKey(), m.projectKeyForName(target))))
 	}
 	safetyContent += "No merge will run until all fields pass guards. Dispatch uses hive-daemon only; no direct SQLite or cloud mutation."
 	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("SAFETY", panelW)+safetyContent, panelW))
@@ -1988,7 +1998,7 @@ func (m Model) updateBatchProjectMerge(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) toggleMergeSource() Model {
-	project := m.selectedProject().Name
+	project := m.selectedProject().CanonicalKey()
 	for i, s := range m.mergeSelectedSources {
 		if s == project {
 			m.mergeSelectedSources = append(m.mergeSelectedSources[:i], m.mergeSelectedSources[i+1:]...)
@@ -2016,16 +2026,21 @@ func (m Model) submitBatchMergeStep() (tea.Model, tea.Cmd) {
 			m.message = "Target project name is required."
 			return m, nil
 		}
+		targetKey := m.projectKeyForName(target)
 		for _, src := range m.mergeSelectedSources {
-			if src == target {
+			if src == targetKey {
 				m.message = "Target must not be one of the selected sources."
 				return m, nil
 			}
 		}
-		m.mergeTarget = target
-		m.mergeTargetIsNew = !m.snapshotHasProject(target)
+		if project, found := m.snapshotProject(target); found {
+			m.mergeTarget = project.Name
+		} else {
+			m.mergeTarget = target
+		}
+		m.mergeTargetIsNew = !m.snapshotHasProjectKey(targetKey)
 		m.mergeImpact = computeMergeImpact(m.snapshot, m.mergeSelectedSources)
-		m.mergeSyncEvidence = anyImpactHasSyncEvidence(m.mergeImpact) || targetHasSyncEvidence(m.snapshot, target)
+		m.mergeSyncEvidence = anyImpactHasSyncEvidence(m.mergeImpact) || targetHasSyncEvidence(m.snapshot, targetKey)
 		m.mergeStep = mergeStepImpact
 		return m, nil
 
@@ -2047,7 +2062,7 @@ func (m Model) submitBatchMergeStep() (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case mergeStepConfirm:
-		expected := mergeBatchConfirmationPhrase(m.mergeTarget)
+		expected := mergeBatchConfirmationPhrase(m.projectKeyForName(m.mergeTarget))
 		if !confirmationMatches(m.mergeConfirmText, expected) {
 			m.message = confirmationMismatchMessage
 			return m, nil
@@ -2061,7 +2076,7 @@ func (m Model) submitBatchMergeStep() (tea.Model, tea.Cmd) {
 		copy(sourcesCopy, m.mergeSelectedSources)
 		req := hiveclient.ProjectMergeBatchRequest{
 			Sources:      sourcesCopy,
-			Target:       m.mergeTarget,
+			Target:       m.projectKeyForName(m.mergeTarget),
 			BackupID:     strings.TrimSpace(m.mergeBackupID),
 			Confirmation: expected,
 		}
@@ -2084,7 +2099,7 @@ func (m Model) applyProjectMergeBatchResult(msg projectMergeBatchResultMsg) Mode
 	if !m.mergeBatchSubmitting {
 		return m
 	}
-	if !slicesEqual(msg.sources, m.mergeSelectedSources) || msg.target != m.mergeTarget || msg.backupID != strings.TrimSpace(m.mergeBackupID) {
+	if !slicesEqual(msg.sources, m.mergeSelectedSources) || msg.target != m.projectKeyForName(m.mergeTarget) || msg.backupID != strings.TrimSpace(m.mergeBackupID) {
 		return m
 	}
 	m.mergeBatchSubmitting = false
@@ -2131,7 +2146,7 @@ func computeMergeImpact(snapshot Snapshot, sources []string) []ProjectMergeImpac
 	for _, src := range sources {
 		var proj hiveclient.Project
 		for _, p := range snapshot.Projects {
-			if p.Name == src {
+			if p.CanonicalKey() == src {
 				proj = p
 				break
 			}
@@ -2141,7 +2156,7 @@ func computeMergeImpact(snapshot Snapshot, sources []string) []ProjectMergeImpac
 			synced = 0
 		}
 		impact = append(impact, ProjectMergeImpact{
-			Source:          src,
+			Source:          proj.Name,
 			Memories:        proj.ActiveMemoryCount,
 			Sessions:        proj.SessionCount,
 			Prompts:         proj.PromptCount,
@@ -2163,7 +2178,7 @@ func anyImpactHasSyncEvidence(impacts []ProjectMergeImpact) bool {
 
 func targetHasSyncEvidence(snapshot Snapshot, target string) bool {
 	for _, p := range snapshot.Projects {
-		if p.Name == target {
+		if p.CanonicalKey() == target {
 			synced := p.ActiveMemoryCount - p.UnsyncedCount
 			return synced > 0
 		}
@@ -2225,7 +2240,7 @@ func (m Model) renderSelectSourcesPanel(sb *strings.Builder, panelW int) {
 			cursor = cursorStyle.Render("▌") + " "
 		}
 		selected := "[ ] "
-		if containsString(m.mergeSelectedSources, project.Name) {
+		if containsString(m.mergeSelectedSources, project.CanonicalKey()) {
 			selected = "[x] "
 		}
 		content.WriteString(cursor + selected + project.Name + "\n")
@@ -2234,7 +2249,7 @@ func (m Model) renderSelectSourcesPanel(sb *strings.Builder, panelW int) {
 }
 
 func (m Model) renderPickTargetPanel(sb *strings.Builder, panelW int) {
-	selected := strings.Join(m.mergeSelectedSources, ", ")
+	selected := strings.Join(m.projectDisplayNames(m.mergeSelectedSources), ", ")
 	content := fmt.Sprintf("Sources selected: %s\n\nTarget project name: %s\n", selected, visibleInput(m.mergeTarget))
 	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("PICK TARGET", panelW)+content, panelW))
 }
@@ -2258,14 +2273,14 @@ func (m Model) renderImpactPanel(sb *strings.Builder, panelW int) {
 		guardContent := "One or more source projects contain synced data.\n" +
 			"Before proceeding, notify your admin to handle cloud-side cleanup.\n\n" +
 			dimTextStyle.Render("admin note: The following projects were merged locally and their cloud entries must be reconciled: ") +
-			strings.Join(m.mergeSelectedSources, ", ") + " → " + m.mergeTarget
+			strings.Join(m.projectDisplayNames(m.mergeSelectedSources), ", ") + " → " + m.mergeTarget
 		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("CLOUD SYNC NOTICE", panelW)+guardContent, panelW))
 	}
 }
 
 func (m Model) renderBatchBackupIDPanel(sb *strings.Builder, panelW int) {
 	content := fmt.Sprintf("Sources: %s → %s\n\nBackup ID required: %s\n",
-		strings.Join(m.mergeSelectedSources, ", "),
+		strings.Join(m.projectDisplayNames(m.mergeSelectedSources), ", "),
 		m.mergeTarget,
 		visibleInput(m.mergeBackupID),
 	)
@@ -2273,7 +2288,7 @@ func (m Model) renderBatchBackupIDPanel(sb *strings.Builder, panelW int) {
 }
 
 func (m Model) renderBatchConfirmPanel(sb *strings.Builder, panelW int) {
-	phrase := mergeBatchConfirmationPhrase(m.mergeTarget)
+	phrase := mergeBatchConfirmationPhrase(m.projectKeyForName(m.mergeTarget))
 	content := fmt.Sprintf("Type exactly to confirm: %s\n\nconfirmation: %s\n",
 		phrase,
 		confirmationField(m.mergeConfirmText, phrase),
@@ -2327,13 +2342,47 @@ func containsString(slice []string, s string) bool {
 	return false
 }
 
-func (m Model) snapshotHasProject(name string) bool {
+func (m Model) snapshotProject(nameOrKey string) (hiveclient.Project, bool) {
+	nameOrKey = strings.TrimSpace(nameOrKey)
 	for _, project := range m.snapshot.Projects {
-		if project.Name == name {
+		if project.Name == nameOrKey || project.CanonicalKey() == nameOrKey {
+			return project, true
+		}
+	}
+	return hiveclient.Project{}, false
+}
+
+func (m Model) projectKeyForName(nameOrKey string) string {
+	if project, found := m.snapshotProject(nameOrKey); found {
+		return project.CanonicalKey()
+	}
+	return hiveclient.CanonicalProjectKey(nameOrKey)
+}
+
+func (m Model) snapshotHasProject(nameOrKey string) bool {
+	_, found := m.snapshotProject(nameOrKey)
+	return found
+}
+
+func (m Model) snapshotHasProjectKey(key string) bool {
+	for _, project := range m.snapshot.Projects {
+		if project.CanonicalKey() == key {
 			return true
 		}
 	}
 	return false
+}
+
+func (m Model) projectDisplayNames(keys []string) []string {
+	displays := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if project, found := m.snapshotProject(key); found {
+			displays = append(displays, project.Name)
+			continue
+		}
+		displays = append(displays, key)
+	}
+	return displays
 }
 
 func (m Model) snapshotHasBackup(id string) bool {
@@ -3253,7 +3302,7 @@ func (m Model) selectedProject() hiveclient.Project {
 }
 
 func (m Model) projectMemories() []hiveclient.Memory {
-	project := m.selectedProject().Name
+	project := m.selectedProject().CanonicalKey()
 	memories := make([]hiveclient.Memory, 0, len(m.snapshot.Memories))
 	for _, memory := range m.snapshot.Memories {
 		if memory.Project == project && (!memory.Deleted || m.snapshot.DeletedMemories == nil) {
@@ -3271,7 +3320,7 @@ func (m Model) screenMemories() []hiveclient.Memory {
 		return m.snapshot.TimelineMemories
 	}
 	if m.screen == ScreenDeletedMemories || (m.screen == ScreenMemoryDetail && m.detailReturn == ScreenDeletedMemories) {
-		project := m.selectedProject().Name
+		project := m.selectedProject().CanonicalKey()
 		memories := make([]hiveclient.Memory, 0, len(m.snapshot.DeletedMemories))
 		for _, memory := range m.snapshot.DeletedMemories {
 			if memory.Project == project && memory.Deleted {
@@ -3296,7 +3345,7 @@ func newGuardRequestID() string {
 func (m Model) selectedMemory() hiveclient.Memory {
 	memories := m.screenMemories()
 	if len(memories) == 0 {
-		return hiveclient.Memory{Project: m.selectedProject().Name, SyncID: "-"}
+		return hiveclient.Memory{Project: m.selectedProject().CanonicalKey(), SyncID: "-"}
 	}
 	return memories[wrapIndex(m.memoryIndex, len(memories))]
 }

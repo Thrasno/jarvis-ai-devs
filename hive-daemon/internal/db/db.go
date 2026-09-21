@@ -159,6 +159,44 @@ CREATE TABLE IF NOT EXISTS memory_mutations (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_mutations_event_id ON memory_mutations(event_id);
 CREATE INDEX IF NOT EXISTS idx_memory_mutations_project_unsynced ON memory_mutations(project, sequence) WHERE synced_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_memory_mutations_entity ON memory_mutations(entity_type, entity_sync_id, sequence);
+
+-- Remote-presence is explicit durable evidence that Hive has accepted or sent
+-- an entity. It is deliberately separate from mutation timestamps: a terminal
+-- rejection also stops retries but proves nothing about remote presence.
+CREATE TABLE IF NOT EXISTS memory_remote_presence (
+    entity_sync_id TEXT PRIMARY KEY,
+    confirmed_at   DATETIME NOT NULL,
+    source         TEXT NOT NULL CHECK (source IN ('remote_pull', 'mutation_accept'))
+);
+CREATE TABLE IF NOT EXISTS memory_mutation_outcomes (
+    event_id       TEXT PRIMARY KEY,
+    entity_sync_id TEXT NOT NULL,
+    outcome        TEXT NOT NULL CHECK (outcome IN ('accepted', 'rejected')),
+    terminal_at    DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_mutation_outcomes_entity ON memory_mutation_outcomes(entity_sync_id, outcome);
+-- A dispatch is recorded immediately before a mutation batch crosses the
+-- network boundary. It is intentionally not terminal evidence.
+CREATE TABLE IF NOT EXISTS memory_mutation_dispatches (
+    event_id      TEXT PRIMARY KEY,
+    dispatched_at DATETIME NOT NULL
+);
+-- Legacy memories[] pushes have no guarantee their create mutation appears in
+-- the separately paged v2 batch, so their network crossing is entity-scoped.
+CREATE TABLE IF NOT EXISTS memory_entity_dispatches (
+    dispatch_id    TEXT NOT NULL,
+    entity_sync_id TEXT NOT NULL,
+    dispatched_at  DATETIME NOT NULL,
+    PRIMARY KEY (dispatch_id, entity_sync_id)
+);
+-- Local-origin is explicit evidence that this daemon created an entity before
+-- it ever crossed the network. It is keyed by stable sync id, not project: the
+-- memory row remains the sole project-bearing owner through promotion.
+CREATE TABLE IF NOT EXISTS memory_local_origins (
+    entity_sync_id TEXT PRIMARY KEY,
+    recorded_at    DATETIME NOT NULL,
+    source         TEXT NOT NULL CHECK (source IN ('local_save', 'engram_import'))
+);
 -- idx_memory_mutations_request_id is created in the migrations slice, AFTER the
 -- ALTER TABLE that adds request_id. Declaring it here breaks upgraded DBs whose
 -- memory_mutations predates the column: CREATE TABLE IF NOT EXISTS is a no-op,
@@ -341,6 +379,18 @@ CREATE TABLE IF NOT EXISTS hive_project_governance (
     merge_reason   TEXT NOT NULL DEFAULT ''
 );
 
+-- workspace_project_bindings preserves the authoritative local identity for a
+-- workspace even when its Git origin appears after first observation.
+CREATE TABLE IF NOT EXISTS workspace_project_bindings (
+    workspace  TEXT PRIMARY KEY,
+    project    TEXT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_workspace_project_bindings_project
+ON workspace_project_bindings(project);
+
 CREATE TABLE IF NOT EXISTS import_runs (
     id                 TEXT PRIMARY KEY,
     source_system      TEXT NOT NULL,
@@ -390,6 +440,19 @@ ON passive_observations(session_id);
 
 CREATE INDEX IF NOT EXISTS idx_passive_observations_project
 ON passive_observations(project, created_at DESC);
+
+-- sdd_store_bindings records one immutable artifact-store decision per canonical
+-- project and validated change. It deliberately has no foreign key: #722 owns
+-- canonical project identity promotion and will compare these immutable rows.
+CREATE TABLE IF NOT EXISTS sdd_store_bindings (
+    project        TEXT NOT NULL CHECK (length(trim(project, char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288))) > 0),
+    change_name    TEXT NOT NULL CHECK (length(trim(change_name, char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288))) > 0),
+    schema_version TEXT NOT NULL CHECK (length(trim(schema_version, char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288))) > 0),
+    mode           TEXT NOT NULL CHECK (mode IN ('hive', 'hybrid')),
+    provenance     TEXT NOT NULL CHECK (length(trim(provenance, char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288))) > 0),
+    created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (project, change_name)
+);
 
 -- Dedicated guarded v2 apply-progress topology. These tables are additive and
 -- deliberately separate from general memory SaveMemory/mem_save semantics.
@@ -565,6 +628,12 @@ func initSchema(sqlDB *sql.DB) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_mutations_event_id ON memory_mutations(event_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_mutations_project_unsynced ON memory_mutations(project, sequence) WHERE synced_at IS NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_mutations_entity ON memory_mutations(entity_type, entity_sync_id, sequence)`,
+		`CREATE TABLE IF NOT EXISTS memory_remote_presence (entity_sync_id TEXT PRIMARY KEY, confirmed_at DATETIME NOT NULL, source TEXT NOT NULL CHECK (source IN ('remote_pull', 'mutation_accept')))`,
+		`CREATE TABLE IF NOT EXISTS memory_mutation_outcomes (event_id TEXT PRIMARY KEY, entity_sync_id TEXT NOT NULL, outcome TEXT NOT NULL CHECK (outcome IN ('accepted', 'rejected')), terminal_at DATETIME NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_mutation_outcomes_entity ON memory_mutation_outcomes(entity_sync_id, outcome)`,
+		`CREATE TABLE IF NOT EXISTS memory_mutation_dispatches (event_id TEXT PRIMARY KEY, dispatched_at DATETIME NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS memory_entity_dispatches (dispatch_id TEXT NOT NULL, entity_sync_id TEXT NOT NULL, dispatched_at DATETIME NOT NULL, PRIMARY KEY (dispatch_id, entity_sync_id))`,
+		`CREATE TABLE IF NOT EXISTS memory_local_origins (entity_sync_id TEXT PRIMARY KEY, recorded_at DATETIME NOT NULL, source TEXT NOT NULL CHECK (source IN ('local_save', 'engram_import')))`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_mutations_request_id ON memory_mutations(request_id) WHERE request_id IS NOT NULL`,
 		`CREATE TABLE IF NOT EXISTS mutation_receipts (request_id TEXT PRIMARY KEY, operation TEXT NOT NULL, target_id INTEGER NOT NULL, project TEXT NOT NULL, entity_sync_id TEXT NOT NULL, event_id TEXT NOT NULL, actor_id TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '', local_status TEXT NOT NULL, shared_status TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
 		`CREATE TABLE IF NOT EXISTS mutation_cursors (consumer TEXT NOT NULL, project TEXT NOT NULL, sequence INTEGER NOT NULL DEFAULT 0, event_id TEXT NOT NULL DEFAULT '', updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (consumer, project))`,
@@ -603,11 +672,19 @@ func initSchema(sqlDB *sql.DB) error {
 			synced_at      DATETIME
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_project_aliases_target ON project_aliases(target_project)`,
+		// workspace_project_bindings is intentionally independent from sessions:
+		// an empty workspace remains bound across process restarts and promotion.
+		`CREATE TABLE IF NOT EXISTS workspace_project_bindings (workspace TEXT PRIMARY KEY, project TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+		`CREATE INDEX IF NOT EXISTS idx_workspace_project_bindings_project ON workspace_project_bindings(project)`,
 		// passive_observations: additive table for hook-captured subagent output.
 		// sync_id nullable for forward-compat with Hive sync (local-only for now).
 		`CREATE TABLE IF NOT EXISTS passive_observations (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL DEFAULT '', project TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, sync_id TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
 		`CREATE INDEX IF NOT EXISTS idx_passive_observations_session ON passive_observations(session_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_passive_observations_project ON passive_observations(project, created_at DESC)`,
+		// sdd_store_bindings is intentionally independent from project_identities.
+		// #722 owns later canonical identity promotion and must compare immutable
+		// source/target rows without this slice mutating either one.
+		`CREATE TABLE IF NOT EXISTS sdd_store_bindings (project TEXT NOT NULL CHECK (length(trim(project, char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288))) > 0), change_name TEXT NOT NULL CHECK (length(trim(change_name, char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288))) > 0), schema_version TEXT NOT NULL CHECK (length(trim(schema_version, char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288))) > 0), mode TEXT NOT NULL CHECK (mode IN ('hive', 'hybrid')), provenance TEXT NOT NULL CHECK (length(trim(provenance, char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288))) > 0), created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (project, change_name))`,
 		// pull_cursors: additive table for bounded legacy-pull pagination resume
 		// positions (PR 2a/2b, hive-sync-batched-drain). See the base schema
 		// declaration above for field semantics.

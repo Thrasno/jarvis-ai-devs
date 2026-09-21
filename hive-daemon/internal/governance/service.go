@@ -449,7 +449,7 @@ func (s *Service) ExecuteProjectArchive(ctx context.Context, req ProjectArchiveR
 	}, nil
 }
 
-const projectDeleteCloudHandoffNote = "Project purged locally. Cloud data not removed — no tombstone sync protocol exists yet."
+const projectDeleteCloudHandoffNote = "Project purged locally only. This does not delete Hive API data. A later sync can pull remote project data back; administer or delete the project in Hive API to prevent its return."
 
 // ExecuteProjectDelete irreversibly purges all local data for an archived project.
 // Guards: fresh backup, exact confirmation phrase ("PURGE project <name>").

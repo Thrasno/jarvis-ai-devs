@@ -129,6 +129,22 @@ func TestGovernanceProjectReadModelsSummarizeLocalState(t *testing.T) {
 	}
 }
 
+func TestGovernanceProjectsExposeCanonicalKeySeparatelyFromDisplayName(t *testing.T) {
+	d := openGovernanceTestDB(t)
+	saveGovernanceTestMemory(t, d, "Jarvis Dev Workspace", "Visible memory")
+
+	project, err := d.GetGovernanceProject(context.Background(), "jarvis-dev-workspace")
+	if err != nil {
+		t.Fatalf("GetGovernanceProject: %v", err)
+	}
+	if project.Key != "jarvis-dev-workspace" {
+		t.Fatalf("project key = %q, want canonical key", project.Key)
+	}
+	if project.Name != "Jarvis Dev Workspace" {
+		t.Fatalf("project name = %q, want display spelling", project.Name)
+	}
+}
+
 func TestGovernanceMemoryReadModelsRespectTombstoneFilter(t *testing.T) {
 	t.Parallel()
 

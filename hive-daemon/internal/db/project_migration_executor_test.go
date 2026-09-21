@@ -735,6 +735,9 @@ func seedMigrationProject(t *testing.T, database *DB, project string) {
 	if _, err := database.sqlDB.Exec(`INSERT INTO memories (sync_id, project, title, content, session_id) VALUES ('memory-sync', ?, 'title', 'content', 's')`, project); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := database.sqlDB.Exec(`INSERT INTO memory_remote_presence (entity_sync_id, confirmed_at, source) VALUES ('memory-sync', CURRENT_TIMESTAMP, 'remote_pull')`); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func migrationProjectValues(t *testing.T, database *DB) [2]string {

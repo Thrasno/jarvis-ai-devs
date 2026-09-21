@@ -66,8 +66,17 @@ func (d *DB) RecordSyncAttemptLog(ctx context.Context, log SyncAttemptLog) error
 		log.MetadataJSON = "{}"
 	}
 	log.ErrorMessage = SanitizeSyncAttemptError(log.DevID, log.ErrorMessage)
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin record sync attempt log: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	log.Project, err = resolveProjectIngressTx(ctx, tx, log.Project)
+	if err != nil {
+		return err
+	}
 
-	_, err := d.sqlDB.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 INSERT INTO sync_attempt_logs
     (attempt_id, dev_id, project, client, daemon_id, started_at, ended_at, outcome,
      http_status, error_code, error_message, request_id, sync_counts_json, metadata_json)
@@ -92,6 +101,9 @@ ON CONFLICT(attempt_id) DO UPDATE SET
 	)
 	if err != nil {
 		return fmt.Errorf("record sync attempt log: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit record sync attempt log: %w", err)
 	}
 	return nil
 }
