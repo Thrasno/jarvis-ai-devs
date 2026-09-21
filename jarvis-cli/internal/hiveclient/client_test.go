@@ -15,7 +15,7 @@ func TestClientListsProjectsFromGovernanceEndpoint(t *testing.T) {
 			t.Fatalf("request = %s %s, want GET /governance/projects", r.Method, r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"projects":[{"name":"alpha","directory":"/repo/alpha","active_memory_count":3,"deleted_memory_count":1,"session_count":2,"prompt_count":4,"last_activity_at":"2026-06-06T20:00:00Z"}]}`))
+		_, _ = w.Write([]byte(`{"projects":[{"key":"canonical-alpha","name":"alpha","directory":"/repo/alpha","active_memory_count":3,"deleted_memory_count":1,"session_count":2,"prompt_count":4,"last_activity_at":"2026-06-06T20:00:00Z"}]}`))
 	}))
 	defer server.Close()
 
@@ -28,8 +28,28 @@ func TestClientListsProjectsFromGovernanceEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Projects: %v", err)
 	}
-	if len(projects) != 1 || projects[0].Name != "alpha" || projects[0].ActiveMemoryCount != 3 {
-		t.Fatalf("projects = %+v, want alpha with 3 active memories", projects)
+	if len(projects) != 1 || projects[0].Key != "canonical-alpha" || projects[0].Name != "alpha" || projects[0].ActiveMemoryCount != 3 {
+		t.Fatalf("projects = %+v, want canonical-alpha with display name alpha and 3 active memories", projects)
+	}
+}
+
+func TestClientListsProjectsFallsBackToCanonicalizedNameWithoutKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"projects":[{"name":"Jarvis Dev Workspace"}]}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	projects, err := client.Projects(context.Background())
+	if err != nil {
+		t.Fatalf("Projects: %v", err)
+	}
+	if len(projects) != 1 || projects[0].Key != "jarvis-dev-workspace" || projects[0].Name != "Jarvis Dev Workspace" {
+		t.Fatalf("projects = %+v, want fallback canonical key with preserved display name", projects)
 	}
 }
 

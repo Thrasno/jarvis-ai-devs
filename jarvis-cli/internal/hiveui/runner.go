@@ -69,6 +69,8 @@ func LoadSnapshot(ctx context.Context, c *hiveclient.Client, baseURL string, sel
 		snap.Projects = projects
 	}
 
+	selectedProject = snapshotProjectKey(snap.Projects, selectedProject)
+
 	// Memories: try bulk empty-filter first; fall back to per-project on *APIError.
 	memories, err := c.Memories(ctx, hiveclient.MemoryFilter{})
 	if err != nil {
@@ -76,7 +78,7 @@ func LoadSnapshot(ctx context.Context, c *hiveclient.Client, baseURL string, sel
 		if isAPIError(err, &apiErr) {
 			// Fall back: load memories per project.
 			for _, p := range snap.Projects {
-				pm, perr := c.Memories(ctx, hiveclient.MemoryFilter{Project: p.Name})
+				pm, perr := c.Memories(ctx, hiveclient.MemoryFilter{Project: p.CanonicalKey()})
 				if perr == nil {
 					memories = append(memories, pm...)
 				}
@@ -90,7 +92,7 @@ func LoadSnapshot(ctx context.Context, c *hiveclient.Client, baseURL string, sel
 		var apiErr *hiveclient.APIError
 		if isAPIError(err, &apiErr) {
 			for _, p := range snap.Projects {
-				pm, perr := c.Memories(ctx, hiveclient.MemoryFilter{Project: p.Name, DeletedOnly: true})
+				pm, perr := c.Memories(ctx, hiveclient.MemoryFilter{Project: p.CanonicalKey(), DeletedOnly: true})
 				if perr == nil {
 					deleted = append(deleted, pm...)
 				}
@@ -145,6 +147,19 @@ func LoadSnapshot(ctx context.Context, c *hiveclient.Client, baseURL string, sel
 
 // isAPIError checks whether err (or any error in its chain) is *hiveclient.APIError
 // and sets target. Uses errors.As so wrapped errors are handled correctly.
+func snapshotProjectKey(projects []hiveclient.Project, selectedProject string) string {
+	selectedProject = strings.TrimSpace(selectedProject)
+	if selectedProject == "" {
+		return ""
+	}
+	for _, project := range projects {
+		if project.Name == selectedProject || project.CanonicalKey() == selectedProject {
+			return project.CanonicalKey()
+		}
+	}
+	return hiveclient.CanonicalProjectKey(selectedProject)
+}
+
 func isAPIError(err error, target **hiveclient.APIError) bool {
 	if err == nil {
 		return false
@@ -191,8 +206,9 @@ func RunTimelineTUI(ctx context.Context, baseURL string, project string) error {
 
 	// Locate the project index so the selected project is pre-wired.
 	projectIndex := 0
+	selectedProject := snapshotProjectKey(snap.Projects, project)
 	for i, p := range snap.Projects {
-		if p.Name == project {
+		if p.CanonicalKey() == selectedProject {
 			projectIndex = i
 			break
 		}

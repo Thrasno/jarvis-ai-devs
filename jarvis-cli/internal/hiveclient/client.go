@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 )
 
 const (
@@ -49,6 +50,7 @@ func (e *APIError) Error() string {
 }
 
 type Project struct {
+	Key                string    `json:"key"`
 	Name               string    `json:"name"`
 	Directory          string    `json:"directory"`
 	ActiveMemoryCount  int       `json:"active_memory_count"`
@@ -57,6 +59,22 @@ type Project struct {
 	PromptCount        int       `json:"prompt_count"`
 	LastActivityAt     time.Time `json:"last_activity_at"`
 	UnsyncedCount      int       `json:"unsynced_count"`
+}
+
+// CanonicalProjectKey returns the shared canonical project key for a display
+// spelling. It supports compatibility with daemon versions that predate
+// Project.Key.
+func CanonicalProjectKey(project string) string {
+	return projectidentity.Canonical(project).String()
+}
+
+// CanonicalKey returns the daemon-provided project key, falling back to the
+// canonicalized display name only for older daemon responses that omit Key.
+func (p Project) CanonicalKey() string {
+	if key := strings.TrimSpace(p.Key); key != "" {
+		return key
+	}
+	return CanonicalProjectKey(p.Name)
 }
 
 type Memory struct {
@@ -589,6 +607,9 @@ func (c *Client) Projects(ctx context.Context) ([]Project, error) {
 	}
 	if err := c.get(ctx, "/governance/projects", nil, &body, false); err != nil {
 		return nil, err
+	}
+	for i := range body.Projects {
+		body.Projects[i].Key = body.Projects[i].CanonicalKey()
 	}
 	return body.Projects, nil
 }
