@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -44,10 +46,81 @@ type openSpecResolutionLocker interface {
 	LockOpenSpec(changeDir string) (unlock func(), err error)
 }
 
-type lockedOpenSpecBindingStore struct{ root *changeRoot }
+type fileOpenSpecBindingStore struct{ resolutionRoot *changeRoot }
 
-func (s lockedOpenSpecBindingStore) ReadOpenSpec(string) (*Binding, error) {
-	doc, _, exists, err := readStateDocument(s.root)
+func (s fileOpenSpecBindingStore) openOptional(changeDir string) (*changeRoot, bool, error) {
+	exists, err := existingDirectoryPath(changeDir)
+	if err != nil || !exists {
+		return nil, false, err
+	}
+	root, err := openChangeRoot(changeDir)
+	if err != nil {
+		return nil, false, err
+	}
+	same, err := s.resolutionRoot.samePhysicalDirectory(root)
+	if err != nil {
+		_ = root.Close()
+		return nil, false, err
+	}
+	if same {
+		_ = root.Close()
+		return nil, false, fmt.Errorf("%w: resolution lock must differ physically from the OpenSpec change directory", ErrInvalidBinding)
+	}
+	return root, true, nil
+}
+
+func existingDirectoryPath(path string) (bool, error) {
+	absolute, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return false, fmt.Errorf("%w: invalid OpenSpec change path", ErrUnsafePath)
+	}
+	volume := filepath.VolumeName(absolute)
+	current := volume + string(filepath.Separator)
+	remainder := strings.TrimPrefix(absolute, volume)
+	for _, component := range strings.Split(remainder, string(filepath.Separator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		current = filepath.Join(current, component)
+		entry, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		info := entry
+		if entry.Mode()&os.ModeSymlink != 0 {
+			info, err = os.Stat(current)
+			if err != nil {
+				return false, fmt.Errorf("%w: dangling OpenSpec path symlink", ErrUnsafePath)
+			}
+		}
+		if !info.IsDir() {
+			return false, fmt.Errorf("%w: OpenSpec path component is not a directory", ErrUnsafePath)
+		}
+	}
+	return true, nil
+}
+
+func (s fileOpenSpecBindingStore) validateChangeDirectory(changeDir string) error {
+	root, found, err := s.openOptional(changeDir)
+	if root != nil {
+		_ = root.Close()
+	}
+	if !found {
+		return err
+	}
+	return err
+}
+
+func (s fileOpenSpecBindingStore) ReadOpenSpec(changeDir string) (*Binding, error) {
+	root, found, err := s.openOptional(changeDir)
+	if err != nil || !found {
+		return nil, err
+	}
+	defer root.Close()
+	doc, _, exists, err := readStateDocument(root)
 	if err != nil || !exists {
 		return nil, err
 	}
@@ -55,11 +128,21 @@ func (s lockedOpenSpecBindingStore) ReadOpenSpec(string) (*Binding, error) {
 	return binding, err
 }
 
-func (s lockedOpenSpecBindingStore) AdoptOpenSpec(_ string, requested Binding) (Binding, bool, error) {
-	if _, err := New(requested.Mode(), requested.Provenance()); err != nil {
+func (s fileOpenSpecBindingStore) AdoptOpenSpec(changeDir string, requested Binding) (Binding, bool, error) {
+	root, found, err := s.openOptional(changeDir)
+	if err != nil {
 		return Binding{}, false, err
 	}
-	return adoptOpenSpecLocked(s.root, requested)
+	if !found {
+		return Binding{}, false, fmt.Errorf("%w: OpenSpec change directory does not exist", ErrUnsafePath)
+	}
+	defer root.Close()
+	unlock, err := root.lock()
+	if err != nil {
+		return Binding{}, false, err
+	}
+	defer unlock()
+	return adoptOpenSpecLocked(root, requested)
 }
 
 // InitialSelection is consulted only when neither store has a persisted copy
@@ -84,6 +167,7 @@ type LegacyResolver struct {
 	HiveSource        sddstatus.ArtifactSource
 	OpenSpecSource    sddstatus.ArtifactSource
 	OpenSpecChangeDir string
+	ResolutionLockDir string
 }
 
 // PartialAdoptionError reports that Hive accepted a hybrid binding but the
@@ -130,17 +214,24 @@ func (r LegacyResolver) ResolveAndAdopt(ctx context.Context, project, change str
 		return r.resolveAndAdoptLocked(ctx, project, change, initial, r.OpenSpecBindings)
 	}
 
-	root, err := openChangeRoot(r.OpenSpecChangeDir)
+	if strings.TrimSpace(r.ResolutionLockDir) == "" {
+		return Resolution{}, fmt.Errorf("%w: resolution lock directory is required", ErrInvalidBinding)
+	}
+	root, err := openChangeRoot(r.ResolutionLockDir)
 	if err != nil {
 		return Resolution{}, err
 	}
 	defer func() { _ = root.Close() }()
+	localStore := fileOpenSpecBindingStore{resolutionRoot: root}
+	if err := localStore.validateChangeDirectory(r.OpenSpecChangeDir); err != nil {
+		return Resolution{}, err
+	}
 	unlock, err := root.lock()
 	if err != nil {
 		return Resolution{}, err
 	}
 	defer unlock()
-	return r.resolveAndAdoptLocked(ctx, project, change, initial, lockedOpenSpecBindingStore{root: root})
+	return r.resolveAndAdoptLocked(ctx, project, change, initial, localStore)
 }
 
 func (r LegacyResolver) resolveAndAdoptLocked(ctx context.Context, project, change string, initial InitialSelection, localStore OpenSpecBindingStore) (Resolution, error) {

@@ -75,6 +75,10 @@ func rootMutexName(root *os.Root) (string, error) {
 
 func (r *changeRoot) Close() error { return r.root.Close() }
 
+func (r *changeRoot) samePhysicalDirectory(other *changeRoot) (bool, error) {
+	return r.mutexName == other.mutexName, nil
+}
+
 func (r *changeRoot) lock() (func(), error) {
 	name, err := windows.UTF16PtrFromString(r.mutexName)
 	if err != nil {

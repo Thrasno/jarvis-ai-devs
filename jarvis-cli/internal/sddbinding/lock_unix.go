@@ -66,6 +66,17 @@ func openChangeRoot(changeDir string) (*changeRoot, error) {
 
 func (r *changeRoot) Close() error { return unix.Close(r.fd) }
 
+func (r *changeRoot) samePhysicalDirectory(other *changeRoot) (bool, error) {
+	var left, right unix.Stat_t
+	if err := unix.Fstat(r.fd, &left); err != nil {
+		return false, fmt.Errorf("%w: resolution lock directory identity", ErrUnsafePath)
+	}
+	if err := unix.Fstat(other.fd, &right); err != nil {
+		return false, fmt.Errorf("%w: OpenSpec change directory identity", ErrUnsafePath)
+	}
+	return left.Dev == right.Dev && left.Ino == right.Ino, nil
+}
+
 func (r *changeRoot) lock() (func(), error) {
 	if err := unix.Flock(r.fd, unix.LOCK_EX); err != nil {
 		return nil, fmt.Errorf("lock OpenSpec binding directory: %w", err)

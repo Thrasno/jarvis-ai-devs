@@ -3,6 +3,8 @@ package sddbinding
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -191,6 +193,87 @@ func TestLegacyBindingHybridAdoptionIsBackendFirstAndRetryable(t *testing.T) {
 	got, err := resolver.ResolveAndAdopt(context.Background(), "project", "change", InitialSelection{Mode: sddruntime.StoreModeHive, Provenance: "ignored"})
 	if err != nil || got.Mode != sddruntime.StoreModeHybrid || len(hive.adopted) != 2 || len(local.adopted) != 2 {
 		t.Fatalf("retry resolution=%#v error=%v Hive adopts=%d OpenSpec adopts=%d", got, err, len(hive.adopted), len(local.adopted))
+	}
+}
+
+func TestLegacyBindingResolvesHiveCopyWithoutOpenSpecChangeDirectory(t *testing.T) {
+	root := t.TempDir()
+	resolver := LegacyResolver{
+		HiveBindings:      &fakeHiveBindingStore{binding: hiveBinding("hive", "selected"), found: true},
+		OpenSpecChangeDir: filepath.Join(root, "openspec", "changes", "change"),
+		ResolutionLockDir: root,
+	}
+	got, err := resolver.ResolveAndAdopt(context.Background(), "project", "change", InitialSelection{Mode: sddruntime.StoreModeOpenSpec, Provenance: "ignored"})
+	if err != nil || got.Mode != sddruntime.StoreModeHive || got.Provenance != "selected" || !got.Persisted {
+		t.Fatalf("resolution=%#v error=%v", got, err)
+	}
+}
+
+func TestLegacyBindingUsesProjectLockWithConcreteOpenSpecStore(t *testing.T) {
+	root := t.TempDir()
+	changeDir := filepath.Join(root, "openspec", "changes", "change")
+	if err := os.MkdirAll(changeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resolver := LegacyResolver{
+		HiveBindings:      &fakeHiveBindingStore{},
+		HiveSource:        observationSource(sddstatus.LegacyProgressObservation{}),
+		OpenSpecSource:    observationSource(sddstatus.LegacyProgressObservation{}),
+		OpenSpecChangeDir: changeDir,
+		ResolutionLockDir: root,
+	}
+	got, err := resolver.ResolveAndAdopt(context.Background(), "project", "change", InitialSelection{Mode: sddruntime.StoreModeOpenSpec, Provenance: "initial"})
+	if err != nil || got.Mode != sddruntime.StoreModeOpenSpec || !got.Persisted {
+		t.Fatalf("resolution=%#v error=%v", got, err)
+	}
+	persisted, err := ReadOpenSpec(changeDir)
+	if err != nil || persisted == nil || persisted.Mode() != sddruntime.StoreModeOpenSpec || persisted.Provenance() != "initial" {
+		t.Fatalf("persisted=%#v error=%v", persisted, err)
+	}
+}
+
+func TestLegacyBindingRejectsPhysicalResolutionLockAlias(t *testing.T) {
+	changeDir := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "change-alias")
+	if err := os.Symlink(changeDir, alias); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	resolver := LegacyResolver{HiveBindings: &fakeHiveBindingStore{binding: hiveBinding("hive", "selected"), found: true}, OpenSpecChangeDir: changeDir, ResolutionLockDir: alias}
+	if _, err := resolver.ResolveAndAdopt(context.Background(), "project", "change", InitialSelection{Mode: sddruntime.StoreModeHive, Provenance: "ignored"}); !errors.Is(err, ErrInvalidBinding) {
+		t.Fatalf("physical alias lock error = %v", err)
+	}
+}
+
+func TestLegacyBindingRejectsDanglingOpenSpecChangeSymlink(t *testing.T) {
+	root := t.TempDir()
+	changeDir := filepath.Join(root, "dangling-change")
+	if err := os.Symlink(filepath.Join(root, "missing-target"), changeDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	resolver := LegacyResolver{HiveBindings: &fakeHiveBindingStore{binding: hiveBinding("hive", "selected"), found: true}, OpenSpecChangeDir: changeDir, ResolutionLockDir: root}
+	if _, err := resolver.ResolveAndAdopt(context.Background(), "project", "change", InitialSelection{Mode: sddruntime.StoreModeHive, Provenance: "ignored"}); !errors.Is(err, ErrUnsafePath) {
+		t.Fatalf("dangling change symlink error = %v", err)
+	}
+}
+
+func TestLegacyBindingRejectsDanglingOpenSpecAncestorSymlink(t *testing.T) {
+	root := t.TempDir()
+	openSpec := filepath.Join(root, "openspec")
+	if err := os.Symlink(filepath.Join(root, "missing-target"), openSpec); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	changeDir := filepath.Join(openSpec, "changes", "change")
+	resolver := LegacyResolver{HiveBindings: &fakeHiveBindingStore{binding: hiveBinding("hive", "selected"), found: true}, OpenSpecChangeDir: changeDir, ResolutionLockDir: root}
+	if _, err := resolver.ResolveAndAdopt(context.Background(), "project", "change", InitialSelection{Mode: sddruntime.StoreModeHive, Provenance: "ignored"}); !errors.Is(err, ErrUnsafePath) {
+		t.Fatalf("dangling ancestor symlink error = %v", err)
+	}
+}
+
+func TestLegacyBindingRejectsResolutionLockAtChangeDirectory(t *testing.T) {
+	changeDir := t.TempDir()
+	resolver := LegacyResolver{HiveBindings: &fakeHiveBindingStore{}, OpenSpecChangeDir: changeDir, ResolutionLockDir: changeDir}
+	if _, err := resolver.ResolveAndAdopt(context.Background(), "project", "change", InitialSelection{Mode: sddruntime.StoreModeHive, Provenance: "initial"}); !errors.Is(err, ErrInvalidBinding) {
+		t.Fatalf("same-directory lock error = %v", err)
 	}
 }
 
