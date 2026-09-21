@@ -2543,7 +2543,8 @@ func TestScreenProjectPurge_ConfirmMismatch(t *testing.T) {
 
 // 5.5 RED: correct phrase → executor called → CloudHandoffNote visible in result view.
 func TestScreenProjectPurge_Success(t *testing.T) {
-	executor := &fakeProjectDeleteExecutor{note: "manual cloud cleanup required"}
+	const cloudHandoff = "Project purged locally only. This does not delete Hive API data. A later sync can pull remote project data back; administer or delete the project in Hive API to prevent its return."
+	executor := &fakeProjectDeleteExecutor{note: cloudHandoff}
 	snapshot := projectPurgeSnapshot()
 	m := NewModelWithSnapshotAndProjectDeleteExecutor(snapshot, executor)
 	m = activatePurgeFromDashboard(m)
@@ -2560,7 +2561,7 @@ func TestScreenProjectPurge_Success(t *testing.T) {
 	if req.Project != "alpha" || req.BackupID != "backup-purge" || req.Confirmation != "PURGE project alpha" {
 		t.Fatalf("request = %#v, want purge request for alpha", req)
 	}
-	assertContains(t, m.View(), "manual cloud cleanup required")
+	assertContains(t, m.View(), cloudHandoff)
 }
 
 // 5.6 RED: activate "Delete projects" dashboard entry → screen == ScreenProjects.

@@ -136,9 +136,21 @@ func withheldUnsupportedMutations(pending []db.MutationEnvelope, reprojectSuppor
 	if reprojectSupported {
 		return pending, 0
 	}
+	blockedEntities := make(map[string]struct{})
+	for _, mutation := range pending {
+		if mutation.Op == db.MutationOpReproject && mutation.EntitySyncID != "" {
+			blockedEntities[mutation.EntitySyncID] = struct{}{}
+		}
+	}
 	sendable := make([]db.MutationEnvelope, 0, len(pending))
 	withheld := 0
 	for _, mutation := range pending {
+		if mutation.EntitySyncID != "" {
+			if _, blocked := blockedEntities[mutation.EntitySyncID]; blocked {
+				withheld++
+				continue
+			}
+		}
 		if mutation.Op == db.MutationOpReproject {
 			withheld++
 			continue

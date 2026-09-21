@@ -16,6 +16,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/logger"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 )
 
 const (
@@ -143,6 +144,28 @@ type SyncStore interface {
 	RecordPendingProjectBlockAck(ctx context.Context, ack db.ProjectBlockAck) error
 	RecordProjectBlockAck(ctx context.Context, ack db.ProjectBlockAck) (db.ProjectBlockAck, error)
 	ListPendingProjectBlockAcks(ctx context.Context, limit int) ([]db.ProjectBlockAck, error)
+}
+
+// projectAliasResolver is intentionally optional so existing SyncStore fakes
+// remain narrow. The daemon DB implements it, making a caller that still holds
+// retired A run the entire sync entry under active B before it reads backlog,
+// writes health/cursors, or sends the remote request.
+// mutationDispatchMarker is optional so existing narrow SyncStore fakes remain
+// compatible while the daemon records the dispatch-before-response lifecycle.
+type mutationDispatchMarker interface {
+	MarkMutationsDispatched(eventIDs []string, at time.Time) error
+}
+
+type legacyMemoryDispatchMarker interface {
+	MarkMemoriesDispatchedBySyncID(syncIDs []string, at time.Time) (string, error)
+}
+
+type legacyMemoryDispatchResolver interface {
+	ClearMemoriesDispatch(dispatchID string) error
+}
+
+type projectAliasResolver interface {
+	ResolveAlias(context.Context, string) (string, bool, error)
 }
 
 type BackoffError struct {
@@ -423,6 +446,49 @@ func drainStateString(state DrainState) string {
 	}
 }
 
+func (s *Syncer) acquireSyncLifecycleLease(ctx context.Context, rawProject string) (string, func(), error) {
+	for attempts := 0; attempts < 3; attempts++ {
+		target := rawProject
+		if resolver, ok := s.store.(projectAliasResolver); ok {
+			resolved, found, err := resolver.ResolveAlias(ctx, rawProject)
+			if err != nil {
+				return "", nil, fmt.Errorf("resolve sync project alias: %w", err)
+			}
+			if found {
+				target = projectidentity.Canonical(resolved).String()
+			}
+		}
+		release := db.AcquireProjectLifecycleRead(rawProject, target)
+		// Re-resolve while holding the raw and target leases. A promotion cannot
+		// install an alias or relocate either project until this network cycle ends.
+		verified := rawProject
+		if resolver, ok := s.store.(projectAliasResolver); ok {
+			resolved, found, err := resolver.ResolveAlias(ctx, rawProject)
+			if err != nil {
+				release()
+				return "", nil, fmt.Errorf("verify sync project alias: %w", err)
+			}
+			if found {
+				verified = projectidentity.Canonical(resolved).String()
+			}
+		}
+		if verified == target {
+			if resolver, ok := s.store.(projectAliasResolver); ok && target != rawProject {
+				if _, chained, err := resolver.ResolveAlias(ctx, target); err != nil {
+					release()
+					return "", nil, fmt.Errorf("verify sync target alias: %w", err)
+				} else if chained {
+					release()
+					return "", nil, fmt.Errorf("sync project alias chain is not supported")
+				}
+			}
+			return target, release, nil
+		}
+		release()
+	}
+	return "", nil, fmt.Errorf("sync project alias changed while acquiring lifecycle lease")
+}
+
 // Sync ejecuta un único ciclo de sync (push+pull) para un proyecto. Es un
 // atajo sobre Drain con TriggerAuto — preserva la firma pública histórica
 // (*Result, error) para no romper a mem_save autoSync ni a los callers
@@ -443,6 +509,15 @@ func (s *Syncer) Sync(ctx context.Context, project string) (*Result, error) {
 // La reserva de inFlight se toma UNA vez al principio y se mantiene durante
 // todo el Drain — no se libera/reserva entre batches.
 func (s *Syncer) Drain(ctx context.Context, project string, policy TriggerPolicy) (*Result, DrainOutcome, error) {
+	rawProject := projectidentity.Canonical(project).String()
+	if rawProject == "" {
+		rawProject = project
+	}
+	project, releaseLifecycle, err := s.acquireSyncLifecycleLease(ctx, rawProject)
+	if err != nil {
+		return nil, DrainOutcome{}, err
+	}
+	defer releaseLifecycle()
 	if !s.tryReserve(project) {
 		return nil, DrainOutcome{}, fmt.Errorf("%w: project %s", ErrSyncInFlight, project)
 	}
@@ -951,6 +1026,29 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 		lastSyncPtr = &lastSync
 	}
 
+	legacyDispatchID := ""
+	if marker, ok := s.store.(legacyMemoryDispatchMarker); ok && len(unsynced) > 0 {
+		syncIDs := make([]string, 0, len(unsynced))
+		for _, memory := range unsynced {
+			if memory.SyncID != "" {
+				syncIDs = append(syncIDs, memory.SyncID)
+			}
+		}
+		var err error
+		legacyDispatchID, err = marker.MarkMemoriesDispatchedBySyncID(syncIDs, now)
+		if err != nil {
+			return batchResult{}, nil, fmt.Errorf("mark legacy memories dispatched: %w", err)
+		}
+	}
+	if marker, ok := s.store.(mutationDispatchMarker); ok && len(pendingMutations) > 0 {
+		eventIDs := make([]string, 0, len(pendingMutations))
+		for _, mutation := range pendingMutations {
+			eventIDs = append(eventIDs, mutation.EventID)
+		}
+		if err := marker.MarkMutationsDispatched(eventIDs, now); err != nil {
+			return batchResult{}, nil, fmt.Errorf("mark mutations dispatched: %w", err)
+		}
+	}
 	resp, err := s.client.sync(ctx, token, project, unsyncedSessions, unsynced, unsyncedPrompts, lastSyncPtr, pendingMutations, &mutationCursor, pullOptions{
 		Limit:          syncPageSize,
 		MemoriesCursor: pullCursorOrNil(pullMemoriesCursor),
@@ -989,6 +1087,13 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 	// Paso 5b: marcamos como sincronizadas las memorias legacy solo cuando
 	// el servidor confirmó el modo row-state. En v2, hive-api ignora memories[]
 	// cuando procesa mutations[], así que ackear filas legacy acá perdería datos.
+	if compatibilityMode == compatibilityModeMutationV2 {
+		if resolver, ok := s.store.(legacyMemoryDispatchResolver); ok && legacyDispatchID != "" {
+			if err := resolver.ClearMemoriesDispatch(legacyDispatchID); err != nil {
+				return batchResult{}, nil, fmt.Errorf("resolve ignored legacy memory dispatches: %w", err)
+			}
+		}
+	}
 	if compatibilityMode == compatibilityModeLegacy {
 		if err := s.store.MarkMutationReceiptsLegacyUnsupported(mutationEventIDs(pendingMutations)); err != nil {
 			return batchResult{}, nil, fmt.Errorf("marcar recibos legacy no soportados: %w", err)

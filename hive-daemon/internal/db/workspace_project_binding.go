@@ -117,6 +117,8 @@ func (d *DB) promoteWorkspaceProject(ctx context.Context, workspace, source, tar
 	if source == target {
 		return false, ErrGovernanceProjectMergeInvalid
 	}
+	release := AcquireProjectLifecycleWrite(source, target)
+	defer release()
 	tx, err := d.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("begin workspace project promotion: %w", err)
