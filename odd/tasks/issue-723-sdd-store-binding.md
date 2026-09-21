@@ -1,0 +1,148 @@
+# Issue 723 — Persistent SDD Artifact Store Binding
+
+## Objective
+
+Persist one authoritative artifact-store binding per project/change so every SDD lifecycle command reads and writes the same backend across processes, restarts, legacy changes, and hybrid operation.
+
+## Problem
+
+The current lifecycle resolves storage independently per command: status/continue default to Hive while protected progress defaults to OpenSpec. A change can therefore be read from one authority and written to another without an explicit user decision. Repeating `JARVIS_SDD_STORE_MODE` is not a durable contract.
+
+## Why
+
+A stable binding prevents accidental split authority, misleading `not_found` diagnostics, and unsafe recovery. It also gives later supersession work (#724) an explicit store contract without coupling this change to workspace identity promotion (#722).
+
+## Scope
+
+- Persist an immutable, idempotent binding keyed by canonical project and change.
+- Support Hive, OpenSpec, and hybrid bindings with provenance.
+- Adopt legacy changes safely after read-only inspection.
+- Make every lifecycle reader/writer consume the persisted binding.
+- Report binding mode and provenance in status/diagnostics.
+- Preserve strict hybrid equality and fail closed on divergence.
+- Keep `JARVIS_SDD_STORE_MODE` only for initial selection, diagnostics, or explicit administrative override.
+
+## Constraints and non-goals
+
+- Do not implement workspace identity promotion or redirects from #722.
+- Do not rewrite protected progress, receipts, manifests, or evidence.
+- Do not implement supersession from #724.
+- Do not conflate artifact storage with Hive memory sync or `jarvis sync` configuration replay.
+- Do not modify the concurrent #722 worktree or its branch.
+- Generated user-machine configuration is never edited directly.
+- Binding persistence must preserve unrelated OpenSpec `state.yaml` fields and existing Hive data.
+- Windows read-only replacement must use one atomic rename operation that ignores the destination read-only attribute; it must not clear the destination attribute before the commit point.
+
+## Product decisions
+
+- Binding placement is backend-owned: Hive stores its binding in SQLite, OpenSpec stores it in the change-local `state.yaml`, and hybrid persists both copies and requires exact equality.
+- `none` is not persisted because no protected write exists to bind; a later write must select a real mode.
+- Legacy equality fails closed and reuses the strictest existing normalized protected-state equality; divergent state requires explicit reconciliation.
+- A Hive-bound archive is a logical lifecycle closure and must not require a local OpenSpec move.
+- TDD mode is **on** by explicit user choice: every work unit must record observed RED, GREEN, and refactor evidence using its focused Go test command.
+
+## Delivery strategy
+
+- Forecast: approximately 1,000–1,500 authored diff lines across five cohesive work units.
+- Delivery strategy: `ask-on-risk`, resolved before implementation.
+- Chain strategy: `feature-branch-chain` by explicit user choice; use a draft/no-merge tracker and chained child PRs when delivery begins.
+- Review budget: approximately 400 authored changed lines per slice; tests and docs remain with each behavior.
+
+## Actionable checklist
+
+- [x] **ODD-723-01 — Persist the OpenSpec binding contract**
+  - Route: delegated direct writer; multi-file write trigger.
+  - Add the immutable/idempotent binding representation, validation, and provenance plus lossless atomic persistence in change-local OpenSpec `state.yaml`.
+  - Preserve unknown DAG-state fields, reject `none`, allow exact replay, and reject conflicting rebinding.
+  - Correction required after independent verification: reject YAML merge/duplicate-key ambiguity, avoid replay/error lock mutations, make containment race-safe, preserve existing permissions, eliminate post-commit ordinary errors, provide functional Windows parity, and reject special files before blocking opens.
+  - Focused check: `go test ./internal/sddbinding` plus `go test ./internal/sddruntime ./internal/sddbinding`.
+
+- [ ] **ODD-723-02 — Persist and expose the Hive binding**
+  - Route: delegated direct writer; multi-file write trigger.
+  - Add SQLite persistence plus daemon/client read and atomic adopt-if-absent operations without silent overwrite.
+  - Coordinate the migration-list insertion in `hive-daemon/internal/db/db.go` with #722 before editing it; `jarvis-cli/internal/hiveclient/client.go` is currently stable.
+  - Focused checks: DB, daemon governance/http, and CLI hiveclient binding tests.
+
+- [ ] **ODD-723-03 — Resolve and adopt legacy changes**
+  - Route: delegated direct writer; multi-file write trigger.
+  - Inspect Hive and OpenSpec read-only, adopt zero/one/equivalent state, and block divergence.
+  - Surface binding provenance in machine and human status output.
+  - Focused checks: `jarvis-cli/internal/sddstatus` and `cmd/jarvis` binding/legacy tests.
+
+- [ ] **ODD-723-04 — Route protected writes and archive through the binding**
+  - Route: delegated direct writer; multi-file write trigger.
+  - Make progress checkpoint/advance/upgrade and archive consume the binding.
+  - Prevent environment changes from silently switching a bound change.
+  - Support logical Hive archive without requiring an OpenSpec move.
+  - Focused checks: command-level progress and archive tests.
+
+- [ ] **ODD-723-05 — Update diagnostics, guidance, and regression coverage**
+  - Route: delegated direct writer; multi-file write trigger.
+  - Update embedded source-of-truth contracts and diagnostics.
+  - Cover process restart, overrides, equivalent/divergent legacy state, and proof that no second store is written accidentally.
+  - Focused checks: runtime/config/agent integration tests and relevant generated-output validators.
+
+- [ ] **ODD-723-06 — Final verification and delivery preparation**
+  - Route: verification delegated according to native assessment and RDD state.
+  - Run focused checks for every completed unit, then `go test ./...` and `go vet ./...`.
+  - Record work-unit commits, assessed risk/outcome, authored line counts, and PR slice boundaries.
+
+## Acceptance criteria
+
+- Every SDD lifecycle command resolves the same persisted store for a bound change.
+- A bound change never writes to a second store because an environment variable or command default changed.
+- Legacy zero/one/equivalent states are adopted deterministically; divergence fails closed.
+- Hybrid remains equality-validated and cannot silently degrade to one side.
+- Status reports the binding and its provenance.
+- Process restarts preserve the decision.
+- Archive respects Hive, OpenSpec, and hybrid semantics without conflating them.
+- Existing protected evidence remains immutable.
+
+## Progress
+
+- GitHub issue #723 was explicitly approved and carries `status:approved`.
+- Isolated worktree created at `../jarvis-dev-issue-723` on `feat/issue-723-sdd-store-binding` from `public/master` at `a315902a`.
+- Read-only mapping completed; no source files or tests have been changed.
+- Coordination boundary shared with the #722 agent: #723 owns store binding/routing; #722 owns identity promotion/redirects; shared Hive schema/DTO work requires coordination.
+- User selected backend-owned persistence, strict TDD, and a feature-branch PR chain.
+- #722 released `hive-daemon/internal/db/db.go`; this branch is rebased through its stable technical boundary `2e361374`. ODD-723-02 DB persistence is in progress under strict TDD.
+- Identity-promotion ownership is coordinated: #723 exposes immutable binding values and insert-if-absent persistence only; after integrating the #723 commit, #722 will add atomic move/converge/fail-closed behavior to its promotion transaction and `ProjectKeyedStates()`.
+- The ODD-723-02 DB slice implements fresh/migration schema, exact read, atomic first-writer adoption, replay, typed conflict, real upgrade coverage, and divergent concurrency. SQLite and Go reject the same complete 25-rune whitespace set; final independent and four-lens native review passed, and the slice was committed as `40003775` (`feat(hive): persist SDD store bindings`).
+- ODD-723-01 completed its initial RED/GREEN/refactor cycle and seven correction passes, passed final independent and native review, and was committed as `4d69d068` (`feat(sdd): persist OpenSpec store binding`) after rebasing onto the stable #722 boundary.
+- The work-unit implementation is 1,379 added lines across nine package files. This exceeds the preferred review-slice budget because the cohesive contract includes strict YAML validation, rooted atomic persistence, Unix/Windows parity, and their regressions; native review assessed the complete frozen 1,516-line candidate including this task record.
+
+## Verification evidence
+
+- Current default mismatch observed at `jarvis-cli/cmd/jarvis/cmd_sdd.go` and `jarvis-cli/cmd/jarvis/cmd_sdd_progress.go`.
+- Existing hybrid behavior fails closed on unequal v2 snapshots.
+- ODD-723-01 RED: `go test ./internal/sddbinding` failed on undefined production symbols after tests were added.
+- ODD-723-01 GREEN/refactor: `go test ./internal/sddbinding` passed after implementation and gofmt.
+- Independent commands passed: `go test ./internal/sddbinding`, `go test ./internal/sddruntime ./internal/sddbinding`, and scoped `git diff --check`.
+- First independent semantic verification failed on five blockers: YAML merge-key authority bypass, persistent lock mutation on replay/rejection, path-replacement races, post-rename error ambiguity, and permission replacement.
+- The correction pass resolved those five Unix-path behaviors and kept focused tests green.
+- Second independent verification still failed: Windows unconditionally returned `ErrUnsafePath`; Unix opened a FIFO `state.yaml` in blocking mode before type validation. It also identified equivalent numeric YAML keys as an ambiguity gap.
+- The verifier's initial second-pass command ran from the repository root and found no `go.mod`; the authorized rerun with the correct `jarvis-cli` cwd passed and no repository mutation was observed.
+- The second correction pass added functional Windows rooted access with a named mutex, descriptor-relative nonblocking Unix validation, canonical YAML scalar-key comparison, and host-runnable regressions for FIFO and equivalent numeric keys.
+- Post-correction focused tests and scoped diff-check pass. Windows runtime/build evidence remains unavailable because repository policy has not authorized builds or cross-compilation.
+- Third independent verification found five deterministic blockers: `CreateMutex` mishandled `ERROR_ALREADY_EXISTS` and leaked its valid handle; thread-owned mutex release was not pinned to one OS thread; lock names used path/session identity instead of physical directory identity; `0.0` and `-0.0` remained distinct canonical YAML keys; Unix rejected ordinary workspaces beneath symlinked ancestors.
+- The third correction pass now accepts existing Windows mutex handles, pins ownership through release, derives a `Global\\` mutex name from physical volume/file identity, normalizes signed-zero/NaN/infinite YAML keys, and resolves symlink ancestors before descriptor-rooted traversal. Focused tests and diff-check pass.
+- Fourth independent verification confirmed the prior blockers resolved but found one deterministic test-portability defect: shared permission assertions expected Unix `0640`/`0600`, while Windows reports writable regular files with Windows-specific mode semantics.
+- The fourth correction pass split permission expectations by platform: Unix still requires exact `0640` preservation and `0600` creation; Windows requires regular writable state files without assuming POSIX bit patterns. Focused host tests and diff-check pass; no Windows build/runtime evidence was produced.
+- Final reverification confirmed the implementation blockers remain resolved but found that all shared permission cases were writable; no test proved that adopting into an existing Windows read-only `state.yaml` preserved read-only status.
+- The fifth correction pass added shared `0444` preservation coverage and platform-specific assertions. Its initial Windows workaround clears the destination read-only bit immediately before rename and restores it only on normal failure, leaving a deterministic process-crash window that violates pre-commit immutability.
+- Microsoft documents `FileRenameInfoEx` with `FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS | FILE_RENAME_IGNORE_READONLY_ATTRIBUTE` for atomic replacement of a read-only target. This is the required Windows correction path; ordinary `MoveFileEx`/attribute toggling is insufficient.
+- The sixth correction pass stages through rooted `NtCreateFile` with `DELETE` access and commits through `SetFileInformationByHandle(FileRenameInfoEx)` with all three required flags. Source-contract tests assert the flags and absence of destination `Chmod`; host tests and diff-check pass.
+- Independent source reverification confirmed the Win32 structure/access/flags and cleanup semantics, but found that `lock_windows.go` returned an ordinary error when the staged handle `Close` failed after the rename had already committed.
+- The seventh correction pass makes post-commit staged-handle close best-effort and adds a source-contract regression. Final independent reverification passed with no remaining deterministic findings.
+- Authorized Windows-target compilation passed with `GOOS=windows GOARCH=amd64 go test -c -o /tmp/jarvis-sddbinding-windows-amd64.test.exe ./internal/sddbinding`; the temporary artifact was removed. Windows runtime behavior remains unexecuted.
+- LSP diagnostics reported no findings across the host-platform package files. Explicit no-index whitespace checks covered all previously untracked files.
+- Native review lineage `review-623f0f936cff00a5` approved and was acknowledged for the frozen candidate. The subsequent read-only assessment was unavailable natively but confirmed RDD-on handling from the closed review outcome.
+- ODD-723-02 DB RED: focused tests initially failed on missing binding symbols/table. GREEN/refactor: focused binding tests and `go test ./internal/db` pass with atomic independent-handle concurrency.
+- First DB verification passed the transaction/API semantics but requested divergent concurrency, true pre-binding upgrade, identity-read nonmutation, and direct schema constraints; those tests were added and pass.
+- DB reverification found that SQLite constraints trimming only space/tab/LF/CR admitted whitespace-only U+00A0/U+2003, vertical-tab, form-feed, and other Go whitespace. The correction encodes all 25 `strings.TrimSpace` runes in both schema declarations and proves 100 guarded-column rejection cases; final reverification passed with no deterministic findings.
+- Native DB review lineage `review-297bad791c44363e` ran risk, resilience, readability, and reliability lenses over the 606-line frozen candidate, approved, and was acknowledged. The DB implementation commit contains 597 added lines across schema, repository, and tests; the cohesive SQLite authority contract exceeds the preferred slice size but was reviewed as one security boundary.
+- Commit `40003775` was handed to #722 for its separately owned `ProjectKeyedStates()` and atomic identity-promotion integration.
+
+## Next step
+
+Implement the second ODD-723-02 slice: expose binding read/adopt through the daemon governance/HTTP boundary and `hiveclient`, without adding legacy resolution or lifecycle routing.
