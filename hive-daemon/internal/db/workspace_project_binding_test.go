@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	hivedb "github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
+	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 )
 
 func TestWorkspaceProjectBindingPersistsAcrossRestart(t *testing.T) {
@@ -249,6 +251,78 @@ func openWorkspaceBindingDB(t *testing.T) *hivedb.DB {
 	return d
 }
 
+func TestPromotionFailsClosedForDispatchedCreateWithoutResponse(t *testing.T) {
+	ctx := context.Background()
+	d := openWorkspaceBindingDB(t)
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if _, err := d.EnsureManualSaveSession("source"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.SaveMemory(&models.Memory{Project: "source", SessionID: "manual-save-source", Title: "lost", Content: "response"}); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := d.GetPendingMutations("source", 10)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending = %d, err=%v", len(pending), err)
+	}
+	if err := d.MarkMutationsDispatched([]string{pending[0].EventID}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := d.EnsureWorkspaceProjectBinding(ctx, workspace, "source"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = d.PromoteWorkspaceProject(ctx, workspace, "source", "target")
+	if !errors.Is(err, hivedb.ErrProjectMigrationRemotePresenceAmbiguous) {
+		t.Fatalf("PromoteWorkspaceProject() error = %v, want ambiguous remote presence", err)
+	}
+}
+
+func TestPromotionRejectsLegacyDispatchDespiteRejectedV2Create(t *testing.T) {
+	ctx := context.Background()
+	d := openWorkspaceBindingDB(t)
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if _, err := d.EnsureManualSaveSession("source"); err != nil {
+		t.Fatal(err)
+	}
+	id, err := d.SaveMemory(&models.Memory{Project: "source", SessionID: "manual-save-source", Title: "split", Content: "request"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	memory, err := d.GetMemory(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := d.GetPendingMutations("source", 10)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending = %d, err=%v", len(pending), err)
+	}
+	if err := d.MarkMutationsRejected([]string{pending[0].EventID}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	olderDispatch, err := d.MarkMemoriesDispatchedBySyncID([]string{memory.SyncID}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	newerDispatch, err := d.MarkMemoriesDispatchedBySyncID([]string{memory.SyncID}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.ClearMemoriesDispatch(newerDispatch); err != nil {
+		t.Fatal(err)
+	}
+	var remaining int
+	if err := d.RawDB().QueryRow(`SELECT COUNT(*) FROM memory_entity_dispatches WHERE dispatch_id = ? AND entity_sync_id = ?`, olderDispatch, memory.SyncID).Scan(&remaining); err != nil || remaining != 1 {
+		t.Fatalf("older legacy dispatch after newer v2 cleanup = (%d, %v), want (1, nil)", remaining, err)
+	}
+	if _, _, err := d.EnsureWorkspaceProjectBinding(ctx, workspace, "source"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = d.PromoteWorkspaceProject(ctx, workspace, "source", "target")
+	if !errors.Is(err, hivedb.ErrProjectMigrationRemotePresenceAmbiguous) {
+		t.Fatalf("PromoteWorkspaceProject() error = %v, want unresolved legacy dispatch ambiguity", err)
+	}
+}
+
 func seedWorkspaceSourceState(t *testing.T, d *hivedb.DB, project string) {
 	t.Helper()
 	if _, err := d.EnsureManualSaveSession(project); err != nil {
@@ -261,8 +335,11 @@ func seedWorkspaceSourceState(t *testing.T, d *hivedb.DB, project string) {
 	if _, err := d.RawDB().Exec(`INSERT INTO memories (sync_id, project, title, content, session_id) VALUES (?, ?, 'source memory', 'content', ?)`, "workspace-memory-"+project, project, sessionID); err != nil {
 		t.Fatalf("seed memory: %v", err)
 	}
-	if _, err := d.RawDB().Exec(`INSERT INTO memory_mutations (event_id, entity_sync_id, project, op) VALUES (?, ?, ?, 'save')`, "workspace-mutation-"+project, "workspace-memory-"+project, project); err != nil {
+	if _, err := d.RawDB().Exec(`INSERT INTO memory_mutations (event_id, entity_sync_id, project, op) VALUES (?, ?, ?, 'create')`, "workspace-mutation-"+project, "workspace-memory-"+project, project); err != nil {
 		t.Fatalf("seed pending mutation: %v", err)
+	}
+	if _, err := d.RawDB().Exec(`INSERT INTO memory_local_origins (entity_sync_id, recorded_at, source) VALUES (?, CURRENT_TIMESTAMP, 'local_save')`, "workspace-memory-"+project); err != nil {
+		t.Fatalf("seed local origin: %v", err)
 	}
 	if _, err := d.RawDB().Exec(`INSERT INTO sync_state (project, last_error) VALUES (?, 'pending')`, project); err != nil {
 		t.Fatalf("seed sync state: %v", err)

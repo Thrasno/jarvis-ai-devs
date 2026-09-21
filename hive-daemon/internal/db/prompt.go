@@ -50,16 +50,33 @@ func (d *DB) SavePromptForSession(ctx context.Context, project, sessionID, conte
 	if strings.TrimSpace(project) == "" {
 		return nil, errors.New("project is required")
 	}
-	canonicalProject, err := registerProjectIdentity(ctx, d.sqlDB, project)
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin save prompt: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := registerProjectIdentity(ctx, tx, project); err != nil {
+		return nil, err
+	}
+	project, err = resolveProjectIngressTx(ctx, tx, project)
 	if err != nil {
 		return nil, err
 	}
-	project = canonicalProject
-	if err := d.ensureProjectWritable(ctx, project); err != nil {
+	project, err = registerProjectIdentity(ctx, tx, project)
+	if err != nil {
 		return nil, err
 	}
-
-	return savePrompt(ctx, d.sqlDB, project, sessionID, content)
+	if err := ensureProjectWritableInTx(tx, project); err != nil {
+		return nil, err
+	}
+	prompt, err := savePrompt(ctx, tx, project, sessionID, content)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit save prompt: %w", err)
+	}
+	return prompt, nil
 }
 
 type promptWriter interface {

@@ -80,7 +80,17 @@ func (d *DB) SaveMemoryWithManualSession(mem *models.Memory) (int64, error) {
 // SaveMemoryWithSession atomically materializes or reopens a compatible regular
 // session and persists the attributed memory, link, and mutation journal.
 func (d *DB) SaveMemoryWithSession(ctx context.Context, mem *models.Memory, session models.SessionInput) (int64, error) {
-	if session.ID != mem.SessionID || canonicalProjectKey(session.Project) != canonicalProjectKey(mem.Project) {
+	// Resolve both ingress coordinates before comparing them. A delayed hook may
+	// still carry retired A while its session writer already carries active B.
+	memoryProject, err := d.resolveProjectIngress(ctx, mem.Project)
+	if err != nil {
+		return 0, err
+	}
+	sessionProject, err := d.resolveProjectIngress(ctx, session.Project)
+	if err != nil {
+		return 0, err
+	}
+	if session.ID != mem.SessionID || sessionProject != memoryProject {
 		return 0, &project.ValidationError{
 			Code:       project.CodeProjectSessionMismatch,
 			Message:    "session attribution does not match memory",
@@ -89,6 +99,8 @@ func (d *DB) SaveMemoryWithSession(ctx context.Context, mem *models.Memory, sess
 	}
 
 	memory := *mem
+	memory.Project = memoryProject
+	session.Project = sessionProject
 	return d.saveMemory(&memory, func(tx *sql.Tx) error {
 		session.Project = memory.Project
 		ensured, err := d.ensureSessionInTx(ctx, tx, session, reopenForWrite)
@@ -136,7 +148,23 @@ func (d *DB) saveMemory(mem *models.Memory, prepareTx func(*sql.Tx) error) (int6
 		return 0, fmt.Errorf("begin save memory: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	// Registering first obtains SQLite's writer reservation before the alias
+	// lookup, avoiding deferred-transaction read→write upgrade races between
+	// simultaneous hook writes. The source identity is durable history, not an
+	// active project-keyed row; resolution below still guarantees the memory
+	// itself is written only under the active target.
 	if _, err := registerProjectIdentity(context.Background(), tx, rawProject); err != nil {
+		return 0, err
+	}
+	resolvedProject, err := resolveProjectIngressTx(context.Background(), tx, rawProject)
+	if err != nil {
+		return 0, err
+	}
+	mem.Project = resolvedProject
+	if mem.SessionID == "manual-save-"+rawProject || mem.SessionID == "manual-save-"+canonicalProjectKey(rawProject) {
+		mem.SessionID = "manual-save-" + resolvedProject
+	}
+	if _, err := registerProjectIdentity(context.Background(), tx, resolvedProject); err != nil {
 		return 0, err
 	}
 	if err := ensureProjectWritableInTx(tx, mem.Project); err != nil {
@@ -170,6 +198,9 @@ RETURNING id`
 	if err != nil {
 		return 0, fmt.Errorf("save memory: %w", err)
 	}
+	if err := recordLocalMemoryOriginTx(tx, syncID, now, "local_save"); err != nil {
+		return 0, fmt.Errorf("record local memory origin: %w", err)
+	}
 	if mem.PromptID > 0 {
 		if _, err := tx.Exec(
 			`INSERT INTO memory_prompt_links (memory_id, prompt_id) VALUES (?, ?)`,
@@ -199,6 +230,11 @@ RETURNING id`
 
 // GetMemory retrieves an active memory by its id.
 // Returns an error if not found or tombstoned.
+func recordLocalMemoryOriginTx(tx *sql.Tx, syncID, recordedAt, source string) error {
+	_, err := tx.Exec(`INSERT INTO memory_local_origins (entity_sync_id, recorded_at, source) VALUES (?, ?, ?) ON CONFLICT(entity_sync_id) DO NOTHING`, syncID, recordedAt, source)
+	return err
+}
+
 func (d *DB) GetMemory(id int64) (*models.Memory, error) {
 	const q = `
 SELECT id, sync_id, project, topic_key, category, title, content, tags, files_affected,

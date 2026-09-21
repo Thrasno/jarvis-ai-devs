@@ -17,6 +17,7 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/topickey"
+	"github.com/google/uuid"
 )
 
 const maxSyncLastErrorRunes = 500
@@ -402,17 +403,27 @@ WHERE synced_at IS NULL AND sync_id != '' AND deleted_at IS NULL`
 
 // MarkSynced marca una memoria como sincronizada con el servidor.
 func (d *DB) MarkSynced(syncID string, at time.Time) error {
-	result, err := d.sqlDB.Exec(
-		`UPDATE memories SET synced_at = ? WHERE sync_id = ?`,
-		at.UTC().Format("2006-01-02 15:04:05"), syncID,
-	)
+	tx, err := d.sqlDB.Begin()
+	if err != nil {
+		return fmt.Errorf("begin mark memory synced: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	formatted := at.UTC().Format("2006-01-02 15:04:05")
+	result, err := tx.Exec(`UPDATE memories SET synced_at = ? WHERE sync_id = ?`, formatted, syncID)
 	if err != nil {
 		return err
 	}
 	if n, _ := result.RowsAffected(); n == 0 {
 		logger.Log.Printf("warn: MarkSynced: no row found for sync_id %s", syncID)
+		return tx.Commit()
 	}
-	return nil
+	if _, err := tx.Exec(`INSERT INTO memory_remote_presence (entity_sync_id, confirmed_at, source) VALUES (?, ?, 'mutation_accept') ON CONFLICT(entity_sync_id) DO NOTHING`, syncID, formatted); err != nil {
+		return fmt.Errorf("record memory remote presence: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM memory_entity_dispatches WHERE entity_sync_id = ?`, syncID); err != nil {
+		return fmt.Errorf("resolve memory dispatch: %w", err)
+	}
+	return tx.Commit()
 }
 
 // MarkMemoriesSyncedBySyncID marks legacy memory rows as synced by
@@ -438,9 +449,29 @@ func (d *DB) MarkMemoriesSyncedBySyncID(syncIDs []string, at time.Time) error {
 		}
 		if n, _ := result.RowsAffected(); n == 0 {
 			logger.Log.Printf("warn: MarkMemoriesSyncedBySyncID: no row found for sync_id %s", syncID)
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO memory_remote_presence (entity_sync_id, confirmed_at, source) VALUES (?, ?, 'mutation_accept') ON CONFLICT(entity_sync_id) DO NOTHING`, syncID, formatted); err != nil {
+			return fmt.Errorf("record memory remote presence %s: %w", syncID, err)
+		}
+		if _, err := tx.Exec(`DELETE FROM memory_entity_dispatches WHERE entity_sync_id = ?`, syncID); err != nil {
+			return fmt.Errorf("resolve memory dispatch %s: %w", syncID, err)
 		}
 	}
 	return tx.Commit()
+}
+
+// ClearMemoriesDispatch resolves only the exact memories[] request that a
+// successful mutation-v2 response explicitly ignored.
+func (d *DB) ClearMemoriesDispatch(dispatchID string) error {
+	if dispatchID == "" {
+		return nil
+	}
+	_, err := d.sqlDB.Exec(`DELETE FROM memory_entity_dispatches WHERE dispatch_id = ?`, dispatchID)
+	if err != nil {
+		return fmt.Errorf("clear legacy memory dispatch %s: %w", dispatchID, err)
+	}
+	return nil
 }
 
 func (d *DB) GetPendingMutations(project string, limit int) ([]MutationEnvelope, error) {
@@ -465,7 +496,10 @@ WHERE synced_at IS NULL`
 		q += ` AND project = ?`
 		args = append(args, project)
 	}
-	q += ` ORDER BY sequence ASC, event_id ASC LIMIT ?`
+	// A promotion appends reproject events after pre-existing local changes.
+	// Dispatch every reproject first so the server moves its A row to B before
+	// receiving a B update/delete/restore for the same entity, even across pages.
+	q += ` ORDER BY CASE WHEN op = 'reproject' THEN 0 ELSE 1 END, sequence ASC, event_id ASC LIMIT ?`
 	args = append(args, limit)
 
 	rows, err := d.sqlDB.Query(q, args...)
@@ -485,6 +519,52 @@ WHERE synced_at IS NULL`
 	return mutations, rows.Err()
 }
 
+// MarkMutationsDispatched durably records that a local mutation crossed the
+// network boundary before its response is known. A later accepted/rejected ack
+// is terminal; a lost response remains intentionally ambiguous for promotion.
+// MarkMemoriesDispatchedBySyncID records legacy memories[] payloads just
+// before they cross the network. It is separate from mutation dispatch because
+// paging can omit the correlated create event from the same request.
+func (d *DB) MarkMemoriesDispatchedBySyncID(syncIDs []string, at time.Time) (string, error) {
+	if len(syncIDs) == 0 {
+		return "", nil
+	}
+	tx, err := d.sqlDB.Begin()
+	if err != nil {
+		return "", fmt.Errorf("begin mark memories dispatched: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	dispatchID := uuid.NewString()
+	formatted := at.UTC().Format("2006-01-02 15:04:05")
+	for _, syncID := range syncIDs {
+		if _, err := tx.Exec(`INSERT INTO memory_entity_dispatches (dispatch_id, entity_sync_id, dispatched_at) VALUES (?, ?, ?)`, dispatchID, syncID, formatted); err != nil {
+			return "", fmt.Errorf("mark memory dispatched %s: %w", syncID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return dispatchID, nil
+}
+
+func (d *DB) MarkMutationsDispatched(eventIDs []string, at time.Time) error {
+	if len(eventIDs) == 0 {
+		return nil
+	}
+	tx, err := d.sqlDB.Begin()
+	if err != nil {
+		return fmt.Errorf("begin mark mutations dispatched: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	formatted := at.UTC().Format("2006-01-02 15:04:05")
+	for _, eventID := range eventIDs {
+		if _, err := tx.Exec(`INSERT INTO memory_mutation_dispatches (event_id, dispatched_at) SELECT event_id, ? FROM memory_mutations WHERE event_id = ? ON CONFLICT(event_id) DO NOTHING`, formatted, eventID); err != nil {
+			return fmt.Errorf("mark mutation dispatched %s: %w", eventID, err)
+		}
+	}
+	return tx.Commit()
+}
+
 func (d *DB) MarkMutationsSynced(eventIDs []string, at time.Time) error {
 	if len(eventIDs) == 0 {
 		return nil
@@ -497,11 +577,22 @@ func (d *DB) MarkMutationsSynced(eventIDs []string, at time.Time) error {
 
 	formatted := at.UTC().Format("2006-01-02 15:04:05")
 	for _, eventID := range eventIDs {
-		if _, err := tx.Exec(`UPDATE memory_mutations SET synced_at = ? WHERE event_id = ?`, formatted, eventID); err != nil {
+		if err := recordAcceptedMutationTx(tx, eventID, formatted); err != nil {
 			return fmt.Errorf("mark mutation synced %s: %w", eventID, err)
 		}
 	}
 	return tx.Commit()
+}
+
+func recordAcceptedMutationTx(tx *sql.Tx, eventID, at string) error {
+	if _, err := tx.Exec(`UPDATE memory_mutations SET synced_at = ? WHERE event_id = ?`, at, eventID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO memory_mutation_outcomes (event_id, entity_sync_id, outcome, terminal_at) SELECT event_id, entity_sync_id, 'accepted', ? FROM memory_mutations WHERE event_id = ? ON CONFLICT(event_id) DO UPDATE SET outcome = 'accepted', terminal_at = excluded.terminal_at`, at, eventID); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`INSERT INTO memory_remote_presence (entity_sync_id, confirmed_at, source) SELECT entity_sync_id, ?, 'mutation_accept' FROM memory_mutations WHERE event_id = ? ON CONFLICT(entity_sync_id) DO NOTHING`, at, eventID)
+	return err
 }
 
 // MarkMutationsRejected stops retrying terminal Hive API rejections without
@@ -520,6 +611,9 @@ func (d *DB) MarkMutationsRejected(eventIDs []string, at time.Time) error {
 	for _, eventID := range eventIDs {
 		if _, err := tx.Exec(`UPDATE memory_mutations SET synced_at = ? WHERE event_id = ?`, formatted, eventID); err != nil {
 			return fmt.Errorf("mark rejected mutation %s: %w", eventID, err)
+		}
+		if _, err := tx.Exec(`INSERT INTO memory_mutation_outcomes (event_id, entity_sync_id, outcome, terminal_at) SELECT event_id, entity_sync_id, 'rejected', ? FROM memory_mutations WHERE event_id = ? ON CONFLICT(event_id) DO UPDATE SET outcome = 'rejected', terminal_at = excluded.terminal_at`, formatted, eventID); err != nil {
+			return fmt.Errorf("record rejected mutation outcome %s: %w", eventID, err)
 		}
 		result, err := tx.Exec(`UPDATE mutation_receipts SET shared_status = 'failed' WHERE event_id = ? AND shared_status = 'pending'`, eventID)
 		if err != nil {
@@ -602,7 +696,7 @@ func (d *DB) MarkMutationsAndMemoriesSynced(eventIDs []string, syncIDs []string,
 	formatted := at.UTC().Format("2006-01-02 15:04:05")
 
 	for _, eventID := range eventIDs {
-		if _, err := tx.Exec(`UPDATE memory_mutations SET synced_at = ? WHERE event_id = ?`, formatted, eventID); err != nil {
+		if err := recordAcceptedMutationTx(tx, eventID, formatted); err != nil {
 			return fmt.Errorf("mark mutation synced %s: %w", eventID, err)
 		}
 	}
@@ -614,6 +708,13 @@ func (d *DB) MarkMutationsAndMemoriesSynced(eventIDs []string, syncIDs []string,
 		}
 		if n, _ := result.RowsAffected(); n == 0 {
 			logger.Log.Printf("warn: MarkMutationsAndMemoriesSynced: no memory row found for sync_id %s", syncID)
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO memory_remote_presence (entity_sync_id, confirmed_at, source) VALUES (?, ?, 'mutation_accept') ON CONFLICT(entity_sync_id) DO NOTHING`, syncID, formatted); err != nil {
+			return fmt.Errorf("record memory remote presence %s: %w", syncID, err)
+		}
+		if _, err := tx.Exec(`DELETE FROM memory_entity_dispatches WHERE entity_sync_id = ?`, syncID); err != nil {
+			return fmt.Errorf("resolve memory dispatch %s: %w", syncID, err)
 		}
 	}
 
@@ -624,9 +725,13 @@ func (d *DB) MarkMutationsAndMemoriesSynced(eventIDs []string, syncIDs []string,
 }
 
 func (d *DB) GetMutationCursor(consumer, project string) (MutationCursor, error) {
-	project = projectidentity.Canonical(project).String()
+	var err error
+	project, err = d.resolveProjectIngress(context.Background(), project)
+	if err != nil {
+		return MutationCursor{}, fmt.Errorf("get mutation cursor resolve project: %w", err)
+	}
 	var cursor MutationCursor
-	err := d.sqlDB.QueryRow(`
+	err = d.sqlDB.QueryRow(`
 SELECT sequence, event_id
 FROM mutation_cursors
 WHERE consumer = ? AND project = ?`, consumer, project).Scan(&cursor.Sequence, &cursor.EventID)
@@ -640,8 +745,16 @@ WHERE consumer = ? AND project = ?`, consumer, project).Scan(&cursor.Sequence, &
 }
 
 func (d *DB) SetMutationCursor(consumer, project string, cursor MutationCursor, at time.Time) error {
-	project = projectidentity.Canonical(project).String()
-	_, err := d.sqlDB.Exec(`
+	tx, err := d.sqlDB.BeginTx(context.Background(), nil)
+	if err != nil {
+		return fmt.Errorf("begin set mutation cursor: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	project, err = resolveProjectIngressTx(context.Background(), tx, project)
+	if err != nil {
+		return fmt.Errorf("set mutation cursor resolve project: %w", err)
+	}
+	if _, err := tx.Exec(`
 INSERT INTO mutation_cursors (consumer, project, sequence, event_id, updated_at)
 VALUES (?, ?, ?, ?, ?)
 ON CONFLICT(consumer, project) DO UPDATE SET
@@ -649,9 +762,11 @@ ON CONFLICT(consumer, project) DO UPDATE SET
     event_id = excluded.event_id,
     updated_at = excluded.updated_at`,
 		consumer, project, cursor.Sequence, cursor.EventID, at.UTC().Format("2006-01-02 15:04:05"),
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("set mutation cursor: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit set mutation cursor: %w", err)
 	}
 	return nil
 }
@@ -672,10 +787,14 @@ const pullCursorTimeLayout = time.RFC3339Nano
 // (never synced, or first bounded pull for this project) returns the zero
 // value, matching GetMutationCursor's contract.
 func (d *DB) GetPullCursor(consumer, project, channel string) (PullCursor, error) {
-	project = projectidentity.Canonical(project).String()
+	var err error
+	project, err = d.resolveProjectIngress(context.Background(), project)
+	if err != nil {
+		return PullCursor{}, fmt.Errorf("get pull cursor resolve project: %w", err)
+	}
 	var cursor PullCursor
 	var syncedAt string
-	err := d.sqlDB.QueryRow(`
+	err = d.sqlDB.QueryRow(`
 SELECT synced_at, sync_id
 FROM pull_cursors
 WHERE consumer = ? AND project = ? AND channel = ?`, consumer, project, channel).Scan(&syncedAt, &cursor.SyncID)
@@ -701,8 +820,16 @@ WHERE consumer = ? AND project = ? AND channel = ?`, consumer, project, channel)
 // ON CONFLICT DO UPDATE shape, keyed one level deeper to keep the memories
 // and sessions pull channels independent for the same project.
 func (d *DB) SetPullCursor(consumer, project, channel string, cursor PullCursor, at time.Time) error {
-	project = projectidentity.Canonical(project).String()
-	_, err := d.sqlDB.Exec(`
+	tx, err := d.sqlDB.BeginTx(context.Background(), nil)
+	if err != nil {
+		return fmt.Errorf("begin set pull cursor: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	project, err = resolveProjectIngressTx(context.Background(), tx, project)
+	if err != nil {
+		return fmt.Errorf("set pull cursor resolve project: %w", err)
+	}
+	if _, err := tx.Exec(`
 INSERT INTO pull_cursors (consumer, project, channel, synced_at, sync_id, updated_at)
 VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT(consumer, project, channel) DO UPDATE SET
@@ -710,9 +837,11 @@ ON CONFLICT(consumer, project, channel) DO UPDATE SET
     sync_id = excluded.sync_id,
     updated_at = excluded.updated_at`,
 		consumer, project, channel, cursor.SyncedAt.UTC().Format(pullCursorTimeLayout), cursor.SyncID, formatSQLiteTime(at),
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("set pull cursor: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit set pull cursor: %w", err)
 	}
 	return nil
 }
@@ -720,12 +849,20 @@ ON CONFLICT(consumer, project, channel) DO UPDATE SET
 // ClearPullCursor deletes the bounded-pull resume position for one channel.
 // Deleting a missing row is a successful no-op.
 func (d *DB) ClearPullCursor(consumer, project, channel string) error {
-	project = projectidentity.Canonical(project).String()
-	_, err := d.sqlDB.Exec(`
-DELETE FROM pull_cursors
-WHERE consumer = ? AND project = ? AND channel = ?`, consumer, project, channel)
+	tx, err := d.sqlDB.BeginTx(context.Background(), nil)
 	if err != nil {
+		return fmt.Errorf("begin clear pull cursor: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	project, err = resolveProjectIngressTx(context.Background(), tx, project)
+	if err != nil {
+		return fmt.Errorf("clear pull cursor resolve project: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM pull_cursors WHERE consumer = ? AND project = ? AND channel = ?`, consumer, project, channel); err != nil {
 		return fmt.Errorf("clear pull cursor: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit clear pull cursor: %w", err)
 	}
 	return nil
 }
@@ -820,20 +957,24 @@ func (d *DB) ApplyRemoteMutation(event MutationEnvelope) (bool, error) {
 	// Resolve and canonicalize in memory before classifying. This keeps immutable
 	// validation aligned with the eventual project identity without registering it:
 	// a blocked immutable CREATE must leave no identity, session, or row behind.
-	var aliasTarget string
-	aliasErr := tx.QueryRow(
-		`SELECT target_project FROM project_aliases WHERE source_project = ? LIMIT 1`, event.Project,
-	).Scan(&aliasTarget)
-	if aliasErr != nil && !errors.Is(aliasErr, sql.ErrNoRows) {
-		return false, fmt.Errorf("ApplyRemoteMutation resolve alias: %w", aliasErr)
+	rawProject := canonicalProjectKey(event.Project)
+	event.Project, err = resolveProjectIngressTx(context.Background(), tx, event.Project)
+	if err != nil {
+		return false, fmt.Errorf("ApplyRemoteMutation resolve alias: %w", err)
 	}
-	if aliasErr == nil {
-		event.Project = aliasTarget
+	if event.Reproject != nil {
+		reproject := *event.Reproject
+		reproject.FromProject = rekeyPayloadProject(reproject.FromProject, rawProject, event.Project)
+		reproject.ToProject = rekeyPayloadProject(reproject.ToProject, rawProject, event.Project)
+		event.Reproject = &reproject
 	}
-	rawProject := event.Project
-	event.Project = projectidentity.Canonical(rawProject).String()
-	if event.Memory != nil && event.Memory.SessionID == "manual-save-"+rawProject {
-		event.Memory.SessionID = "manual-save-" + event.Project
+	if event.Memory != nil {
+		memory := *event.Memory
+		memory.Project = event.Project
+		if memory.SessionID == "manual-save-"+rawProject {
+			memory.SessionID = "manual-save-" + event.Project
+		}
+		event.Memory = &memory
 	}
 
 	classification := classifyRemoteImmutableApplyProgressMutation(tx, event)
@@ -858,6 +999,11 @@ func (d *DB) ApplyRemoteMutation(event MutationEnvelope) (bool, error) {
 		applied, createErr := applyRemoteImmutableApplyProgressCreate(tx, event)
 		if createErr != nil {
 			return false, createErr
+		}
+		if applied {
+			if err := recordAppliedRemoteMutationTx(tx, event); err != nil {
+				return false, fmt.Errorf("record immutable remote mutation evidence: %w", err)
+			}
 		}
 		return applied, tx.Commit()
 	}
@@ -1035,7 +1181,23 @@ WHERE sync_id = ? AND deleted_at IS NULL`,
 	}); err != nil {
 		return false, fmt.Errorf("record remote mutation: %w", err)
 	}
+	if err := recordAppliedRemoteMutationTx(tx, event); err != nil {
+		return false, fmt.Errorf("record remote mutation evidence: %w", err)
+	}
 	return true, tx.Commit()
+}
+
+// recordAppliedRemoteMutationTx runs only after the row mutation and journal
+// insert succeeded. Soft delete preserves remote presence because the server
+// still owns a tombstoned row that must be reprojected before a later restore.
+// Create/update/restore and an applied reproject establish presence as well.
+func recordAppliedRemoteMutationTx(tx *sql.Tx, event MutationEnvelope) error {
+	at := event.OccurredAt.UTC().Format("2006-01-02 15:04:05")
+	if _, err := tx.Exec(`INSERT INTO memory_mutation_outcomes (event_id, entity_sync_id, outcome, terminal_at) VALUES (?, ?, 'accepted', ?) ON CONFLICT(event_id) DO UPDATE SET outcome = 'accepted', terminal_at = excluded.terminal_at`, event.EventID, event.EntitySyncID, at); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`INSERT INTO memory_remote_presence (entity_sync_id, confirmed_at, source) VALUES (?, ?, 'remote_pull') ON CONFLICT(entity_sync_id) DO UPDATE SET confirmed_at = excluded.confirmed_at, source = excluded.source`, event.EntitySyncID, at)
+	return err
 }
 
 // logSkippedImmutableApplyProgressMutation contains no remote identifiers,
@@ -1181,52 +1343,49 @@ func (d *DB) SaveFromRemote(mem *models.Memory) error {
 	createdAt := mem.CreatedAt.UTC().Format("2006-01-02 15:04:05")
 	updatedAt := mem.UpdatedAt.UTC().Format("2006-01-02 15:04:05")
 
-	// Resolve alias using a direct SQL query so this function does not depend on
-	// context.Background() via d.ResolveAlias. If mem.Project is a known alias
-	// source, rewrite to the canonical target project name.
-	// Use a local variable to avoid mutating the caller's *models.Memory.
-	project := mem.Project
-	var aliasTarget string
-	aliasErr := d.sqlDB.QueryRow(
-		`SELECT target_project FROM project_aliases WHERE source_project = ? LIMIT 1`, project,
-	).Scan(&aliasTarget)
-	if aliasErr != nil && !errors.Is(aliasErr, sql.ErrNoRows) {
-		return fmt.Errorf("SaveFromRemote resolve alias: %w", aliasErr)
+	tx, err := d.sqlDB.BeginTx(context.Background(), nil)
+	if err != nil {
+		return fmt.Errorf("begin save remote memory: %w", err)
 	}
-	if aliasErr == nil {
-		project = aliasTarget
-		// Note: session_id is kept as-is even when the project is remapped via alias.
-		// The FK on memories.session_id checks ID existence only, not project match.
-		// All memory reads filter by memories.project directly, so the mismatch is harmless.
-		// Remapping sessions on sync receive would require creating artificial sessions
-		// under the target project, which adds noise to KnownProjects and session history.
+	defer func() { _ = tx.Rollback() }()
+	// Registering the raw spelling reserves the write transaction before alias
+	// resolution. The memory row itself is inserted only under the active key.
+	if _, err := registerProjectIdentity(context.Background(), tx, mem.Project); err != nil {
+		return err
 	}
-	rawProject := project
-	canonicalProject, err := registerProjectIdentity(context.Background(), d.sqlDB, rawProject)
+	project, err := resolveProjectIngressTx(context.Background(), tx, mem.Project)
+	if err != nil {
+		return fmt.Errorf("SaveFromRemote resolve alias: %w", err)
+	}
+	project, err = registerProjectIdentity(context.Background(), tx, project)
 	if err != nil {
 		return err
 	}
-	project = canonicalProject
-	if err := d.ensureProjectWritable(context.Background(), project); err != nil {
+	if err := ensureProjectWritableInTx(tx, project); err != nil {
 		return err
 	}
 
 	// R2-CRIT-3: resolve session_id BEFORE the INSERT. memories.session_id is NOT NULL,
 	// and `INSERT OR IGNORE` would silently drop the row on any constraint failure.
 	sessionID := mem.SessionID
-	if sessionID == "manual-save-"+rawProject {
-		sessionID = "manual-save-" + project
+	if strings.HasPrefix(sessionID, "manual-save-") {
+		var exists bool
+		if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ? AND project = ?)`, sessionID, project).Scan(&exists); err != nil {
+			return fmt.Errorf("check delayed manual-save session: %w", err)
+		}
+		if !exists {
+			sessionID = ""
+		}
 	}
 	if sessionID == "" {
-		resolved, err := d.EnsureManualSaveSession(project)
+		sessionID, err = ensureManualSaveSessionTx(tx, project)
 		if err != nil {
 			return fmt.Errorf("ensure manual-save session for remote insert: %w", err)
 		}
-		sessionID = resolved
 		logger.Log.Printf("warn: SaveFromRemote(%s) had empty session_id; lazy-resolved to %q", mem.SyncID, sessionID)
 	}
 
-	_, err = d.sqlDB.Exec(`
+	if _, err := tx.Exec(`
 INSERT OR IGNORE INTO memories
 	(sync_id, project, topic_key, category, title, content, tags, files_affected,
 	 created_by, created_at, updated_at, synced_at, session_id)
@@ -1234,30 +1393,36 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		mem.SyncID, project, topickey.Normalize(mem.TopicKey), mem.Category,
 		mem.Title, mem.Content, string(tagsJSON), string(filesJSON),
 		mem.CreatedBy, createdAt, updatedAt, now, sessionID,
-	)
-	return err
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO memory_remote_presence (entity_sync_id, confirmed_at, source) VALUES (?, ?, 'remote_pull') ON CONFLICT(entity_sync_id) DO NOTHING`, mem.SyncID, now); err != nil {
+		return fmt.Errorf("record remote memory presence: %w", err)
+	}
+	return tx.Commit()
+}
+
+func ensureManualSaveSessionTx(tx *sql.Tx, project string) (string, error) {
+	id := "manual-save-" + project
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO sessions (id, sync_id, project, directory, dev_id, client) VALUES (?, lower(hex(randomblob(16))), ?, '', ?, 'manual')`, id, project, resolveDevID()); err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 // acceptRemoteImmutableApplyProgressReplay admits a valid absent immutable
 // document or treats an exact replay as a no-op. It never journals a received
 // row as a new local mutation.
 func (d *DB) acceptRemoteImmutableApplyProgressReplay(mem *models.Memory, topic string) error {
-	project := mem.Project
-	var aliasTarget string
-	aliasErr := d.sqlDB.QueryRow(`SELECT target_project FROM project_aliases WHERE source_project = ? LIMIT 1`, project).Scan(&aliasTarget)
-	if aliasErr != nil && !errors.Is(aliasErr, sql.ErrNoRows) {
-		return fmt.Errorf("SaveFromRemote resolve immutable alias: %w", aliasErr)
-	}
-	if aliasErr == nil {
-		project = aliasTarget
-	}
-	project = projectidentity.Canonical(project).String()
-
 	tx, err := d.sqlDB.Begin()
 	if err != nil {
 		return fmt.Errorf("begin immutable remote receive: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	project, err := resolveProjectIngressTx(context.Background(), tx, mem.Project)
+	if err != nil {
+		return fmt.Errorf("SaveFromRemote resolve immutable alias: %w", err)
+	}
 	var existingProject, existingContent string
 	var existingTopic sql.NullString
 	err = tx.QueryRow(`SELECT project, topic_key, content FROM memories WHERE sync_id = ?`, mem.SyncID).Scan(&existingProject, &existingTopic, &existingContent)
@@ -1301,6 +1466,13 @@ func (d *DB) acceptRemoteImmutableApplyProgressReplay(mem *models.Memory, topic 
 
 // GetLastSync devuelve el timestamp del último sync exitoso para un proyecto.
 func (d *DB) GetLastSync(project string) (time.Time, error) {
+	if project != "__auth__" {
+		var err error
+		project, err = d.resolveProjectIngress(context.Background(), project)
+		if err != nil {
+			return time.Time{}, err
+		}
+	}
 	project = canonicalSyncStateProject(project)
 	var ts sql.NullString
 	err := d.sqlDB.QueryRow(
@@ -1323,6 +1495,13 @@ func (d *DB) SetLastSync(project string, at time.Time) error {
 }
 
 func (d *DB) GetSyncHealth(project string) (SyncHealth, error) {
+	if project != "__auth__" {
+		var err error
+		project, err = d.resolveProjectIngress(context.Background(), project)
+		if err != nil {
+			return SyncHealth{}, err
+		}
+	}
 	project = canonicalSyncStateProject(project)
 	var (
 		health                                SyncHealth
@@ -1412,21 +1591,25 @@ ORDER BY project`)
 // string is stored as empty string, not NULL, so GetSyncHealth's Valid check
 // still reports the row as present.
 func (d *DB) RecordDrainOutcome(project, state, reason string, remaining int) error {
-	if _, err := d.sqlDB.Exec(`
-INSERT OR IGNORE INTO sync_state (project, consecutive_failures, last_error)
-VALUES (?, 0, '')`, project); err != nil {
+	tx, err := d.sqlDB.BeginTx(context.Background(), nil)
+	if err != nil {
+		return fmt.Errorf("begin record drain outcome: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	project, err = resolveProjectIngressTx(context.Background(), tx, project)
+	if err != nil {
 		return err
 	}
-
-	_, err := d.sqlDB.Exec(`
-UPDATE sync_state SET
-	last_drain_state = ?,
-	last_drain_reason = ?,
-	last_drain_remaining = ?
-WHERE project = ?`,
-		state, reason, remaining, project,
-	)
-	return err
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO sync_state (project, consecutive_failures, last_error) VALUES (?, 0, '')`, project); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE sync_state SET last_drain_state = ?, last_drain_reason = ?, last_drain_remaining = ? WHERE project = ?`, state, reason, remaining, project); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit record drain outcome: %w", err)
+	}
+	return nil
 }
 
 func (d *DB) RecordSyncAttempt(project string, at time.Time) error {
@@ -1665,14 +1848,35 @@ type syncStateUpdate struct {
 }
 
 func (d *DB) upsertSyncState(project string, update syncStateUpdate) error {
+	tx, err := d.sqlDB.BeginTx(context.Background(), nil)
+	if err != nil {
+		return fmt.Errorf("begin upsert sync state: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if project != "__auth__" {
+		project, err = resolveProjectIngressTx(context.Background(), tx, project)
+		if err != nil {
+			return err
+		}
+	}
 	project = canonicalSyncStateProject(project)
-	if _, err := d.sqlDB.Exec(`
+	if err := upsertSyncStateTx(tx, project, update); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit upsert sync state: %w", err)
+	}
+	return nil
+}
+
+func upsertSyncStateTx(tx *sql.Tx, project string, update syncStateUpdate) error {
+	if _, err := tx.Exec(`
 INSERT OR IGNORE INTO sync_state (project, consecutive_failures, last_error)
 VALUES (?, 0, '')`, project); err != nil {
 		return err
 	}
 
-	_, err := d.sqlDB.Exec(`
+	_, err := tx.Exec(`
 UPDATE sync_state SET
 	last_sync_at = COALESCE(?, last_sync_at),
 	last_attempt_at = COALESCE(?, last_attempt_at),

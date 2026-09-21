@@ -12,12 +12,34 @@ import (
 // when the hook cannot resolve them. sync_id is stored as NULL; it is reserved
 // for future Hive sync integration and has no value at capture time.
 func (d *DB) SavePassiveObservation(ctx context.Context, sessionID, project, source, content string) error {
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin save passive observation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if project != "" {
+		if _, err := registerProjectIdentity(ctx, tx, project); err != nil {
+			return err
+		}
+		project, err = resolveProjectIngressTx(ctx, tx, project)
+		if err != nil {
+			return err
+		}
+		if _, err := registerProjectIdentity(ctx, tx, project); err != nil {
+			return err
+		}
+		if err := ensureProjectWritableInTx(tx, project); err != nil {
+			return err
+		}
+	}
 	const q = `
 INSERT INTO passive_observations (session_id, project, source, content)
 VALUES (?, ?, ?, ?)`
-
-	if _, err := d.sqlDB.ExecContext(ctx, q, sessionID, project, source, content); err != nil {
+	if _, err := tx.ExecContext(ctx, q, sessionID, project, source, content); err != nil {
 		return fmt.Errorf("save passive observation: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit save passive observation: %w", err)
 	}
 	return nil
 }

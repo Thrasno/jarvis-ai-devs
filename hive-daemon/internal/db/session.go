@@ -27,24 +27,39 @@ var ErrSessionAlreadyEnded = errors.New("session already ended")
 // with an empty dev_id. hive-api rejects empty dev_id via binding:"required", and a
 // single poisoned row blocks the whole batched sync push.
 func (d *DB) CreateSession(id, project, directory, devID, client string) error {
-	canonicalProject, err := registerProjectIdentity(context.Background(), d.sqlDB, project)
+	tx, err := d.sqlDB.BeginTx(context.Background(), nil)
+	if err != nil {
+		return fmt.Errorf("begin create session: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	// Reserve the writer before resolving so a concurrent promotion cannot
+	// retire this coordinate between alias lookup and insert.
+	if _, err := registerProjectIdentity(context.Background(), tx, project); err != nil {
+		return err
+	}
+	project, err = resolveProjectIngressTx(context.Background(), tx, project)
 	if err != nil {
 		return err
 	}
-	project = canonicalProject
-	if err := d.ensureProjectWritable(context.Background(), project); err != nil {
+	project, err = registerProjectIdentity(context.Background(), tx, project)
+	if err != nil {
+		return err
+	}
+	if err := ensureProjectWritableInTx(tx, project); err != nil {
 		return err
 	}
 	if strings.TrimSpace(devID) == "" {
 		devID = resolveDevID()
 	}
-	_, err = d.sqlDB.Exec(`
+	if _, err := tx.Exec(`
 		INSERT INTO sessions (id, sync_id, project, directory, dev_id, client)
 		VALUES (?, lower(hex(randomblob(16))), ?, ?, ?, ?)`,
 		id, project, directory, devID, client,
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("create session: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit create session: %w", err)
 	}
 	return nil
 }
@@ -113,7 +128,14 @@ func (d *DB) ensureSessionInTx(ctx context.Context, tx *sql.Tx, in models.Sessio
 	if strings.TrimSpace(in.ID) == "" {
 		return nil, fmt.Errorf("session id is required")
 	}
-	projectName, err := registerProjectIdentity(ctx, tx, in.Project)
+	if _, err := registerProjectIdentity(ctx, tx, in.Project); err != nil {
+		return nil, err
+	}
+	resolvedProject, err := resolveProjectIngressTx(ctx, tx, in.Project)
+	if err != nil {
+		return nil, err
+	}
+	projectName, err := registerProjectIdentity(ctx, tx, resolvedProject)
 	if err != nil {
 		return nil, err
 	}
@@ -290,25 +312,31 @@ func (d *DB) ListSessions(project string, limit int) ([]*models.Session, error) 
 // returns its id. Uses INSERT OR IGNORE so concurrent calls are safe.
 // This session is never auto-closed by AutoCloseStale (exempt by id prefix).
 func (d *DB) EnsureManualSaveSession(project string) (string, error) {
-	canonicalProject, err := registerProjectIdentity(context.Background(), d.sqlDB, project)
+	tx, err := d.sqlDB.BeginTx(context.Background(), nil)
+	if err != nil {
+		return "", fmt.Errorf("begin ensure manual save session: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := registerProjectIdentity(context.Background(), tx, project); err != nil {
+		return "", err
+	}
+	project, err = resolveProjectIngressTx(context.Background(), tx, project)
 	if err != nil {
 		return "", err
 	}
-	project = canonicalProject
-	if err := d.ensureProjectWritable(context.Background(), project); err != nil {
+	project, err = registerProjectIdentity(context.Background(), tx, project)
+	if err != nil {
 		return "", err
 	}
-	id := "manual-save-" + project
-	devID := resolveDevID()
-
-	_, err = d.sqlDB.Exec(`
-		INSERT OR IGNORE INTO sessions
-		    (id, sync_id, project, directory, dev_id, client)
-		VALUES (?, lower(hex(randomblob(16))), ?, '', ?, 'manual')`,
-		id, project, devID,
-	)
+	if err := ensureProjectWritableInTx(tx, project); err != nil {
+		return "", err
+	}
+	id, err := ensureManualSaveSessionTx(tx, project)
 	if err != nil {
 		return "", fmt.Errorf("ensure manual save session: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("commit ensure manual save session: %w", err)
 	}
 	return id, nil
 }
@@ -484,20 +512,38 @@ func (d *DB) AckSessionSnapshot(ctx context.Context, sent *models.Session, at ti
 // Uses the sync_id for conflict detection — ON CONFLICT(id) keeps first-arriving
 // sentinel rows intact for legacy-pre-lifecycle-* IDs.
 func (d *DB) SaveSessionFromRemote(s *models.Session) error {
-	if err := d.ensureProjectWritable(context.Background(), s.Project); err != nil {
+	tx, err := d.sqlDB.BeginTx(context.Background(), nil)
+	if err != nil {
+		return fmt.Errorf("begin save session from remote: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := registerProjectIdentity(context.Background(), tx, s.Project); err != nil {
 		return err
 	}
-	_, err := d.sqlDB.Exec(`
+	project, err := resolveProjectIngressTx(context.Background(), tx, s.Project)
+	if err != nil {
+		return err
+	}
+	project, err = registerProjectIdentity(context.Background(), tx, project)
+	if err != nil {
+		return err
+	}
+	if err := ensureProjectWritableInTx(tx, project); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
 		INSERT INTO sessions (id, sync_id, project, directory, dev_id, client, started_at, ended_at, summary, synced_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO NOTHING`,
-		s.ID, s.SyncID, s.Project, s.Directory, s.DevID, s.Client,
+		s.ID, s.SyncID, project, s.Directory, s.DevID, s.Client,
 		s.StartedAt.UTC().Format("2006-01-02 15:04:05"),
 		formatNullableTime(s.EndedAt),
 		emptyToNil(s.Summary),
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("save session from remote: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit save session from remote: %w", err)
 	}
 	return nil
 }

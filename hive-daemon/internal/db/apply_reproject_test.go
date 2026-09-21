@@ -31,6 +31,13 @@ func TestApplyRemoteReprojectMovesTheNamedRow(t *testing.T) {
 	if got := memoryProject(t, database, "shared-memory"); got != "new-name" {
 		t.Fatalf("memory project = %q, want %q", got, "new-name")
 	}
+	var presence int
+	if err := database.sqlDB.QueryRow(`SELECT COUNT(*) FROM memory_remote_presence WHERE entity_sync_id = 'shared-memory'`).Scan(&presence); err != nil {
+		t.Fatal(err)
+	}
+	if presence != 1 {
+		t.Fatalf("remote presence rows = %d, want 1 after an applied reproject", presence)
+	}
 }
 
 // TestApplyRemoteReprojectRequiresTheStoredProject is the property that makes

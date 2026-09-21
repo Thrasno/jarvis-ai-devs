@@ -141,11 +141,11 @@ func TestSyncerWithholdsReprojectFromAServerThatNeverDeclaredIt(t *testing.T) {
 
 func TestWithholdUnsupportedMutationsKeepsEveryOpTheServerUnderstands(t *testing.T) {
 	pending := []db.MutationEnvelope{
-		{EventID: "create", Op: db.MutationOpCreate},
-		{EventID: "move", Op: db.MutationOpReproject},
-		{EventID: "update", Op: db.MutationOpUpdate},
-		{EventID: "move-again", Op: db.MutationOpReproject},
-		{EventID: "delete", Op: db.MutationOpDelete},
+		{EventID: "create", EntitySyncID: "other", Op: db.MutationOpCreate},
+		{EventID: "move", EntitySyncID: "moved", Op: db.MutationOpReproject},
+		{EventID: "update", EntitySyncID: "moved", Op: db.MutationOpUpdate},
+		{EventID: "move-again", EntitySyncID: "moved-again", Op: db.MutationOpReproject},
+		{EventID: "delete", EntitySyncID: "other", Op: db.MutationOpDelete},
 	}
 
 	t.Run("server declares reproject", func(t *testing.T) {
@@ -156,14 +156,14 @@ func TestWithholdUnsupportedMutationsKeepsEveryOpTheServerUnderstands(t *testing
 
 	t.Run("server does not declare reproject", func(t *testing.T) {
 		kept, withheld := withheldUnsupportedMutations(pending, false)
-		assert.Equal(t, 2, withheld)
-		require.Len(t, kept, 3)
+		assert.Equal(t, 3, withheld)
+		require.Len(t, kept, 2)
 		for _, mutation := range kept {
 			assert.NotEqual(t, db.MutationOpReproject, mutation.Op,
 				"a reproject at a server that never declared the op is the wedge this exists to prevent")
 		}
-		assert.Equal(t, []string{"create", "update", "delete"},
-			[]string{kept[0].EventID, kept[1].EventID, kept[2].EventID},
-			"withholding one op must not reorder or drop the others")
+		assert.Equal(t, []string{"create", "delete"},
+			[]string{kept[0].EventID, kept[1].EventID},
+			"a withheld reproject also blocks every same-entity follow-up without reordering unrelated entities")
 	})
 }

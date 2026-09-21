@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -376,6 +377,8 @@ func (d *DB) MergeGovernanceProject(ctx context.Context, source, target, actorID
 		return false, ErrGovernanceProjectMergeInvalid
 	}
 
+	release := AcquireProjectLifecycleWrite(source, target)
+	defer release()
 	tx, err := d.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("begin merge governance project: %w", err)
@@ -453,6 +456,12 @@ WHERE project = ?`, target).Scan(&tgtMergedAt, &tgtArchivedAt)
 		}
 		return false, fmt.Errorf("%w: immutable apply progress topology", ErrGovernanceProjectMergeConflict)
 	}
+	if err := reconcileSDDStoreBindingsTx(ctx, tx, source, target); err != nil {
+		return false, fmt.Errorf("reconcile SDD store bindings: %w", err)
+	}
+	if err := validatePromotionStateCollisions(ctx, tx, source, target); err != nil {
+		return false, err
+	}
 	if _, err := registerProjectIdentity(ctx, tx, targetSpelling); err != nil {
 		return false, err
 	}
@@ -465,6 +474,22 @@ WHERE project = ?`, target).Scan(&tgtMergedAt, &tgtArchivedAt)
 	}
 	mergedAtStr := mergedAt.UTC().Format("2006-01-02 15:04:05")
 
+	// Preserve the exact relocation protocol used by ExecuteProjectMigration:
+	// only rows the server already holds carry source provenance, while unsynced
+	// rows simply move and will first arrive under target.
+	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET synced_at = NULL, sync_from_project = ? WHERE project = ? AND synced_at IS NOT NULL`, source, source); err != nil {
+		return false, fmt.Errorf("queue session relocation: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE user_prompts SET synced_at = NULL, sync_from_project = ? WHERE project = ? AND synced_at IS NOT NULL AND sync_id != ''`, source, source); err != nil {
+		return false, fmt.Errorf("queue prompt relocation: %w", err)
+	}
+	if _, err := enqueuePromotionMemoryReprojections(ctx, tx, source, target, mergedAtStr); err != nil {
+		return false, fmt.Errorf("queue memory reprojection: %w", err)
+	}
+	if err := rekeyPendingMutationPayloads(ctx, tx, source, target); err != nil {
+		return false, err
+	}
+
 	for _, migration := range []struct {
 		query string
 		label string
@@ -473,11 +498,25 @@ WHERE project = ?`, target).Scan(&tgtMergedAt, &tgtArchivedAt)
 		{`UPDATE user_prompts SET project = ? WHERE project = ?`, "migrate user_prompts"},
 		{`UPDATE sessions SET project = ? WHERE project = ?`, "migrate sessions"},
 		{`UPDATE memory_mutations SET project = ? WHERE project = ? AND synced_at IS NULL`, "migrate pending memory mutations"},
+		{`UPDATE mutation_receipts SET project = ? WHERE project = ?`, "migrate mutation receipts"},
+		// Sync positions are remote namespace coordinates, not local state to
+		// transplant. Dropping A makes the next B sync start a safe full pull.
+		{`DELETE FROM mutation_cursors WHERE project = ?`, "reset source mutation cursors"},
+		{`DELETE FROM pull_cursors WHERE project = ?`, "reset source pull cursors"},
+		{`DELETE FROM sync_state WHERE project = ? AND project != '__auth__'`, "reset source sync state"},
+		{`UPDATE passive_observations SET project = ? WHERE project = ?`, "migrate passive observations"},
+		{`UPDATE sync_attempt_logs SET project = ? WHERE project = ?`, "migrate sync attempt logs"},
+		{`UPDATE recovery_tokens SET requested_project = ? WHERE requested_project = ?`, "migrate recovery tokens"},
+		{`UPDATE import_source_aliases SET source_project = ? WHERE source_project = ?`, "migrate import aliases"},
+		{`UPDATE project_blocks SET canonical_project_key = ?, project = ? WHERE canonical_project_key = ? AND project = ?`, "migrate project blocks"},
+		{`UPDATE project_quarantine_archives SET canonical_project_key = ?, project = ? WHERE canonical_project_key = ? AND project = ?`, "migrate quarantine archives"},
 		{`DELETE FROM hive_warnings WHERE source = ?`, "delete hive warnings"},
-		{`DELETE FROM sync_state WHERE project = ? AND project != '__auth__'`, "delete source sync state"},
 	} {
 		args := []any{target, source}
-		if strings.HasPrefix(migration.query, "DELETE FROM") {
+		switch migration.label {
+		case "migrate project blocks", "migrate quarantine archives":
+			args = []any{target, target, source, source}
+		case "delete hive warnings", "reset source mutation cursors", "reset source pull cursors", "reset source sync state":
 			args = []any{source}
 		}
 		if _, err := tx.ExecContext(ctx, migration.query, args...); err != nil {
@@ -501,6 +540,87 @@ WHERE hive_project_governance.archived_at IS NULL
 		return false, fmt.Errorf("merge governance project alias: %w", err)
 	}
 	return true, nil
+}
+
+// validatePromotionStateCollisions keeps a promotion atomic and retryable.
+// These composite identities cannot be merged without inventing an idempotency
+// alias or remote block history. A collision therefore fails before
+// the first rekey; callers can reconcile the contradictory target explicitly
+// and retry the unchanged source→target promotion.
+func validatePromotionStateCollisions(ctx context.Context, tx *sql.Tx, source, target string) error {
+	checks := []struct {
+		state ProjectState
+		query string
+	}{
+		{ProjectStateImportAliases, `SELECT EXISTS(SELECT 1 FROM import_source_aliases s JOIN import_source_aliases t ON t.source_system = s.source_system AND t.source_table = s.source_table AND t.source_id = s.source_id AND t.source_project = ? WHERE s.source_project = ?)`},
+		{ProjectStateBlocks, `SELECT EXISTS(SELECT 1 FROM project_blocks s JOIN project_blocks t ON t.command_id = s.command_id AND t.canonical_project_key = ? WHERE s.canonical_project_key = ?)`},
+		{ProjectStateQuarantineArchives, `SELECT EXISTS(SELECT 1 FROM project_quarantine_archives s JOIN project_quarantine_archives t ON t.command_id = s.command_id AND t.canonical_project_key = ? WHERE s.canonical_project_key = ?)`},
+	}
+	for _, check := range checks {
+		var conflict bool
+		if err := tx.QueryRowContext(ctx, check.query, target, source).Scan(&conflict); err != nil {
+			return fmt.Errorf("check %s promotion collision: %w", check.state, err)
+		}
+		if conflict {
+			return fmt.Errorf("%w: %s source %q target %q", ErrProjectMigrationConflict, check.state, source, target)
+		}
+	}
+	return nil
+}
+
+// rekeyPendingMutationPayloads keeps the journal's authoritative project
+// coordinates consistent with its indexed project column. Typed decoding avoids
+// unsafe string replacement and makes a retry naturally idempotent: values that
+// already name target are written unchanged.
+func rekeyPendingMutationPayloads(ctx context.Context, tx *sql.Tx, source, target string) error {
+	rows, err := tx.QueryContext(ctx, `SELECT event_id, payload_json FROM memory_mutations WHERE project = ? AND synced_at IS NULL`, source)
+	if err != nil {
+		return fmt.Errorf("read pending mutation payloads: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	type pendingPayload struct {
+		eventID string
+		payload mutationPayload
+	}
+	var pending []pendingPayload
+	for rows.Next() {
+		var eventID, raw string
+		if err := rows.Scan(&eventID, &raw); err != nil {
+			return fmt.Errorf("scan pending mutation payload: %w", err)
+		}
+		var payload mutationPayload
+		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+			return fmt.Errorf("decode pending mutation payload %s: %w", eventID, err)
+		}
+		if payload.Memory != nil {
+			payload.Memory.Project = rekeyPayloadProject(payload.Memory.Project, source, target)
+		}
+		if payload.Reproject != nil {
+			payload.Reproject.FromProject = rekeyPayloadProject(payload.Reproject.FromProject, source, target)
+			payload.Reproject.ToProject = rekeyPayloadProject(payload.Reproject.ToProject, source, target)
+		}
+		pending = append(pending, pendingPayload{eventID: eventID, payload: payload})
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate pending mutation payloads: %w", err)
+	}
+	for _, mutation := range pending {
+		raw, err := json.Marshal(mutation.payload)
+		if err != nil {
+			return fmt.Errorf("encode pending mutation payload %s: %w", mutation.eventID, err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE memory_mutations SET payload_json = ? WHERE event_id = ? AND synced_at IS NULL`, string(raw), mutation.eventID); err != nil {
+			return fmt.Errorf("rewrite pending mutation payload %s: %w", mutation.eventID, err)
+		}
+	}
+	return nil
+}
+
+func rekeyPayloadProject(project, source, target string) string {
+	if canonicalProjectKey(project) == source {
+		return target
+	}
+	return project
 }
 
 func governanceMergeHasImmutableApplyProgress(tx *sql.Tx, source, target string) (bool, error) {
@@ -712,17 +832,6 @@ func (d *DB) ProjectMergeSyncEvidence(ctx context.Context, projects []string) (b
 		return false, fmt.Errorf("project merge sync evidence: %w", err)
 	}
 	return exists == 1, nil
-}
-
-func getGovernanceProjectTx(ctx context.Context, tx *sql.Tx, name string) (GovernanceProject, error) {
-	project, err := scanGovernanceProject(tx.QueryRowContext(ctx, governanceProjectsQuery+` WHERE project_names.project = ?`, name))
-	if errors.Is(err, sql.ErrNoRows) {
-		return GovernanceProject{}, fmt.Errorf("%w: %s", ErrGovernanceProjectNotFound, name)
-	}
-	if err != nil {
-		return GovernanceProject{}, err
-	}
-	return project, nil
 }
 
 const governanceProjectsQuery = `

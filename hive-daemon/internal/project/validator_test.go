@@ -378,7 +378,10 @@ func TestValidateWriteProjectResolvesInitialAliasBeforeSessionValidation(t *test
 			if err := os.Mkdir(workspace, 0o755); err != nil {
 				t.Fatalf("make workspace: %v", err)
 			}
-			if err := d.CreateSession("candidate-session", tt.sessionProject, filepath.Join(t.TempDir(), "other"), "dev", "test"); err != nil {
+			// Seed the historical pre-WU-04 row directly: supported ingress now
+			// redirects old to new, so CreateSession can no longer create the
+			// retired-session fixture this validator guard must reject.
+			if _, err := d.RawDB().Exec(`INSERT INTO sessions (id, sync_id, project, directory, dev_id, client) VALUES (?, ?, ?, ?, 'dev', 'test')`, "candidate-session", "candidate-sync", tt.sessionProject, filepath.Join(t.TempDir(), "other")); err != nil {
 				t.Fatalf("seed session: %v", err)
 			}
 

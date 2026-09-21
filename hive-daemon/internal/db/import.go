@@ -193,6 +193,11 @@ VALUES (?, ?, ?, ?, ?, 'completed', CURRENT_TIMESTAMP, '{}')`,
 }
 
 func importSession(ctx context.Context, tx *sql.Tx, run ImportRun, session ImportSession) (bool, error) {
+	project, err := resolveImportProject(ctx, tx, session.Project)
+	if err != nil {
+		return false, err
+	}
+	session.Project = project
 	key := SourceAliasKey{SourceSystem: run.SourceSystem, SourceTable: "sessions", SourceID: session.SourceID, SourceProject: session.Project}
 	if alias, found, err := findImportAlias(ctx, tx, key); err != nil || found {
 		return false, validateReusedImportAlias(alias, found, session.ContentHash, err)
@@ -200,7 +205,7 @@ func importSession(ctx context.Context, tx *sql.Tx, run ImportRun, session Impor
 
 	hiveID := "import-engram-session-" + uuid.NewString()
 	syncID := uuid.NewString()
-	_, err := tx.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 INSERT INTO sessions (id, sync_id, project, directory, dev_id, client, started_at, ended_at, summary)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		hiveID, syncID, session.Project, session.Directory, resolveDevID(), defaultString(session.Client, "engram"), defaultTime(session.StartedAt), nullEmpty(session.EndedAt), nullEmpty(session.Summary),
@@ -212,6 +217,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 }
 
 func importPrompt(ctx context.Context, tx *sql.Tx, run ImportRun, prompt ImportPrompt) (bool, error) {
+	project, err := resolveImportProject(ctx, tx, prompt.Project)
+	if err != nil {
+		return false, err
+	}
+	prompt.Project = project
 	key := SourceAliasKey{SourceSystem: run.SourceSystem, SourceTable: "user_prompts", SourceID: prompt.SourceID, SourceProject: prompt.Project}
 	if alias, found, err := findImportAlias(ctx, tx, key); err != nil || found {
 		return false, validateReusedImportAlias(alias, found, prompt.ContentHash, err)
@@ -232,6 +242,11 @@ VALUES (?, ?, ?, ?)`, syncID, prompt.Project, prompt.Content, defaultTime(prompt
 }
 
 func importMemory(ctx context.Context, tx *sql.Tx, run ImportRun, memory ImportMemory) (bool, bool, error) {
+	project, err := resolveImportProject(ctx, tx, memory.Project)
+	if err != nil {
+		return false, false, err
+	}
+	memory.Project = project
 	memory.TopicKey = topickey.Normalize(memory.TopicKey)
 	key := SourceAliasKey{SourceSystem: run.SourceSystem, SourceTable: "observations", SourceID: memory.SourceID, SourceProject: memory.Project}
 	if alias, found, err := findImportAlias(ctx, tx, key); err != nil || found {
@@ -269,11 +284,32 @@ VALUES (?, ?, ?, ?, ?, ?, '[]', '[]', ?, ?, ?, ?)`,
 	if err != nil {
 		return false, false, fmt.Errorf("read imported memory id: %w", err)
 	}
+	if err := recordLocalMemoryOriginTx(tx, syncID, updatedAt, "engram_import"); err != nil {
+		return false, false, fmt.Errorf("record imported memory origin: %w", err)
+	}
 	mem := &models.Memory{Project: memory.Project, TopicKey: memory.TopicKey, Category: memory.Category, Title: memory.Title, Content: memory.Content, CreatedBy: importActorID, CreatedAt: parseImportTime(createdAt), UpdatedAt: parseImportTime(updatedAt), SessionID: sessionAlias.HivePK}
 	if err := insertMemoryMutation(tx, memoryMutationRecord{EventID: uuid.NewString(), EntitySyncID: syncID, Project: memory.Project, Op: MutationOpCreate, OccurredAt: updatedAt, ActorID: importActorID, Payload: mutationPayload{Memory: memoryPayloadFromModel(mem, syncID, importActorID, parseImportTime(updatedAt))}}); err != nil {
 		return false, false, fmt.Errorf("journal imported memory mutation: %w", err)
 	}
 	return true, false, insertImportAlias(ctx, tx, run, key, "memories", strconv.FormatInt(id, 10), syncID, memory.ContentHash)
+}
+
+func resolveImportProject(ctx context.Context, tx *sql.Tx, project string) (string, error) {
+	if _, err := registerProjectIdentity(ctx, tx, project); err != nil {
+		return "", err
+	}
+	project, err := resolveProjectIngressTx(ctx, tx, project)
+	if err != nil {
+		return "", err
+	}
+	project, err = registerProjectIdentity(ctx, tx, project)
+	if err != nil {
+		return "", err
+	}
+	if err := ensureProjectWritableInTx(tx, project); err != nil {
+		return "", err
+	}
+	return project, nil
 }
 
 func ambiguousMemoryDuplicate(ctx context.Context, tx *sql.Tx, memory ImportMemory) (bool, error) {
