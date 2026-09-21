@@ -43,7 +43,7 @@ type OpenSpecBindingStore interface {
 }
 
 type openSpecResolutionLocker interface {
-	LockOpenSpec(changeDir string) (unlock func(), err error)
+	LockOpenSpec(ctx context.Context, changeDir string) (unlock func(), err error)
 }
 
 type fileOpenSpecBindingStore struct{ resolutionRoot *changeRoot }
@@ -189,6 +189,9 @@ func (e *PartialAdoptionError) Unwrap() error { return errors.Join(ErrPartialAdo
 // OpenSpec directory lock serializes the read-decide-adopt transaction across
 // CLI processes that address the same physical change directory.
 func (r LegacyResolver) ResolveAndAdopt(ctx context.Context, project, change string, initial InitialSelection) (Resolution, error) {
+	if err := ctx.Err(); err != nil {
+		return Resolution{}, err
+	}
 	if r.HiveBindings == nil {
 		return Resolution{}, errors.New("Hive binding store is required")
 	}
@@ -206,7 +209,7 @@ func (r LegacyResolver) ResolveAndAdopt(ctx context.Context, project, change str
 		if !ok {
 			return Resolution{}, errors.New("injected OpenSpec binding store must provide the legacy resolution lock")
 		}
-		unlock, err := locker.LockOpenSpec(r.OpenSpecChangeDir)
+		unlock, err := locker.LockOpenSpec(ctx, r.OpenSpecChangeDir)
 		if err != nil {
 			return Resolution{}, err
 		}
@@ -226,7 +229,7 @@ func (r LegacyResolver) ResolveAndAdopt(ctx context.Context, project, change str
 	if err := localStore.validateChangeDirectory(r.OpenSpecChangeDir); err != nil {
 		return Resolution{}, err
 	}
-	unlock, err := root.lock()
+	unlock, err := root.lockContext(ctx)
 	if err != nil {
 		return Resolution{}, err
 	}
