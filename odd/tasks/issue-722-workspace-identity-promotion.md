@@ -194,6 +194,7 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - 2026-09-21: The correction now derives a deterministic, cycle-safe, governance-corroborated reverse predecessor closure, applies every purge surface and indirect-coordinate snapshot across that closure with a 500-parameter ceiling, and never follows outbound aliases into unrelated targets. A composed validator regression uses real directory/Git discovery and no explicit project after purge, then writes and observes only fresh B state. Independent focused/race verification passed with no blocking or medium findings.
 - 2026-09-21: Promoted-predecessor correction committed as `636f1eb8`. Native high-risk four-lens review approved and was acknowledged under lineage `review-ea77ae2b7efb61a7` with no findings.
 - 2026-09-21: Final integrated verification evidence committed as `a2be7d37`. Published and read back the bilingual #722 completion update: https://github.com/Thrasno/jarvis-ai-devs/issues/722#issuecomment-5763084255. The update explicitly states that the branch is not merged or released.
+- 2026-09-21: User authorized Feature Branch Chain delivery and explicit `size:exception` labels for the four already verified work-unit boundaries.
 
 ## Verification Evidence
 
@@ -219,6 +220,14 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - Native WU-05 RDD approved and was acknowledged: lineage `review-cecca56c6ed047e4`, high risk, four lenses, 8 paths / 834 changed lines. Advisory-only finding `R3-001` did not open a correction or invalidate approval.
 - Final integrated verification at `1849777d` passed: uncached `go test ./...` and `go vet ./...` in `hivederive`, `hive-daemon`, `hive-api`, and `jarvis-cli`; explicit uncached #721/#722 lifecycle regressions; `git diff --check`; and clean-tree confirmation. Hive API's repository suite completed in 264.346s with no retry, timeout, failure, or flake.
 
+## Delivery Plan
+
+- Strategy: Feature Branch Chain with a draft/no-merge tracker PR targeting `master`.
+- Child order: WU-02 canonical/display separation → WU-03 workspace promotion → WU-04 ingress reconciliation → WU-05 archive/purge lifecycle.
+- User authorized `size:exception` for all four cohesive child slices on 2026-09-21. Their recorded budgets are 623, 1,317, 2,400, and 1,279 changed lines; further splitting would separate tests or transactional invariants from the behavior they verify.
+- Delivery branches may replay the reviewed commits onto the tracker ancestry, producing new delivery commit IDs while preserving the original reviewed branch and exact work-unit trees.
+- Every PR links approved issue #722, uses exactly one `type:*` label, includes bilingual chain context, and is read back after publication.
+
 ## Next Step
 
-Issue #722 implementation is complete locally. Await explicit user authorization before pushing or preparing the recorded chained PR delivery slices.
+Approve issue #722 for delivery, create the draft tracker, then publish and validate the four child PRs in dependency order.
