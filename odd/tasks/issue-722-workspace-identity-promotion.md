@@ -201,7 +201,8 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - 2026-09-21: WU-03 first candidate passed focused tests but failed independent verification on four gaps: upgrade did not adopt historical directory identity, session mismatch could be detected after a committed promotion, only the initiating workspace binding moved, and a nonempty unusable Git origin could misclassify basename fallback as Git-derived.
 - 2026-09-21: Three bounded correction/re-verification rounds fixed alias persistence, session ordering, basename provenance, sibling bindings, protected rollback, and historical upgrade compatibility. Final independent verification passed with no blocking or medium findings; parent spot-check passed.
 - 2026-09-21: Committed WU-03 as `2e361374`. Independent committed-range verification of `2c1232b8..2e361374` passed with no blocking or medium findings.
-- 2026-09-21: Native RDD review could not start: after one correctly rejected abbreviated base, fresh full-SHA committed-only negotiation repeatedly surfaced expired consent state for an empty-workspace projection and created no lineage. The occurrence was added bilingually to upstream issue `Gentleman-Programming/gentle-ai#4754`; independent verification remains the accepted WU-03 gate.
+- 2026-09-21: The first native RDD attempt could not start: after one correctly rejected abbreviated base, fresh full-SHA committed-only negotiation repeatedly surfaced expired consent state for an empty-workspace projection and created no lineage. The occurrence was added bilingually to upstream issue `Gentleman-Programming/gentle-ai#4754`.
+- 2026-09-21: Exact detached-worktree retries succeeded. WU-02 received medium-risk reliability review and approval; WU-03 received high-risk risk/resilience/readability/reliability review and approval. Both approvals were acknowledged and burned. WU-03 retained two informational warnings for WU-04 follow-up: Git-alias re-promotion and retired Git target handling.
 
 ## Verification Evidence
 
@@ -218,7 +219,9 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - Final independent WU-03 pre-commit verification passed: `cd hivederive && go test ./...`, daemon DB/project/httpapi/mcp focused suites, and `git diff --check`.
 - Parent spot-check `cd hive-daemon && go test ./internal/project` passed.
 - Independent committed-range verification passed for `2c1232b8841e468623e434f8119f2af6b6257789..2e361374773d0e4e7a0f81776cdb42363f3d7c58`: clean tree, source inspection, focused package tests, and diff checks; no blocking or medium findings. The verifier noted no fresh race/stress/full-ecosystem run, schema-upgrade behavior was mainly source-inspected, and CodeGraph timed out.
-- Native RDD produced no lineage, verdict, or receipt because the consent-binding defect blocked START. Upstream occurrence: `https://github.com/Gentleman-Programming/gentle-ai/issues/4754#issuecomment-5758905286`.
+- Initial native RDD attempts produced no lineage, verdict, or receipt because the consent-binding defect blocked START. Upstream occurrence: `https://github.com/Gentleman-Programming/gentle-ai/issues/4754#issuecomment-5758905286`.
+- Exact WU-02 RDD retry (`public/master..2c1232b8`) closed approved and was acknowledged: lineage `review-dd857147cea7b955`, medium risk, reliability lens, 9 paths / 623 changed lines.
+- Exact WU-03 RDD retry (`2c1232b8..2e361374`) closed approved and was acknowledged: lineage `review-c46e8c8873b86ee7`, high risk, four lenses, 11 paths / 1,306 changed lines. Advisory-only findings `R3-git-alias-repromotion` and `R4-retired-git-target` are assigned to WU-04; neither opened a correction or invalidated approval.
 - No integrated test suite has been run yet.
 
 ## Next Step
