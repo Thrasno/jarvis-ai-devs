@@ -13,7 +13,7 @@ func TestProjectMigrationPlanInventoryAndDisplayPrecedence(t *testing.T) {
 		ProjectStatePullCursors, ProjectStatePrompts, ProjectStateAliases,
 		ProjectStateBlocks, ProjectStateQuarantineArchives, ProjectStateGovernance,
 		ProjectStateImportAliases, ProjectStatePassiveObservations, ProjectStateSyncAttempts,
-		ProjectStateRecoveryTokens, ProjectStateMemoryPromptLinks,
+		ProjectStateRecoveryTokens, ProjectStateMemoryPromptLinks, ProjectStateSDDStoreBindings,
 	}
 	if got := ProjectKeyedStates(); !reflect.DeepEqual(got, wantTables) {
 		t.Fatalf("ProjectKeyedStates() = %v, want %v", got, wantTables)

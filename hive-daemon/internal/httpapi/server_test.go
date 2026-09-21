@@ -2681,8 +2681,9 @@ func TestHandleGovernanceProjectDelete_HappyPath(t *testing.T) {
 	if !resp.Result.Mutated || resp.Result.Project != "purge-target" {
 		t.Fatalf("delete result = %+v, want mutated purge-target", resp.Result)
 	}
-	if !strings.Contains(resp.Result.CloudHandoffNote, "Cloud data not removed") {
-		t.Fatalf("cloud handoff note = %q, want cloud-data-not-removed note", resp.Result.CloudHandoffNote)
+	const wantCloudHandoff = "Project purged locally only. This does not delete Hive API data. A later sync can pull remote project data back; administer or delete the project in Hive API to prevent its return."
+	if resp.Result.CloudHandoffNote != wantCloudHandoff {
+		t.Fatalf("cloud handoff note = %q, want %q", resp.Result.CloudHandoffNote, wantCloudHandoff)
 	}
 }
 

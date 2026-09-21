@@ -50,22 +50,30 @@ var safeNamePattern = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 // ErrPathUnresolvable. A resolvable directory with no derivable name yields
 // ErrNoDerivableName.
 func Derive(dir string) (string, error) {
+	name, _, err := DeriveWithProvenance(dir)
+	return name, err
+}
+
+// DeriveWithProvenance resolves a project name and reports whether that exact
+// name came from a usable Git origin. The single Git probe prevents callers
+// from combining a fallback name with unrelated origin evidence.
+func DeriveWithProvenance(dir string) (string, bool, error) {
 	if strings.TrimSpace(dir) == "" {
-		return "", ErrEmptyDir
+		return "", false, ErrEmptyDir
 	}
 	resolved, err := resolveDir(dir)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if name := gitRemoteName(resolved); name != "" {
-		return name, nil
+		return name, true, nil
 	}
 	// Keep the observed basename literal; operator-reviewed project folding belongs
 	// to the explicit normalization wizard, not derivation.
 	if base := filepath.Base(resolved); base != "" && base != "." && base != "/" {
-		return base, nil
+		return base, false, nil
 	}
-	return "", ErrNoDerivableName
+	return "", false, ErrNoDerivableName
 }
 
 // resolveDir stats dir and returns the path that actually exists. It tries the
