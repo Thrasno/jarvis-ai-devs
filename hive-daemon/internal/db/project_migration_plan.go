@@ -31,6 +31,7 @@ const (
 	ProjectStateSyncAttempts        ProjectState = "sync_attempt_logs"
 	ProjectStateRecoveryTokens      ProjectState = "recovery_tokens"
 	ProjectStateMemoryPromptLinks   ProjectState = "memory_prompt_links"
+	ProjectStateSDDStoreBindings    ProjectState = "sdd_store_bindings"
 )
 
 // ProjectKeyedStates returns the complete daemon-local migration inventory.
@@ -40,7 +41,7 @@ func ProjectKeyedStates() []ProjectState {
 		ProjectStatePullCursors, ProjectStatePrompts, ProjectStateAliases, ProjectStateBlocks,
 		ProjectStateQuarantineArchives, ProjectStateGovernance, ProjectStateImportAliases,
 		ProjectStatePassiveObservations, ProjectStateSyncAttempts, ProjectStateRecoveryTokens,
-		ProjectStateMemoryPromptLinks}
+		ProjectStateMemoryPromptLinks, ProjectStateSDDStoreBindings}
 }
 
 // ProjectStateRecord is a read-only preflight observation. Value is a stable
