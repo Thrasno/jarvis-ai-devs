@@ -198,6 +198,7 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - 2026-09-21: Approved issue #722 for delivery, created draft tracker PR #729 and child PRs #730–#733, read back exact bases/heads/labels/bodies/budgets, waited for current-head CI to pass, and completed independent chain verification.
 - 2026-09-21: User explicitly authorized merging the complete chain. Integration order was deepest child first (#733 → #732 → #731 → #730), waiting for current-head CI after each parent update, followed by tracker #729 to `master` only after its final CI passed.
 - 2026-09-21: Merged #733, #732, #731, and #730 upward with seven green CI jobs at every gate. Marked tracker #729 ready only after its complete head passed, then merged it to `master` as `a3aad9f1`. The post-merge master CI run `35646036552` passed 7/7; issue #722 closed as completed. No release was created.
+- 2026-09-21: User authorized post-merge cleanup. Preserve the original reviewed commit lineage in annotated tag `archive/issue-722-reviewed`, then remove the delivery worktree and all merged local/remote #722 branches. The unrelated #723 worktree remains untouched.
 
 ## Verification Evidence
 
@@ -245,4 +246,4 @@ The split produces a false data-loss signal, weakens project continuity, and can
 
 ## Next Step
 
-Issue #722 is merged to `master`, closed as completed, and verified by post-merge CI. No further action is required for #722; no release was created or authorized.
+Preserve this final reviewed-history record as `archive/issue-722-reviewed`, clean the merged #722 worktree/branches, and leave the repository on updated `master`. No release is authorized.
