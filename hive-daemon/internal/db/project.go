@@ -641,8 +641,78 @@ func governanceMergeHasImmutableApplyProgress(tx *sql.Tx, source, target string)
 	return exists, err
 }
 
+// retiredPredecessorClosureTx returns the canonical project and every local
+// predecessor that redirects into it. A local alias is authoritative only when
+// its governance merge record confirms the same redirect; legacy governance
+// records are also followed directly. It walks those redirects backwards only:
+// an outbound reference from a retired identity never
+// makes its target purgeable. The fixed-point traversal is deterministic and
+// cycle-safe so malformed legacy redirect cycles cannot escape the purge.
+func retiredPredecessorClosureTx(ctx context.Context, tx *sql.Tx, root string) ([]string, error) {
+	closure := map[string]struct{}{root: {}}
+	for {
+		keys := make([]string, 0, len(closure))
+		for key := range closure {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		added := false
+		for start := 0; start < len(keys); start += 500 {
+			end := start + 500
+			if end > len(keys) {
+				end = len(keys)
+			}
+			placeholders := strings.TrimRight(strings.Repeat("?,", end-start), ",")
+			args := make([]any, end-start)
+			for i, key := range keys[start:end] {
+				args[i] = key
+			}
+			for _, query := range []string{
+				`SELECT a.source_project FROM project_aliases a
+JOIN hive_project_governance g ON g.project = a.source_project AND g.merge_target = a.target_project
+WHERE a.scope = 'local' AND a.target_project IN (` + placeholders + `)`,
+				`SELECT project FROM hive_project_governance WHERE merge_target IN (` + placeholders + `)`,
+			} {
+				rows, err := tx.QueryContext(ctx, query, args...)
+				if err != nil {
+					return nil, fmt.Errorf("read retired predecessor closure: %w", err)
+				}
+				for rows.Next() {
+					var predecessor string
+					if err := rows.Scan(&predecessor); err != nil {
+						_ = rows.Close()
+						return nil, fmt.Errorf("scan retired predecessor closure: %w", err)
+					}
+					if predecessor != "" {
+						if _, exists := closure[predecessor]; !exists {
+							closure[predecessor] = struct{}{}
+							added = true
+						}
+					}
+				}
+				if err := rows.Err(); err != nil {
+					_ = rows.Close()
+					return nil, fmt.Errorf("iterate retired predecessor closure: %w", err)
+				}
+				if err := rows.Close(); err != nil {
+					return nil, fmt.Errorf("close retired predecessor closure: %w", err)
+				}
+			}
+		}
+		if !added {
+			break
+		}
+	}
+	keys := make([]string, 0, len(closure))
+	for key := range closure {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys, nil
+}
+
 // DeleteGovernanceProject irreversibly purges every local trace of an archived,
-// non-merged project. It holds the lifecycle write lease for the complete
+// non-merged project and its retired local predecessors. It holds the lifecycle write lease for the complete
 // transaction, snapshots indirect sync/evidence coordinates before deleting their
 // owning rows, and leaves Hive API data untouched. A zero result is reserved for a
 // project with no remaining local trace at all.
@@ -682,7 +752,11 @@ func (d *DB) DeleteGovernanceProject(ctx context.Context, name, actorID, reason 
 		return 0, ErrGovernanceProjectNotArchived
 	}
 
-	coordinates, err := snapshotPurgeCoordinatesTx(ctx, tx, name)
+	closure, err := retiredPredecessorClosureTx(ctx, tx, name)
+	if err != nil {
+		return 0, err
+	}
+	coordinates, err := snapshotPurgeCoordinatesTx(ctx, tx, closure)
 	if err != nil {
 		return 0, err
 	}
@@ -702,6 +776,43 @@ func (d *DB) DeleteGovernanceProject(ctx context.Context, name, actorID, reason 
 	updateStep := func(label, query string, args ...any) error {
 		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
 			return fmt.Errorf("%s: %w", label, err)
+		}
+		return nil
+	}
+	deleteProjects := func(label string, copies int, query func(string) string) error {
+		batchSize := 500 / copies
+		for start := 0; start < len(closure); start += batchSize {
+			end := start + batchSize
+			if end > len(closure) {
+				end = len(closure)
+			}
+			placeholders := strings.TrimRight(strings.Repeat("?,", end-start), ",")
+			args := make([]any, 0, (end-start)*copies)
+			for i := 0; i < copies; i++ {
+				for _, project := range closure[start:end] {
+					args = append(args, project)
+				}
+			}
+			if err := deleteStep(label, query(placeholders), args...); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	updateProjects := func(label string, query func(string) string) error {
+		for start := 0; start < len(closure); start += 500 {
+			end := start + 500
+			if end > len(closure) {
+				end = len(closure)
+			}
+			placeholders := strings.TrimRight(strings.Repeat("?,", end-start), ",")
+			args := make([]any, 0, end-start)
+			for _, project := range closure[start:end] {
+				args = append(args, project)
+			}
+			if err := updateStep(label, query(placeholders), args...); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -752,44 +863,79 @@ func (d *DB) DeleteGovernanceProject(ctx context.Context, name, actorID, reason 
 	}
 
 	for _, step := range []struct {
-		label string
-		query string
-		args  []any
+		label    string
+		copies   int
+		newQuery func(string) string
 	}{
-		{"delete memory prompt links", `DELETE FROM memory_prompt_links WHERE memory_id IN (SELECT id FROM memories WHERE project = ?) OR prompt_id IN (SELECT id FROM user_prompts WHERE project = ?)`, []any{name, name}},
-		{"delete memory mutations", `DELETE FROM memory_mutations WHERE project = ?`, []any{name}},
-		{"delete mutation receipts", `DELETE FROM mutation_receipts WHERE project = ?`, []any{name}},
-		{"delete mutation cursors", `DELETE FROM mutation_cursors WHERE project = ?`, []any{name}},
-		{"delete pull cursors", `DELETE FROM pull_cursors WHERE project = ?`, []any{name}},
-		{"delete sync state", `DELETE FROM sync_state WHERE project = ? AND project != '__auth__'`, []any{name}},
-		{"delete sync attempts", `DELETE FROM sync_attempt_logs WHERE project = ?`, []any{name}},
-		{"delete passive observations", `DELETE FROM passive_observations WHERE project = ?`, []any{name}},
-		{"delete import aliases", `DELETE FROM import_source_aliases WHERE source_project = ?`, []any{name}},
-		{"delete project blocks", `DELETE FROM project_blocks WHERE canonical_project_key = ? OR project = ?`, []any{name, name}},
-		{"delete project quarantine archives", `DELETE FROM project_quarantine_archives WHERE canonical_project_key = ? OR project = ?`, []any{name, name}},
-		{"delete hive warnings", `DELETE FROM hive_warnings WHERE source = ?`, []any{name}},
-		{"delete workspace bindings", `DELETE FROM workspace_project_bindings WHERE project = ?`, []any{name}},
-		{"delete aliases", `DELETE FROM project_aliases WHERE source_project = ? OR target_project = ?`, []any{name, name}},
-		{"delete SDD store bindings", `DELETE FROM sdd_store_bindings WHERE project = ?`, []any{name}},
-		{"delete SDD apply heads", `DELETE FROM sdd_apply_heads WHERE project = ?`, []any{name}},
+		{"delete memory prompt links", 2, func(placeholders string) string {
+			return `DELETE FROM memory_prompt_links WHERE memory_id IN (SELECT id FROM memories WHERE project IN (` + placeholders + `)) OR prompt_id IN (SELECT id FROM user_prompts WHERE project IN (` + placeholders + `))`
+		}},
+		{"delete memory mutations", 1, func(placeholders string) string {
+			return `DELETE FROM memory_mutations WHERE project IN (` + placeholders + `)`
+		}},
+		{"delete mutation receipts", 1, func(placeholders string) string {
+			return `DELETE FROM mutation_receipts WHERE project IN (` + placeholders + `)`
+		}},
+		{"delete mutation cursors", 1, func(placeholders string) string {
+			return `DELETE FROM mutation_cursors WHERE project IN (` + placeholders + `)`
+		}},
+		{"delete pull cursors", 1, func(placeholders string) string {
+			return `DELETE FROM pull_cursors WHERE project IN (` + placeholders + `)`
+		}},
+		{"delete sync state", 1, func(placeholders string) string {
+			return `DELETE FROM sync_state WHERE project IN (` + placeholders + `) AND project != '__auth__'`
+		}},
+		{"delete sync attempts", 1, func(placeholders string) string {
+			return `DELETE FROM sync_attempt_logs WHERE project IN (` + placeholders + `)`
+		}},
+		{"delete passive observations", 1, func(placeholders string) string {
+			return `DELETE FROM passive_observations WHERE project IN (` + placeholders + `)`
+		}},
+		{"delete import aliases", 1, func(placeholders string) string {
+			return `DELETE FROM import_source_aliases WHERE source_project IN (` + placeholders + `)`
+		}},
+		{"delete project blocks", 2, func(placeholders string) string {
+			return `DELETE FROM project_blocks WHERE canonical_project_key IN (` + placeholders + `) OR project IN (` + placeholders + `)`
+		}},
+		{"delete project quarantine archives", 2, func(placeholders string) string {
+			return `DELETE FROM project_quarantine_archives WHERE canonical_project_key IN (` + placeholders + `) OR project IN (` + placeholders + `)`
+		}},
+		{"delete hive warnings", 1, func(placeholders string) string {
+			return `DELETE FROM hive_warnings WHERE source IN (` + placeholders + `)`
+		}},
+		{"delete workspace bindings", 1, func(placeholders string) string {
+			return `DELETE FROM workspace_project_bindings WHERE project IN (` + placeholders + `)`
+		}},
+		{"delete aliases", 2, func(placeholders string) string {
+			return `DELETE FROM project_aliases WHERE source_project IN (` + placeholders + `) OR target_project IN (` + placeholders + `)`
+		}},
+		{"delete SDD store bindings", 1, func(placeholders string) string {
+			return `DELETE FROM sdd_store_bindings WHERE project IN (` + placeholders + `)`
+		}},
+		{"delete SDD apply heads", 1, func(placeholders string) string {
+			return `DELETE FROM sdd_apply_heads WHERE project IN (` + placeholders + `)`
+		}},
 	} {
-		if err := deleteStep(step.label, step.query, step.args...); err != nil {
+		if err := deleteProjects(step.label, step.copies, step.newQuery); err != nil {
 			return 0, err
 		}
 	}
-	for _, step := range []struct {
-		label string
-		query string
-		args  []any
-	}{
-		{"clear session relocation provenance", `UPDATE sessions SET sync_from_project = '' WHERE sync_from_project = ?`, []any{name}},
-		{"clear prompt relocation provenance", `UPDATE user_prompts SET sync_from_project = '' WHERE sync_from_project = ?`, []any{name}},
-	} {
-		if err := updateStep(step.label, step.query, step.args...); err != nil {
-			return 0, err
-		}
+	if err := updateProjects("clear session relocation provenance", func(placeholders string) string {
+		return `UPDATE sessions SET sync_from_project = '' WHERE sync_from_project IN (` + placeholders + `)`
+	}); err != nil {
+		return 0, err
 	}
+	if err := updateProjects("clear prompt relocation provenance", func(placeholders string) string {
+		return `UPDATE user_prompts SET sync_from_project = '' WHERE sync_from_project IN (` + placeholders + `)`
+	}); err != nil {
+		return 0, err
+	}
+	tokens := make([]string, 0, len(coordinates.recoveryTokens))
 	for token := range coordinates.recoveryTokens {
+		tokens = append(tokens, token)
+	}
+	sort.Strings(tokens)
+	for _, token := range tokens {
 		if err := deleteStep("delete recovery token", `DELETE FROM recovery_tokens WHERE token = ?`, token); err != nil {
 			return 0, err
 		}
@@ -797,30 +943,36 @@ func (d *DB) DeleteGovernanceProject(ctx context.Context, name, actorID, reason 
 
 	// Receipt deletion is the sole narrowly-scoped exception to its immutable
 	// trigger. The helper restores the trigger before this transaction can commit.
-	result, err := deleteApplyProgressReceiptsForGovernancePurge(ctx, tx, name)
+	receiptRows, err := deleteApplyProgressReceiptsForGovernancePurge(ctx, tx, closure)
 	if err != nil {
 		return 0, fmt.Errorf("delete sdd_apply_receipts: %w", err)
 	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("delete sdd_apply_receipts rows affected: %w", err)
-	}
-	total += int(rows)
+	total += receiptRows
 
 	for _, step := range []struct {
-		label string
-		query string
-		args  []any
+		label    string
+		copies   int
+		newQuery func(string) string
 	}{
-		{"delete memories", `DELETE FROM memories WHERE project = ?`, []any{name}},
-		{"delete prompts", `DELETE FROM user_prompts WHERE project = ?`, []any{name}},
-		{"delete sessions", `DELETE FROM sessions WHERE project = ?`, []any{name}},
+		{"delete memories", 1, func(placeholders string) string {
+			return `DELETE FROM memories WHERE project IN (` + placeholders + `)`
+		}},
+		{"delete prompts", 1, func(placeholders string) string {
+			return `DELETE FROM user_prompts WHERE project IN (` + placeholders + `)`
+		}},
+		{"delete sessions", 1, func(placeholders string) string {
+			return `DELETE FROM sessions WHERE project IN (` + placeholders + `)`
+		}},
 		// Reverse merge records are redirects to this identity and cannot survive
 		// a local purge of their target.
-		{"delete governance metadata", `DELETE FROM hive_project_governance WHERE project = ? OR merge_target = ?`, []any{name, name}},
-		{"delete project identity", `DELETE FROM project_identities WHERE project_key = ?`, []any{name}},
+		{"delete governance metadata", 2, func(placeholders string) string {
+			return `DELETE FROM hive_project_governance WHERE project IN (` + placeholders + `) OR merge_target IN (` + placeholders + `)`
+		}},
+		{"delete project identity", 1, func(placeholders string) string {
+			return `DELETE FROM project_identities WHERE project_key IN (` + placeholders + `)`
+		}},
 	} {
-		if err := deleteStep(step.label, step.query, step.args...); err != nil {
+		if err := deleteProjects(step.label, step.copies, step.newQuery); err != nil {
 			return 0, err
 		}
 	}
@@ -836,7 +988,7 @@ type purgeCoordinates struct {
 	recoveryTokens map[string]struct{}
 }
 
-func snapshotPurgeCoordinatesTx(ctx context.Context, tx *sql.Tx, project string) (purgeCoordinates, error) {
+func snapshotPurgeCoordinatesTx(ctx context.Context, tx *sql.Tx, projects []string) (purgeCoordinates, error) {
 	coordinates := purgeCoordinates{syncIDs: map[string]struct{}{}, eventIDs: map[string]struct{}{}, recoveryTokens: map[string]struct{}{}}
 	collect := func(query string, destination map[string]struct{}, args ...any) error {
 		rows, err := tx.QueryContext(ctx, query, args...)
@@ -855,18 +1007,20 @@ func snapshotPurgeCoordinatesTx(ctx context.Context, tx *sql.Tx, project string)
 		}
 		return rows.Err()
 	}
-	for _, source := range []struct {
-		query       string
-		destination map[string]struct{}
-	}{
-		{`SELECT sync_id FROM memories WHERE project = ?`, coordinates.syncIDs},
-		{`SELECT entity_sync_id FROM memory_mutations WHERE project = ?`, coordinates.syncIDs},
-		{`SELECT event_id FROM memory_mutations WHERE project = ?`, coordinates.eventIDs},
-		{`SELECT entity_sync_id FROM mutation_receipts WHERE project = ?`, coordinates.syncIDs},
-		{`SELECT event_id FROM mutation_receipts WHERE project = ?`, coordinates.eventIDs},
-	} {
-		if err := collect(source.query, source.destination, project); err != nil {
-			return purgeCoordinates{}, fmt.Errorf("snapshot purge coordinates: %w", err)
+	for _, project := range projects {
+		for _, source := range []struct {
+			query       string
+			destination map[string]struct{}
+		}{
+			{`SELECT sync_id FROM memories WHERE project = ?`, coordinates.syncIDs},
+			{`SELECT entity_sync_id FROM memory_mutations WHERE project = ?`, coordinates.syncIDs},
+			{`SELECT event_id FROM memory_mutations WHERE project = ?`, coordinates.eventIDs},
+			{`SELECT entity_sync_id FROM mutation_receipts WHERE project = ?`, coordinates.syncIDs},
+			{`SELECT event_id FROM mutation_receipts WHERE project = ?`, coordinates.eventIDs},
+		} {
+			if err := collect(source.query, source.destination, project); err != nil {
+				return purgeCoordinates{}, fmt.Errorf("snapshot purge coordinates: %w", err)
+			}
 		}
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT token, requested_project, selected_project, candidates_json FROM recovery_tokens`)
@@ -885,14 +1039,16 @@ func snapshotPurgeCoordinatesTx(ctx context.Context, tx *sql.Tx, project string)
 		if err := json.Unmarshal([]byte(candidatesJSON), &candidates); err != nil {
 			return purgeCoordinates{}, fmt.Errorf("decode recovery token %q for purge: %w", token, err)
 		}
-		if canonicalProjectKey(requested) == project || canonicalProjectKey(selected) == project {
-			coordinates.recoveryTokens[token] = struct{}{}
-			continue
-		}
-		for _, candidate := range candidates {
-			if canonicalProjectKey(candidate.Project) == project {
+		for _, project := range projects {
+			if canonicalProjectKey(requested) == project || canonicalProjectKey(selected) == project {
 				coordinates.recoveryTokens[token] = struct{}{}
 				break
+			}
+			for _, candidate := range candidates {
+				if canonicalProjectKey(candidate.Project) == project {
+					coordinates.recoveryTokens[token] = struct{}{}
+					break
+				}
 			}
 		}
 	}
@@ -907,15 +1063,20 @@ func projectHasLocalTraceTx(ctx context.Context, tx *sql.Tx, project string) (bo
 	// owning memory, mutation, or receipt supplies its sync/event coordinate, so
 	// snapshotPurgeCoordinatesTx removes it before owner deletion. Orphaned global
 	// evidence cannot be attributed to any project and does not block idempotency.
-	coordinates, err := snapshotPurgeCoordinatesTx(ctx, tx, project)
+	closure, err := retiredPredecessorClosureTx(ctx, tx, project)
+	if err != nil {
+		return false, err
+	}
+	coordinates, err := snapshotPurgeCoordinatesTx(ctx, tx, closure)
 	if err != nil {
 		return false, err
 	}
 	if len(coordinates.recoveryTokens) > 0 {
 		return true, nil
 	}
-	var exists bool
-	err = tx.QueryRowContext(ctx, `SELECT EXISTS(
+	for _, project := range closure {
+		var exists bool
+		err = tx.QueryRowContext(ctx, `SELECT EXISTS(
 		SELECT 1 FROM project_identities WHERE project_key = ?
 		UNION ALL SELECT 1 FROM sessions WHERE project = ? OR sync_from_project = ?
 		UNION ALL SELECT 1 FROM memories WHERE project = ?
@@ -939,10 +1100,14 @@ func projectHasLocalTraceTx(ctx context.Context, tx *sql.Tx, project string) (bo
 		UNION ALL SELECT 1 FROM sdd_apply_receipts WHERE project = ?
 		LIMIT 1
 	)`, project, project, project, project, project, project, project, project, project, project, project, project, project, project, project, project, project, project, project, project, project, project, project, project, project, project, project, project, project, project, project).Scan(&exists)
-	if err != nil {
-		return false, err
+		if err != nil {
+			return false, err
+		}
+		if exists {
+			return true, nil
+		}
 	}
-	return exists, nil
+	return false, nil
 }
 
 // deleteApplyProgressReceiptsForGovernancePurge is the sole receipt-deletion
@@ -950,18 +1115,41 @@ func projectHasLocalTraceTx(ctx context.Context, tx *sql.Tx, project string) (bo
 // archived-project transaction removes the delete trigger only for its exact
 // delete statement and recreates it before commit. SQLite DDL is transactional:
 // any failure rolls back both the receipt deletion and trigger removal.
-func deleteApplyProgressReceiptsForGovernancePurge(ctx context.Context, tx *sql.Tx, project string) (sql.Result, error) {
+func deleteApplyProgressReceiptsForGovernancePurge(ctx context.Context, tx *sql.Tx, projects []string) (int, error) {
 	if _, err := tx.ExecContext(ctx, `DROP TRIGGER protect_sdd_apply_receipts_delete`); err != nil {
-		return nil, fmt.Errorf("drop receipt protection trigger: %w", err)
+		return 0, fmt.Errorf("drop receipt protection trigger: %w", err)
 	}
-	result, deleteErr := tx.ExecContext(ctx, `DELETE FROM sdd_apply_receipts WHERE project = ?`, project)
+	var total int
+	var deleteErr error
+	for start := 0; start < len(projects); start += 500 {
+		end := start + 500
+		if end > len(projects) {
+			end = len(projects)
+		}
+		placeholders := strings.TrimRight(strings.Repeat("?,", end-start), ",")
+		args := make([]any, 0, end-start)
+		for _, project := range projects[start:end] {
+			args = append(args, project)
+		}
+		result, err := tx.ExecContext(ctx, `DELETE FROM sdd_apply_receipts WHERE project IN (`+placeholders+`)`, args...)
+		if err != nil {
+			deleteErr = err
+			break
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			deleteErr = fmt.Errorf("rows affected: %w", err)
+			break
+		}
+		total += int(rows)
+	}
 	if _, err := tx.ExecContext(ctx, `CREATE TRIGGER protect_sdd_apply_receipts_delete BEFORE DELETE ON sdd_apply_receipts BEGIN SELECT RAISE(ABORT, 'immutable apply progress receipt'); END`); err != nil {
-		return nil, fmt.Errorf("restore receipt protection trigger: %w", err)
+		return 0, fmt.Errorf("restore receipt protection trigger: %w", err)
 	}
 	if deleteErr != nil {
-		return nil, deleteErr
+		return 0, deleteErr
 	}
-	return result, nil
+	return total, nil
 }
 
 // ProjectMergeSyncEvidence reports whether any memory in the given projects has

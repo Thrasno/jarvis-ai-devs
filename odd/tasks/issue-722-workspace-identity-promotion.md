@@ -128,13 +128,13 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - Route: delegated direct writer.
 - Trigger evidence: coordinated DB, governance service/HTTP/client, confirmation, and tests.
 - [x] Preserve bindings, identities, and redirects during archive.
-- [x] Purge all local project-bearing states, identity registry rows, aliases in both directions, workspace bindings, sync state, governance records, and applicable SDD state atomically.
-- [x] Confirm a later observation recreates the same name as a new project.
+- [x] Purge all local project-bearing states, identity registry rows, aliases in both directions, workspace bindings, sync state, governance records, and applicable SDD state atomically, including every retired predecessor whose alias resolves transitively to the purged canonical project.
+- [x] Confirm a promoted A→B lifecycle purges both B and all attributable retired-A state before the same workspace can be resolved and populated as a fresh project through normal no-explicit-project validation.
 - [x] State clearly that local purge does not delete Hive API data.
 - Checks:
   - Focused DB/governance/http/client tests for archive retention, purge completeness, idempotency, recreation, and cloud-handoff wording.
-- Commit: `3853f0b5` (`feat(hive): complete project purge lifecycle`).
-- Authored code lines: 812 (705 additions + 107 deletions), including a 464-line focused purge lifecycle regression file. The unit exceeds the review heuristic because complete atomic deletion, indirect evidence batching, receipt-trigger rollback, lifecycle locking, recreation, and five local UX/wire surfaces form one inseparable lifecycle contract.
+- Initial commit: `3853f0b5` (`feat(hive): complete project purge lifecycle`); promoted-predecessor correction pending native review and commit.
+- Initial authored code lines: 812 (705 additions + 107 deletions), including a 464-line focused purge lifecycle regression file. Promoted-predecessor correction: 587 source/test lines (488 additions + 99 deletions). The unit exceeds the review heuristic because complete atomic deletion, transitive ownership closure, indirect evidence batching, receipt-trigger rollback, lifecycle locking, real resolver recreation, and five local UX/wire surfaces form one inseparable lifecycle contract.
 
 ### WU-06 — Integrated verification and delivery slices
 
@@ -157,7 +157,7 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - [x] Local TUI renders display names but queries/filters/mutates by canonical key; the dashboard uses one exact API literal and has no equivalent split.
 - [ ] The complete #721 promotion scenario shows the surviving memories exactly once under B; display-vs-key viewing, A→B promotion, and universal ingress/state migration are covered.
 - [x] Archive retains bindings and redirects.
-- [x] Purge removes every directly attributable local trace and permits later recreation as a new project; globally orphaned evidence without owner/project coordinates is intentionally not attributable.
+- [x] Purge removes every directly attributable local trace across the canonical project and its transitive retired predecessors, then permits later recreation as a new project; globally orphaned evidence without owner/project coordinates is intentionally not attributable.
 - [x] Local purge does not claim to delete Hive API data.
 - [x] Protected SDD apply progress is never rewritten and blocks promotion with an actionable #724 dependency.
 - [ ] Existing project literals remain compatible through migration.
@@ -189,6 +189,8 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - 2026-09-21: WU-05 implemented lifecycle-serialized non-destructive archive and archive-gated atomic local purge across direct project state, reverse aliases, SDD topology/bindings, WU-04 evidence/dispatch coordinates, identities/bindings, recovery tokens, and sync/governance state. Exact local-only Hive API handoff wording now propagates through service, HTTP, hiveclient, and hiveui.
 - 2026-09-21: Initial WU-05 verification found SQLite parameter-limit exposure and inflated deletion counts. Corrections added deterministic 500-coordinate batches, DELETE-only counting, post-receipt-exception rollback coverage, recovery-token coordinate isolation, and directly attributable trace idempotency. Final independent verification passed with no blocking or medium findings.
 - 2026-09-21: WU-05 committed as `3853f0b5`. Native high-risk four-lens review approved and was acknowledged under lineage `review-cecca56c6ed047e4`; advisory-only finding `R3-001` did not open a correction or invalidate approval.
+- 2026-09-21: Final integrated verification reopened WU-05: A→B promotion intentionally retained acknowledged mutations and the retired A identity for audit/redirect purposes, but purging B removed only B-owned rows and the A→B redirect. That orphaned attributable A state and violated complete local purge/fresh recreation.
+- 2026-09-21: The correction now derives a deterministic, cycle-safe, governance-corroborated reverse predecessor closure, applies every purge surface and indirect-coordinate snapshot across that closure with a 500-parameter ceiling, and never follows outbound aliases into unrelated targets. A composed validator regression uses real directory/Git discovery and no explicit project after purge, then writes and observes only fresh B state. Independent focused/race verification passed with no blocking or medium findings.
 
 ## Verification Evidence
 
@@ -216,4 +218,4 @@ The split produces a false data-loss signal, weakens project continuity, and can
 
 ## Next Step
 
-Run native review and commit WU-05, then execute WU-06 integrated verification.
+Run native review and commit the promoted-predecessor purge correction, then rerun WU-06 integrated verification.
