@@ -17,7 +17,6 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/hivederive"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddbinding"
-	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
 )
@@ -72,7 +71,7 @@ func init() {
 	sddStatusCmd.Flags().String("project", "", "hive project name (overrides origin repository or working-directory basename derivation)")
 	sddContinueCmd.Flags().Bool("json", false, "emit JSON output")
 	sddContinueCmd.Flags().String("project", "", "hive project name (overrides origin repository or working-directory basename derivation)")
-	sddCmd.AddCommand(sddStatusCmd, sddContinueCmd, newSddArchiveCommand(func(root string) sddArchiver { return sddprogress.OpenSpec{Root: root} }, archiveStatus))
+	sddCmd.AddCommand(sddStatusCmd, sddContinueCmd, newBoundSddArchiveCommand())
 }
 
 type sddArchiver interface {
@@ -80,6 +79,21 @@ type sddArchiver interface {
 	ArchiveWithLifecycleValidation(string, func() error) error
 }
 type archiveStatusResolver func(root, project string) (*sddstatus.ChangeStatus, error)
+
+// newBoundSddArchiveCommand is the production binding-aware archive router.
+// The historical newSddArchiveCommand seam remains available for focused
+// OpenSpec lifecycle tests.
+func newBoundSddArchiveCommand() *cobra.Command {
+	var root, destination, project, change string
+	command := &cobra.Command{Use: "archive", Short: "Archive a bound SDD change", Long: "Archive a bound SDD change. Hive closes logically with a persisted archive report and needs --change. OpenSpec and hybrid require --root and --destination; --root must be an absolute canonical path without aliases, and --change, when supplied with --root, must match the canonical root coordinate.", Args: cobra.NoArgs, SilenceUsage: true, SilenceErrors: true, RunE: func(cmd *cobra.Command, _ []string) error {
+		return runBoundSddArchive(cmd.Context(), root, destination, project, change)
+	}}
+	command.Flags().StringVar(&root, "root", "", "absolute canonical OpenSpec change root")
+	command.Flags().StringVar(&destination, "destination", "", "OpenSpec archive destination")
+	command.Flags().StringVar(&project, "project", "", "canonical hive project name")
+	command.Flags().StringVar(&change, "change", "", "canonical SDD change name (required without --root)")
+	return command
+}
 
 func newSddArchiveCommand(open func(string) sddArchiver, statusFor archiveStatusResolver) *cobra.Command {
 	var root, destination, project string
