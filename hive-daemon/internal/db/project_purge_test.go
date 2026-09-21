@@ -72,7 +72,19 @@ func TestDeleteGovernanceProjectPurgesCompleteLocalStateAndPreservesUnrelatedRow
 	ctx := context.Background()
 	d := openGovernanceTestDB(t)
 	const project = "purge-project"
+	const predecessor = "purge-directory-project"
 	const keep = "keep-project"
+	workspace := t.TempDir() + "/workspace"
+	seedWorkspaceSourceState(t, d, predecessor)
+	mustPurgeExec(t, d, `UPDATE memory_mutations SET synced_at = CURRENT_TIMESTAMP WHERE event_id = ?`, "workspace-mutation-"+predecessor)
+	if _, inserted, err := d.EnsureWorkspaceProjectBinding(ctx, workspace, predecessor); err != nil || !inserted {
+		t.Fatalf("seed predecessor workspace binding = (%t, %v), want inserted", inserted, err)
+	}
+	if changed, err := d.PromoteWorkspaceProject(ctx, workspace, predecessor, project); err != nil || !changed {
+		t.Fatalf("PromoteWorkspaceProject = (%t, %v), want true nil", changed, err)
+	}
+	mustPurgeExec(t, d, `INSERT INTO memory_remote_presence (entity_sync_id, confirmed_at, source) VALUES (?, CURRENT_TIMESTAMP, 'mutation_accept')`, "workspace-memory-"+predecessor)
+	mustPurgeExec(t, d, `INSERT INTO memory_mutation_dispatches (event_id, dispatched_at) VALUES (?, CURRENT_TIMESTAMP)`, "workspace-mutation-"+predecessor)
 	targetMemoryID := saveGovernanceTestMemory(t, d, project, "purge target")
 	keepMemoryID := saveGovernanceTestMemory(t, d, keep, "keep target")
 	if err := d.RecordSyncFailure(project, time.Now().UTC(), 1, time.Now().UTC(), fmt.Errorf("purge sync state")); err != nil {
@@ -117,6 +129,9 @@ func TestDeleteGovernanceProjectPurgesCompleteLocalStateAndPreservesUnrelatedRow
 	mustPurgeExec(t, d, `INSERT INTO memory_mutation_dispatches (event_id, dispatched_at) VALUES ('keep-event', CURRENT_TIMESTAMP)`)
 
 	archiveGovernanceProjectForTest(t, d, project)
+	// The usual canonical count includes A's redirect/governance rows through B;
+	// its acknowledged mutation and retained identity are additional predecessors.
+	expectedDeleted := purgeDeleteRowsForProject(t, d, project) + 5 // A mutation, dispatch, identity, and two recovery tokens.
 	deleted, err := d.DeleteGovernanceProject(ctx, project, "tester", "complete purge")
 	if err != nil {
 		t.Fatalf("DeleteGovernanceProject: %v", err)
@@ -124,14 +139,17 @@ func TestDeleteGovernanceProjectPurgesCompleteLocalStateAndPreservesUnrelatedRow
 	if deleted == 0 {
 		t.Fatal("DeleteGovernanceProject returned zero while project traces existed")
 	}
+	if deleted != expectedDeleted {
+		t.Fatalf("predecessor purge rows deleted = %d, want exact DELETE count %d", deleted, expectedDeleted)
+	}
 
 	for table, query := range map[string]string{
-		"memories":                 `SELECT COUNT(*) FROM memories WHERE project = 'purge-project'`,
-		"sessions":                 `SELECT COUNT(*) FROM sessions WHERE project = 'purge-project'`,
-		"prompts":                  `SELECT COUNT(*) FROM user_prompts WHERE project = 'purge-project'`,
+		"memories":                 `SELECT COUNT(*) FROM memories WHERE project IN ('purge-project', 'purge-directory-project')`,
+		"sessions":                 `SELECT COUNT(*) FROM sessions WHERE project IN ('purge-project', 'purge-directory-project')`,
+		"prompts":                  `SELECT COUNT(*) FROM user_prompts WHERE project IN ('purge-project', 'purge-directory-project')`,
 		"prompt links":             `SELECT COUNT(*) FROM memory_prompt_links WHERE memory_id = ` + fmt.Sprint(targetMemoryID),
-		"mutations":                `SELECT COUNT(*) FROM memory_mutations WHERE project = 'purge-project'`,
-		"mutation receipts":        `SELECT COUNT(*) FROM mutation_receipts WHERE project = 'purge-project'`,
+		"mutations":                `SELECT COUNT(*) FROM memory_mutations WHERE project IN ('purge-project', 'purge-directory-project')`,
+		"mutation receipts":        `SELECT COUNT(*) FROM mutation_receipts WHERE project IN ('purge-project', 'purge-directory-project')`,
 		"cursors":                  `SELECT COUNT(*) FROM mutation_cursors WHERE project = 'purge-project' OR project IN (SELECT project FROM pull_cursors WHERE project = 'purge-project')`,
 		"sync state":               `SELECT COUNT(*) FROM sync_state WHERE project = 'purge-project'`,
 		"sync attempts":            `SELECT COUNT(*) FROM sync_attempt_logs WHERE project = 'purge-project'`,
@@ -140,20 +158,20 @@ func TestDeleteGovernanceProjectPurgesCompleteLocalStateAndPreservesUnrelatedRow
 		"blocks":                   `SELECT COUNT(*) FROM project_blocks WHERE canonical_project_key = 'purge-project' OR project = 'purge-project'`,
 		"quarantine":               `SELECT COUNT(*) FROM project_quarantine_archives WHERE canonical_project_key = 'purge-project' OR project = 'purge-project'`,
 		"warnings":                 `SELECT COUNT(*) FROM hive_warnings WHERE source = 'purge-project'`,
-		"workspace bindings":       `SELECT COUNT(*) FROM workspace_project_bindings WHERE project = 'purge-project'`,
-		"aliases":                  `SELECT COUNT(*) FROM project_aliases WHERE source_project = 'purge-project' OR target_project = 'purge-project'`,
-		"identity":                 `SELECT COUNT(*) FROM project_identities WHERE project_key = 'purge-project'`,
-		"governance":               `SELECT COUNT(*) FROM hive_project_governance WHERE project = 'purge-project' OR merge_target = 'purge-project'`,
+		"workspace bindings":       `SELECT COUNT(*) FROM workspace_project_bindings WHERE project IN ('purge-project', 'purge-directory-project')`,
+		"aliases":                  `SELECT COUNT(*) FROM project_aliases WHERE source_project IN ('purge-project', 'purge-directory-project') OR target_project IN ('purge-project', 'purge-directory-project')`,
+		"identity":                 `SELECT COUNT(*) FROM project_identities WHERE project_key IN ('purge-project', 'purge-directory-project')`,
+		"governance":               `SELECT COUNT(*) FROM hive_project_governance WHERE project IN ('purge-project', 'purge-directory-project') OR merge_target IN ('purge-project', 'purge-directory-project')`,
 		"SDD bindings":             `SELECT COUNT(*) FROM sdd_store_bindings WHERE project = 'purge-project'`,
 		"SDD heads":                `SELECT COUNT(*) FROM sdd_apply_heads WHERE project = 'purge-project'`,
 		"SDD receipts":             `SELECT COUNT(*) FROM sdd_apply_receipts WHERE project = 'purge-project'`,
 		"recovery token requested": `SELECT COUNT(*) FROM recovery_tokens WHERE token = 'purge-requested'`,
 		"recovery token candidate": `SELECT COUNT(*) FROM recovery_tokens WHERE token = 'purge-candidate'`,
-		"remote presence":          `SELECT COUNT(*) FROM memory_remote_presence WHERE entity_sync_id LIKE 'purge-%'`,
-		"local origins":            `SELECT COUNT(*) FROM memory_local_origins WHERE entity_sync_id LIKE 'purge-%'`,
-		"entity dispatches":        `SELECT COUNT(*) FROM memory_entity_dispatches WHERE entity_sync_id LIKE 'purge-%'`,
-		"mutation outcomes":        `SELECT COUNT(*) FROM memory_mutation_outcomes WHERE event_id LIKE 'purge-%' OR entity_sync_id LIKE 'purge-%'`,
-		"mutation dispatches":      `SELECT COUNT(*) FROM memory_mutation_dispatches WHERE event_id LIKE 'purge-%'`,
+		"remote presence":          `SELECT COUNT(*) FROM memory_remote_presence WHERE entity_sync_id LIKE 'purge-%' OR entity_sync_id = 'workspace-memory-purge-directory-project'`,
+		"local origins":            `SELECT COUNT(*) FROM memory_local_origins WHERE entity_sync_id LIKE 'purge-%' OR entity_sync_id = 'workspace-memory-purge-directory-project'`,
+		"entity dispatches":        `SELECT COUNT(*) FROM memory_entity_dispatches WHERE entity_sync_id LIKE 'purge-%' OR entity_sync_id = 'workspace-memory-purge-directory-project'`,
+		"mutation outcomes":        `SELECT COUNT(*) FROM memory_mutation_outcomes WHERE event_id LIKE 'purge-%' OR entity_sync_id LIKE 'purge-%' OR event_id = 'workspace-mutation-purge-directory-project' OR entity_sync_id = 'workspace-memory-purge-directory-project'`,
+		"mutation dispatches":      `SELECT COUNT(*) FROM memory_mutation_dispatches WHERE event_id LIKE 'purge-%' OR event_id = 'workspace-mutation-purge-directory-project'`,
 	} {
 		assertPurgeCount(t, d, table, query, 0)
 	}
@@ -164,6 +182,20 @@ func TestDeleteGovernanceProjectPurgesCompleteLocalStateAndPreservesUnrelatedRow
 	if err != nil || second != 0 {
 		t.Fatalf("repeated purge = (%d, %v), want (0, nil)", second, err)
 	}
+	// A later directory observation and Git promotion must start from a blank
+	// local identity, not recover the retired predecessor's acknowledged history.
+	if _, err := d.SaveMemoryWithManualSession(&models.Memory{Project: predecessor, Title: "fresh directory state", Content: "fresh"}); err != nil {
+		t.Fatalf("recreate directory project: %v", err)
+	}
+	bound, inserted, err := d.EnsureWorkspaceProjectBinding(ctx, workspace, predecessor)
+	if err != nil || !inserted || bound != predecessor {
+		t.Fatalf("fresh directory binding = (%q, %t, %v), want (%q, true, nil)", bound, inserted, err, predecessor)
+	}
+	if changed, err := d.PromoteWorkspaceProject(ctx, workspace, predecessor, project); err != nil || !changed {
+		t.Fatalf("fresh Git promotion = (%t, %v), want true nil", changed, err)
+	}
+	assertPurgeCount(t, d, "retired predecessor mutation", `SELECT COUNT(*) FROM memory_mutations WHERE event_id = 'workspace-mutation-purge-directory-project'`, 0)
+	assertPurgeCount(t, d, "retired predecessor evidence", `SELECT COUNT(*) FROM memory_remote_presence WHERE entity_sync_id = 'workspace-memory-purge-directory-project'`, 0)
 	mustPurgeExec(t, d, `INSERT INTO workspace_project_bindings (workspace, project) VALUES ('/work/leftover', 'orphan-project')`)
 	if rows, err := d.DeleteGovernanceProject(ctx, "orphan-project", "tester", "trace check"); !errors.Is(err, hivedb.ErrGovernanceProjectNotArchived) || rows != 0 {
 		t.Fatalf("purge with remaining local trace = (%d, %v), want archived guard", rows, err)
@@ -178,24 +210,30 @@ func TestDeleteGovernanceProjectPurgesCompleteLocalStateAndPreservesUnrelatedRow
 func TestDeleteGovernanceProjectRollsBackOnFailureAndAllowsFreshRecreation(t *testing.T) {
 	ctx := context.Background()
 	d := openGovernanceTestDB(t)
-	const project = "old-project"
+	const project = "current-project"
+	const predecessor = "old-project"
 	saveGovernanceTestMemory(t, d, "Old.Project", "old state")
 	workspace := t.TempDir() + "/workspace"
+	mustPurgeExec(t, d, `UPDATE memory_mutations SET synced_at = CURRENT_TIMESTAMP WHERE project = ?`, predecessor)
 	if _, inserted, err := d.EnsureWorkspaceProjectBinding(ctx, workspace, "Old.Project"); err != nil || !inserted {
 		t.Fatalf("seed workspace binding = (%t, %v), want inserted binding", inserted, err)
+	}
+	if changed, err := d.PromoteWorkspaceProject(ctx, workspace, predecessor, project); err != nil || !changed {
+		t.Fatalf("promote rollback predecessor = (%t, %v), want true nil", changed, err)
 	}
 	mustPurgeExec(t, d, `INSERT INTO sdd_apply_receipts (request_id, project, change_name, payload_sha256, response_json) VALUES ('rollback-apply-receipt', ?, 'change', 'digest', '{}')`, project)
 	archiveGovernanceProjectForTest(t, d, project)
 	// memories are deleted after the receipt-trigger exception, so this forces a
 	// rollback after the temporary trigger removal and recreation has completed.
-	mustPurgeExec(t, d, `CREATE TRIGGER fail_purge_memory BEFORE DELETE ON memories WHEN OLD.project = 'old-project' BEGIN SELECT RAISE(ABORT, 'forced purge failure'); END`)
+	mustPurgeExec(t, d, `CREATE TRIGGER fail_purge_memory BEFORE DELETE ON memories WHEN OLD.project = 'current-project' BEGIN SELECT RAISE(ABORT, 'forced purge failure'); END`)
 	if _, err := d.DeleteGovernanceProject(ctx, project, "tester", "forced failure"); err == nil {
 		t.Fatal("purge succeeded despite forced failure")
 	}
-	assertPurgeCount(t, d, "rollback memory", `SELECT COUNT(*) FROM memories WHERE project = 'old-project'`, 1)
+	assertPurgeCount(t, d, "rollback current memory", `SELECT COUNT(*) FROM memories WHERE project = 'current-project'`, 1)
+	assertPurgeCount(t, d, "rollback predecessor mutation", `SELECT COUNT(*) FROM memory_mutations WHERE project = 'old-project'`, 1)
 	assertPurgeCount(t, d, "rollback receipt", `SELECT COUNT(*) FROM sdd_apply_receipts WHERE request_id = 'rollback-apply-receipt'`, 1)
-	assertPurgeCount(t, d, "rollback governance", `SELECT COUNT(*) FROM hive_project_governance WHERE project = 'old-project'`, 1)
-	assertPurgeCount(t, d, "rollback identity", `SELECT COUNT(*) FROM project_identities WHERE project_key = 'old-project'`, 1)
+	assertPurgeCount(t, d, "rollback predecessor governance", `SELECT COUNT(*) FROM hive_project_governance WHERE project = 'old-project' AND merge_target = 'current-project'`, 1)
+	assertPurgeCount(t, d, "rollback predecessor identity", `SELECT COUNT(*) FROM project_identities WHERE project_key = 'old-project'`, 1)
 	if _, err := d.RawDB().Exec(`DELETE FROM sdd_apply_receipts WHERE request_id = 'rollback-apply-receipt'`); err == nil {
 		t.Fatal("receipt delete protection trigger was not restored after rollback")
 	}
@@ -230,9 +268,56 @@ func TestDeleteGovernanceProjectRollsBackOnFailureAndAllowsFreshRecreation(t *te
 	if spelling != "Old Project" {
 		t.Fatalf("recreated identity spelling = %q, want fresh spelling", spelling)
 	}
-	rows, err := d.DeleteGovernanceProject(ctx, project, "tester", "repeat")
+	rows, err := d.DeleteGovernanceProject(ctx, predecessor, "tester", "repeat")
 	if err == nil || rows != 0 {
 		t.Fatalf("live recreated project purge = (%d, %v), want zero rows and archived guard", rows, err)
+	}
+}
+
+func TestDeleteGovernanceProjectPurgesTransitiveRetiredPredecessorsWithoutFollowingOutboundTargets(t *testing.T) {
+	ctx := context.Background()
+	d := openGovernanceTestDB(t)
+	const first = "chain-directory"
+	const second = "chain-git"
+	const canonical = "chain-current"
+	const unrelated = "chain-unrelated"
+	workspace := t.TempDir() + "/workspace"
+
+	seedWorkspaceSourceState(t, d, first)
+	mustPurgeExec(t, d, `UPDATE memory_mutations SET synced_at = CURRENT_TIMESTAMP WHERE event_id = ?`, "workspace-mutation-"+first)
+	if _, inserted, err := d.EnsureWorkspaceProjectBinding(ctx, workspace, first); err != nil || !inserted {
+		t.Fatalf("seed first binding = (%t, %v), want inserted", inserted, err)
+	}
+	if changed, err := d.PromoteWorkspaceProject(ctx, workspace, first, second); err != nil || !changed {
+		t.Fatalf("promote first to second = (%t, %v), want true nil", changed, err)
+	}
+	// Chained aliases are intentionally rejected by the promotion path. Model
+	// the legacy B→C governance redirect that still must be followed by purge.
+	saveGovernanceTestMemory(t, d, canonical, "canonical state")
+	mustPurgeExec(t, d, `INSERT INTO hive_project_governance (project, merge_target, merged_at, merged_by, merge_reason) VALUES (?, ?, CURRENT_TIMESTAMP, 'tester', 'legacy chain')`, second, canonical)
+	mustPurgeExec(t, d, `INSERT INTO project_aliases (source_project, target_project, scope, reason) VALUES (?, ?, 'local', 'legacy chain')`, second, canonical)
+	// An outbound malformed alias is itself deleted, but its unrelated target is
+	// never added to the retired predecessor closure.
+	mustPurgeExec(t, d, `INSERT INTO project_aliases (source_project, target_project, scope, reason) VALUES (?, ?, 'local', 'test')`, canonical, unrelated)
+	saveGovernanceTestMemory(t, d, unrelated, "unrelated state")
+	archiveGovernanceProjectForTest(t, d, canonical)
+
+	deleted, err := d.DeleteGovernanceProject(ctx, canonical, "tester", "transitive purge")
+	if err != nil || deleted == 0 {
+		t.Fatalf("DeleteGovernanceProject = (%d, %v), want positive nil", deleted, err)
+	}
+	for table, query := range map[string]string{
+		"transitive mutations":  `SELECT COUNT(*) FROM memory_mutations WHERE project IN ('chain-directory', 'chain-git', 'chain-current')`,
+		"transitive identities": `SELECT COUNT(*) FROM project_identities WHERE project_key IN ('chain-directory', 'chain-git', 'chain-current')`,
+		"transitive aliases":    `SELECT COUNT(*) FROM project_aliases WHERE source_project IN ('chain-directory', 'chain-git', 'chain-current') OR target_project IN ('chain-directory', 'chain-git', 'chain-current')`,
+		"transitive governance": `SELECT COUNT(*) FROM hive_project_governance WHERE project IN ('chain-directory', 'chain-git', 'chain-current') OR merge_target IN ('chain-directory', 'chain-git', 'chain-current')`,
+		"transitive bindings":   `SELECT COUNT(*) FROM workspace_project_bindings WHERE project IN ('chain-directory', 'chain-git', 'chain-current')`,
+	} {
+		assertPurgeCount(t, d, table, query, 0)
+	}
+	assertPurgeCount(t, d, "unrelated outbound target", `SELECT COUNT(*) FROM memories WHERE project = 'chain-unrelated'`, 1)
+	if repeated, err := d.DeleteGovernanceProject(ctx, canonical, "tester", "transitive repeat"); err != nil || repeated != 0 {
+		t.Fatalf("repeated transitive purge = (%d, %v), want (0, nil)", repeated, err)
 	}
 }
 
