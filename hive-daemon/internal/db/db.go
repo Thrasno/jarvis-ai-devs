@@ -341,6 +341,18 @@ CREATE TABLE IF NOT EXISTS hive_project_governance (
     merge_reason   TEXT NOT NULL DEFAULT ''
 );
 
+-- workspace_project_bindings preserves the authoritative local identity for a
+-- workspace even when its Git origin appears after first observation.
+CREATE TABLE IF NOT EXISTS workspace_project_bindings (
+    workspace  TEXT PRIMARY KEY,
+    project    TEXT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_workspace_project_bindings_project
+ON workspace_project_bindings(project);
+
 CREATE TABLE IF NOT EXISTS import_runs (
     id                 TEXT PRIMARY KEY,
     source_system      TEXT NOT NULL,
@@ -603,6 +615,10 @@ func initSchema(sqlDB *sql.DB) error {
 			synced_at      DATETIME
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_project_aliases_target ON project_aliases(target_project)`,
+		// workspace_project_bindings is intentionally independent from sessions:
+		// an empty workspace remains bound across process restarts and promotion.
+		`CREATE TABLE IF NOT EXISTS workspace_project_bindings (workspace TEXT PRIMARY KEY, project TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+		`CREATE INDEX IF NOT EXISTS idx_workspace_project_bindings_project ON workspace_project_bindings(project)`,
 		// passive_observations: additive table for hook-captured subagent output.
 		// sync_id nullable for forward-compat with Hive sync (local-only for now).
 		`CREATE TABLE IF NOT EXISTS passive_observations (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL DEFAULT '', project TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, sync_id TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,

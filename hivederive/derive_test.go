@@ -101,6 +101,42 @@ func TestDerive(t *testing.T) {
 	})
 }
 
+func TestDeriveWithProvenanceReportsTheExactResolutionSource(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	t.Run("usable origin", func(t *testing.T) {
+		dir := t.TempDir()
+		initGitRepo(t, dir, "https://github.com/org/git-project.git")
+		name, fromGit, err := DeriveWithProvenance(dir)
+		if err != nil || name != "git-project" || !fromGit {
+			t.Fatalf("DeriveWithProvenance = (%q, %t, %v), want (git-project, true, nil)", name, fromGit, err)
+		}
+	})
+
+	t.Run("non-Git directory", func(t *testing.T) {
+		dir := t.TempDir()
+		name, fromGit, err := DeriveWithProvenance(dir)
+		if err != nil || name != filepath.Base(dir) || fromGit {
+			t.Fatalf("DeriveWithProvenance = (%q, %t, %v), want (%q, false, nil)", name, fromGit, err, filepath.Base(dir))
+		}
+	})
+
+	t.Run("unusable origin falls back without Git provenance", func(t *testing.T) {
+		dir := t.TempDir()
+		initGitRepo(t, dir, "https://github.com/org/!!!.git")
+		name, fromGit, err := DeriveWithProvenance(dir)
+		if err != nil || name != filepath.Base(dir) || fromGit {
+			t.Fatalf("DeriveWithProvenance = (%q, %t, %v), want (%q, false, nil)", name, fromGit, err, filepath.Base(dir))
+		}
+		legacy, err := Derive(dir)
+		if err != nil || legacy != name {
+			t.Fatalf("Derive compatibility = (%q, %v), want (%q, nil)", legacy, err, name)
+		}
+	})
+}
+
 // TestExtractRepoName covers URL parsing and prompt-injection sanitization for
 // the moved helper.
 func TestExtractRepoName(t *testing.T) {
