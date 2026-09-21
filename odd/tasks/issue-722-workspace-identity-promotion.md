@@ -120,7 +120,7 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - [x] Preserve relocation provenance needed by sync.
 - Checks:
   - Focused DB/import/sync tests for delayed writes, imports, pull ingestion, and retry safety.
-- Commit: pending native review and final work-unit commit.
+- Commit: `ee100265` (`feat(hive): resolve promoted identity ingress`).
 - Authored code lines: 1,784 (1,617 additions + 167 deletions), including 450 lines across three new focused regression files. This exceeds the review heuristic because independent verification forced durable provenance state, request-scoped dispatch evidence, lifecycle leases, capability-safe relocation ordering, and SDD-binding reconciliation; no size-only code-golf applied.
 
 ### WU-05 — Archive and complete local purge lifecycle
@@ -207,6 +207,7 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - 2026-09-21: WU-04 implemented DB-boundary alias resolution, full applicable state reconciliation, atomic sync relocation provenance, process-local promotion/sync lifecycle leases, canonical import/passive/session/prompt ingress, safe cursor resets, and both WU-03 RDD advisory fixes.
 - 2026-09-21: WU-04 integrated #723's SDD store-binding DB slice as dependency commit `e2deb60f`; promotion moves source-only bindings, converges identical bindings, and fails closed on immutable conflicts after the protected-progress guard.
 - 2026-09-21: Independent verification rejected successive candidates until they added typed mutation payload rekeying, transaction-scoped resolution, namespace-safe cursors, reproject-first ordering, explicit local/remote/outcome evidence, request-scoped dispatch tokens, soft-delete presence, lifecycle serialization, and capability-gated follow-up withholding. The final candidate passed with no blocking or medium findings.
+- 2026-09-21: Native RDD approved and acknowledged the exact WU-04 workspace candidate under lineage `review-75c7168e7e8b3ce9`; commit `ee100265` preserves that reviewed tree. Two non-blocking advisories remain follow-up work: `R3-001` and `R4-unsupported-relocation-starvation` at `hive-daemon/internal/db/sync.go:502`.
 
 ## Verification Evidence
 
@@ -227,6 +228,7 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - Exact WU-02 RDD retry (`public/master..2c1232b8`) closed approved and was acknowledged: lineage `review-dd857147cea7b955`, medium risk, reliability lens, 9 paths / 623 changed lines.
 - Exact WU-03 RDD retry (`2c1232b8..2e361374`) closed approved and was acknowledged: lineage `review-c46e8c8873b86ee7`, high risk, four lenses, 11 paths / 1,306 changed lines. Advisory-only findings `R3-git-alias-repromotion` and `R4-retired-git-target` are assigned to WU-04; neither opened a correction or invalidated approval.
 - Final WU-04 independent verification passed with no blocking or medium findings: `cd hive-daemon && go test -count=1 ./internal/db ./internal/project ./internal/sync`, full affected-package `-race` run, and `git diff --check` all passed. Limitations: no live Hive API, full repository suite, dedicated backup-restore exercise, or build.
+- Native WU-04 RDD closed approved and was acknowledged: lineage `review-75c7168e7e8b3ce9`, high risk, four lenses, 27 paths / 1,801 changed lines. Advisory-only findings `R3-001` and `R4-unsupported-relocation-starvation` did not open a correction or invalidate approval.
 - No integrated test suite has been run yet.
 
 ## Next Step
