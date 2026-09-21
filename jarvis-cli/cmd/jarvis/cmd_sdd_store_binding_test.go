@@ -20,6 +20,16 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 )
 
+func canonicalSddTestWorkspace(t *testing.T) string {
+	t.Helper()
+
+	workspace, err := canonicalSddWorkspaceDirectory(t.TempDir())
+	if err != nil {
+		t.Fatalf("canonicalize test workspace: %v", err)
+	}
+	return workspace
+}
+
 func TestResolveBoundProgressStoreSelectsPersistedBindingBeforeEnvironment(t *testing.T) {
 	const (
 		project = "jarvis-dev"
@@ -40,7 +50,7 @@ func TestResolveBoundProgressStoreSelectsPersistedBindingBeforeEnvironment(t *te
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			workspace := t.TempDir()
+			workspace := canonicalSddTestWorkspace(t)
 			root := filepath.Join(workspace, "openspec", "changes", change)
 			if err := os.MkdirAll(root, 0o755); err != nil {
 				t.Fatal(err)
@@ -79,7 +89,7 @@ func TestResolveBoundProgressStoreSelectsPersistedBindingBeforeEnvironment(t *te
 }
 
 func TestResolveBoundProgressStoreNoneDoesNotPersistOrCreateOpenSpec(t *testing.T) {
-	workspace := t.TempDir()
+	workspace := canonicalSddTestWorkspace(t)
 	postRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -134,7 +144,7 @@ func TestResolveBoundProgressStoreFailsBeforeWritesForInvalidRootOrBinding(t *te
 		{name: "unsupported binding protocol", change: change, binding: "none"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			workspace := t.TempDir()
+			workspace := canonicalSddTestWorkspace(t)
 			root := filepath.Join(workspace, "openspec", "changes", change)
 			if err := os.MkdirAll(root, 0o755); err != nil {
 				t.Fatal(err)
@@ -170,7 +180,7 @@ func TestResolveBoundProgressStoreBindingReadFailureDoesNotAdopt(t *testing.T) {
 		project = "jarvis-dev"
 		change  = "issue-723"
 	)
-	workspace := t.TempDir()
+	workspace := canonicalSddTestWorkspace(t)
 	root := filepath.Join(workspace, "openspec", "changes", change)
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
@@ -199,7 +209,7 @@ func TestResolveBoundProgressStoreBindingReadFailureDoesNotAdopt(t *testing.T) {
 }
 
 func TestProgressStoreForBindingRejectsNone(t *testing.T) {
-	if _, err := progressStoreForBinding(sddruntime.StoreModeNone, t.TempDir()); err == nil {
+	if _, err := progressStoreForBinding(sddruntime.StoreModeNone, canonicalSddTestWorkspace(t)); err == nil {
 		t.Fatal("none store resolved without error")
 	}
 }
@@ -214,7 +224,7 @@ func TestResolveBoundProgressStoreRejectsNonCanonicalProjectAndRootBeforeBinding
 		t.Fatalf("test setup project %q must be a valid non-canonical identifier", nonCanonicalProject)
 	}
 
-	workspace := t.TempDir()
+	workspace := canonicalSddTestWorkspace(t)
 	root := filepath.Join(workspace, "openspec", "changes", change)
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
@@ -255,7 +265,7 @@ func TestBoundSddProgressWriterCancellationUsesCommandContextForHiveAndHybrid(t 
 	)
 	for _, mode := range []string{"hive", "hybrid"} {
 		t.Run(mode, func(t *testing.T) {
-			workspace := t.TempDir()
+			workspace := canonicalSddTestWorkspace(t)
 			root := filepath.Join(workspace, "openspec", "changes", change)
 			if err := os.MkdirAll(root, 0o755); err != nil {
 				t.Fatal(err)
