@@ -196,7 +196,8 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - 2026-09-21: Final integrated verification evidence committed as `a2be7d37`. Published and read back the bilingual #722 completion update: https://github.com/Thrasno/jarvis-ai-devs/issues/722#issuecomment-5763084255. The update explicitly states that the branch is not merged or released.
 - 2026-09-21: User authorized Feature Branch Chain delivery and explicit `size:exception` labels for the four already verified work-unit boundaries.
 - 2026-09-21: Approved issue #722 for delivery, created draft tracker PR #729 and child PRs #730–#733, read back exact bases/heads/labels/bodies/budgets, waited for current-head CI to pass, and completed independent chain verification.
-- 2026-09-21: User explicitly authorized merging the complete chain. Integration order is deepest child first (#733 → #732 → #731 → #730), waiting for current-head CI after each parent update, followed by tracker #729 to `master` only after its final CI passes.
+- 2026-09-21: User explicitly authorized merging the complete chain. Integration order was deepest child first (#733 → #732 → #731 → #730), waiting for current-head CI after each parent update, followed by tracker #729 to `master` only after its final CI passed.
+- 2026-09-21: Merged #733, #732, #731, and #730 upward with seven green CI jobs at every gate. Marked tracker #729 ready only after its complete head passed, then merged it to `master` as `a3aad9f1`. The post-merge master CI run `35646036552` passed 7/7; issue #722 closed as completed. No release was created.
 
 ## Verification Evidence
 
@@ -244,4 +245,4 @@ The split produces a false data-loss signal, weakens project continuity, and can
 
 ## Next Step
 
-Integrate the feature chain from its deepest child toward the tracker: merge #733, wait for #732 CI; merge #732, wait for #731 CI; merge #731, wait for #730 CI; merge #730, wait for tracker #729 CI; then mark #729 ready and merge it to `master`. No release is authorized.
+Issue #722 is merged to `master`, closed as completed, and verified by post-merge CI. No further action is required for #722; no release was created or authorized.
