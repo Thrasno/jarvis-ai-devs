@@ -133,7 +133,7 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - [x] State clearly that local purge does not delete Hive API data.
 - Checks:
   - Focused DB/governance/http/client tests for archive retention, purge completeness, idempotency, recreation, and cloud-handoff wording.
-- Commit: pending native review and final work-unit commit.
+- Commit: `3853f0b5` (`feat(hive): complete project purge lifecycle`).
 - Authored code lines: 812 (705 additions + 107 deletions), including a 464-line focused purge lifecycle regression file. The unit exceeds the review heuristic because complete atomic deletion, indirect evidence batching, receipt-trigger rollback, lifecycle locking, recreation, and five local UX/wire surfaces form one inseparable lifecycle contract.
 
 ### WU-06 — Integrated verification and delivery slices
@@ -188,6 +188,7 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - 2026-09-21: Read-only scope audit confirmed WU-06 API identity and WU-07 dashboard work were unnecessary scope expansion. Hive API intentionally stores exact project literals after migrations 021/022 removed unsafe identity folds/registry; existing reproject and `from_project` relocation cover #722. The dashboard uses that same literal for display, route, and filter. User removed both work units; cloud administration remains separate.
 - 2026-09-21: WU-05 implemented lifecycle-serialized non-destructive archive and archive-gated atomic local purge across direct project state, reverse aliases, SDD topology/bindings, WU-04 evidence/dispatch coordinates, identities/bindings, recovery tokens, and sync/governance state. Exact local-only Hive API handoff wording now propagates through service, HTTP, hiveclient, and hiveui.
 - 2026-09-21: Initial WU-05 verification found SQLite parameter-limit exposure and inflated deletion counts. Corrections added deterministic 500-coordinate batches, DELETE-only counting, post-receipt-exception rollback coverage, recovery-token coordinate isolation, and directly attributable trace idempotency. Final independent verification passed with no blocking or medium findings.
+- 2026-09-21: WU-05 committed as `3853f0b5`. Native high-risk four-lens review approved and was acknowledged under lineage `review-cecca56c6ed047e4`; advisory-only finding `R3-001` did not open a correction or invalidate approval.
 
 ## Verification Evidence
 
@@ -210,6 +211,7 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - Final WU-04 independent verification passed with no blocking or medium findings: `cd hive-daemon && go test -count=1 ./internal/db ./internal/project ./internal/sync`, full affected-package `-race` run, and `git diff --check` all passed. Limitations: no live Hive API, full repository suite, dedicated backup-restore exercise, or build.
 - Native WU-04 RDD closed approved and was acknowledged: lineage `review-75c7168e7e8b3ce9`, high risk, four lenses, 27 paths / 1,801 changed lines. Advisory-only findings `R3-001` and `R4-unsupported-relocation-starvation` did not open a correction or invalidate approval.
 - Final WU-05 independent verification passed: fresh DB/governance/HTTP tests, full affected daemon `-race` tests, fresh hiveclient/hiveui tests, and `git diff --check`. Limitations: no live Hive API, full repository suite, or deletion of unowned historical evidence that has no surviving project coordinate.
+- Native WU-05 RDD approved and was acknowledged: lineage `review-cecca56c6ed047e4`, high risk, four lenses, 8 paths / 834 changed lines. Advisory-only finding `R3-001` did not open a correction or invalidate approval.
 - No integrated test suite has been run yet.
 
 ## Next Step
