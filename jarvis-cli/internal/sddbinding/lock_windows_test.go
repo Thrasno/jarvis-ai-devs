@@ -5,8 +5,10 @@ package sddbinding
 import (
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"golang.org/x/sys/windows"
@@ -35,6 +37,34 @@ func TestWindowsMutexUsesGlobalPhysicalIdentity(t *testing.T) {
 	unlock()
 }
 
+func TestWindowsFileRenameInfoExBufferUsesSimpleInPlaceTarget(t *testing.T) {
+	target, err := windows.UTF16FromString(stateFileName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buffer := fileRenameInfoExBuffer(target)
+	info := (*fileRenameInfoEx)(unsafe.Pointer(&buffer[0]))
+
+	if info.Flags != stagedRenameFlags() {
+		t.Fatalf("Flags = %#x, want %#x", info.Flags, stagedRenameFlags())
+	}
+	if info.RootDirectory != 0 {
+		t.Fatalf("RootDirectory = %v, want 0 for an in-place target", info.RootDirectory)
+	}
+	if want := uint32((len(target) - 1) * 2); info.FileNameLength != want {
+		t.Fatalf("FileNameLength = %d, want %d bytes excluding NUL", info.FileNameLength, want)
+	}
+	minimumSize := int(unsafe.Sizeof(fileRenameInfoEx{}))
+	requiredSize := int(unsafe.Offsetof(fileRenameInfoEx{}.FileName)) + len(target)*2
+	if want := max(minimumSize, requiredSize); len(buffer) != want {
+		t.Fatalf("buffer length = %d, want %d for header and NUL-terminated target", len(buffer), want)
+	}
+	name := (*[windows.MAX_LONG_PATH]uint16)(unsafe.Pointer(&info.FileName[0]))[:len(target):len(target)]
+	if !slices.Equal(name, target) {
+		t.Fatalf("FileName = %v, want %v including trailing NUL", name, target)
+	}
+}
+
 func TestWindowsReadOnlyReplacementSourceContract(t *testing.T) {
 	want := uint32(windows.FILE_RENAME_REPLACE_IF_EXISTS | windows.FILE_RENAME_POSIX_SEMANTICS | windows.FILE_RENAME_IGNORE_READONLY_ATTRIBUTE)
 	if got := stagedRenameFlags(); got != want || got&windows.FILE_RENAME_IGNORE_READONLY_ATTRIBUTE == 0 {
@@ -44,16 +74,17 @@ func TestWindowsReadOnlyReplacementSourceContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(source), "r.root.Chmod(stateFileName") {
+	normalizedSource := strings.ReplaceAll(string(source), "\r\n", "\n")
+	if strings.Contains(normalizedSource, "r.root.Chmod(stateFileName") {
 		t.Fatal("read-only replacement mutates the destination before atomic rename")
 	}
-	if !strings.Contains(string(source), "SetFileInformationByHandle") {
+	if !strings.Contains(normalizedSource, "SetFileInformationByHandle") {
 		t.Fatal("read-only replacement does not use handle-based atomic rename")
 	}
-	if strings.Contains(string(source), "return fmt.Errorf(\"close OpenSpec binding stage: %w\", err)") {
+	if strings.Contains(normalizedSource, "return fmt.Errorf(\"close OpenSpec binding stage: %w\", err)") {
 		t.Fatal("post-commit staged-handle close can report failure after a successful rename")
 	}
-	if !strings.Contains(string(source), "\t_ = file.Close()\n\t// SetFileInformationByHandle is the commit point") {
+	if !strings.Contains(normalizedSource, "\t_ = file.Close()\n\t// SetFileInformationByHandle is the commit point") {
 		t.Fatal("successful rename does not best-effort close the staged handle before returning success")
 	}
 }

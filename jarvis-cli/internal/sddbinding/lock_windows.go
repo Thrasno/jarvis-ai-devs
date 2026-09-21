@@ -187,16 +187,21 @@ func stagedRenameFlags() uint32 {
 	return windows.FILE_RENAME_REPLACE_IF_EXISTS | windows.FILE_RENAME_POSIX_SEMANTICS | windows.FILE_RENAME_IGNORE_READONLY_ATTRIBUTE
 }
 
+func fileRenameInfoExBuffer(target []uint16) []byte {
+	nameOffset := int(unsafe.Offsetof(fileRenameInfoEx{}.FileName))
+	bufferSize := nameOffset + len(target)*2
+	if minimum := int(unsafe.Sizeof(fileRenameInfoEx{})); bufferSize < minimum {
+		bufferSize = minimum
+	}
+	buffer := make([]byte, bufferSize)
+	info := (*fileRenameInfoEx)(unsafe.Pointer(&buffer[0]))
+	info.Flags = stagedRenameFlags()
+	info.FileNameLength = uint32((len(target) - 1) * 2)
+	copy(unsafe.Slice(&info.FileName[0], len(target)), target)
+	return buffer
+}
+
 func (r *changeRoot) renameStaged(file *os.File) error {
-	directory, err := r.root.Open(".")
-	if err != nil {
-		return fmt.Errorf("open OpenSpec binding directory for rename: %w", err)
-	}
-	defer directory.Close()
-	directoryHandle, err := fileHandle(directory)
-	if err != nil {
-		return err
-	}
 	stagedHandle, err := fileHandle(file)
 	if err != nil {
 		return err
@@ -205,16 +210,11 @@ func (r *changeRoot) renameStaged(file *os.File) error {
 	if err != nil {
 		return fmt.Errorf("encode OpenSpec binding target: %w", err)
 	}
-	nameBytes := (len(target) - 1) * 2
-	var rename fileRenameInfoEx
-	buffer := make([]byte, int(unsafe.Offsetof(rename.FileName))+nameBytes)
-	info := (*fileRenameInfoEx)(unsafe.Pointer(&buffer[0]))
-	info.Flags = stagedRenameFlags()
-	info.RootDirectory = directoryHandle
-	info.FileNameLength = uint32(nameBytes)
-	copy((*[windows.MAX_LONG_PATH]uint16)(unsafe.Pointer(&info.FileName[0]))[:len(target)-1:len(target)-1], target[:len(target)-1])
-	if err := windows.SetFileInformationByHandle(stagedHandle, windows.FileRenameInfoEx, &buffer[0], uint32(len(buffer))); err != nil {
-		return fmt.Errorf("replace OpenSpec binding state: %w", err)
+	buffer := fileRenameInfoExBuffer(target)
+	renameErr := windows.SetFileInformationByHandle(stagedHandle, windows.FileRenameInfoEx, &buffer[0], uint32(len(buffer)))
+	runtime.KeepAlive(file)
+	if renameErr != nil {
+		return fmt.Errorf("replace OpenSpec binding state: %w", renameErr)
 	}
 	return nil
 }
