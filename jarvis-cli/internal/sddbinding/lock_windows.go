@@ -171,10 +171,14 @@ func (r *changeRoot) replaceState(data []byte, prior stateRecord) error {
 		return err
 	}
 	_ = file.Close()
-	// SetFileInformationByHandle is the commit point. os.Root exposes no directory
-	// fsync, so callers receive success after commit rather than a misleading error.
+	// NtSetInformationFile is the commit point. os.Root exposes no directory fsync,
+	// so callers receive success after commit rather than a misleading error.
 	return nil
 }
+
+// fileRenameInformationEx is the NT FILE_INFORMATION_CLASS value for
+// FILE_RENAME_INFORMATION_EX. golang.org/x/sys/windows does not export it.
+const fileRenameInformationEx uint32 = 65
 
 type fileRenameInfoEx struct {
 	Flags          uint32
@@ -187,7 +191,7 @@ func stagedRenameFlags() uint32 {
 	return windows.FILE_RENAME_REPLACE_IF_EXISTS | windows.FILE_RENAME_POSIX_SEMANTICS | windows.FILE_RENAME_IGNORE_READONLY_ATTRIBUTE
 }
 
-func fileRenameInfoExBuffer(target []uint16) []byte {
+func fileRenameInfoExBuffer(directoryHandle windows.Handle, target []uint16) []byte {
 	nameOffset := int(unsafe.Offsetof(fileRenameInfoEx{}.FileName))
 	bufferSize := nameOffset + len(target)*2
 	if minimum := int(unsafe.Sizeof(fileRenameInfoEx{})); bufferSize < minimum {
@@ -196,6 +200,7 @@ func fileRenameInfoExBuffer(target []uint16) []byte {
 	buffer := make([]byte, bufferSize)
 	info := (*fileRenameInfoEx)(unsafe.Pointer(&buffer[0]))
 	info.Flags = stagedRenameFlags()
+	info.RootDirectory = directoryHandle
 	info.FileNameLength = uint32((len(target) - 1) * 2)
 	copy(unsafe.Slice(&info.FileName[0], len(target)), target)
 	return buffer
@@ -206,13 +211,24 @@ func (r *changeRoot) renameStaged(file *os.File) error {
 	if err != nil {
 		return err
 	}
+	directory, err := r.root.Open(".")
+	if err != nil {
+		return fmt.Errorf("open OpenSpec binding directory for commit: %w", err)
+	}
+	defer directory.Close()
+	directoryHandle, err := fileHandle(directory)
+	if err != nil {
+		return err
+	}
 	target, err := windows.UTF16FromString(stateFileName)
 	if err != nil {
 		return fmt.Errorf("encode OpenSpec binding target: %w", err)
 	}
-	buffer := fileRenameInfoExBuffer(target)
-	renameErr := windows.SetFileInformationByHandle(stagedHandle, windows.FileRenameInfoEx, &buffer[0], uint32(len(buffer)))
+	buffer := fileRenameInfoExBuffer(directoryHandle, target)
+	var status windows.IO_STATUS_BLOCK
+	renameErr := windows.NtSetInformationFile(stagedHandle, &status, &buffer[0], uint32(len(buffer)), fileRenameInformationEx)
 	runtime.KeepAlive(file)
+	runtime.KeepAlive(directory)
 	if renameErr != nil {
 		return fmt.Errorf("replace OpenSpec binding state: %w", renameErr)
 	}

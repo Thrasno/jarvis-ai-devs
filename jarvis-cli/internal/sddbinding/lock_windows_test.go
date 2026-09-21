@@ -37,19 +37,20 @@ func TestWindowsMutexUsesGlobalPhysicalIdentity(t *testing.T) {
 	unlock()
 }
 
-func TestWindowsFileRenameInfoExBufferUsesSimpleInPlaceTarget(t *testing.T) {
+func TestWindowsFileRenameInfoExBufferUsesRootedSimpleTarget(t *testing.T) {
 	target, err := windows.UTF16FromString(stateFileName)
 	if err != nil {
 		t.Fatal(err)
 	}
-	buffer := fileRenameInfoExBuffer(target)
+	const directoryHandle = windows.Handle(42)
+	buffer := fileRenameInfoExBuffer(directoryHandle, target)
 	info := (*fileRenameInfoEx)(unsafe.Pointer(&buffer[0]))
 
 	if info.Flags != stagedRenameFlags() {
 		t.Fatalf("Flags = %#x, want %#x", info.Flags, stagedRenameFlags())
 	}
-	if info.RootDirectory != 0 {
-		t.Fatalf("RootDirectory = %v, want 0 for an in-place target", info.RootDirectory)
+	if info.RootDirectory != directoryHandle {
+		t.Fatalf("RootDirectory = %v, want rooted directory handle %v", info.RootDirectory, directoryHandle)
 	}
 	if want := uint32((len(target) - 1) * 2); info.FileNameLength != want {
 		t.Fatalf("FileNameLength = %d, want %d bytes excluding NUL", info.FileNameLength, want)
@@ -78,13 +79,28 @@ func TestWindowsReadOnlyReplacementSourceContract(t *testing.T) {
 	if strings.Contains(normalizedSource, "r.root.Chmod(stateFileName") {
 		t.Fatal("read-only replacement mutates the destination before atomic rename")
 	}
-	if !strings.Contains(normalizedSource, "SetFileInformationByHandle") {
-		t.Fatal("read-only replacement does not use handle-based atomic rename")
+	if !strings.Contains(normalizedSource, "const fileRenameInformationEx uint32 = 65") {
+		t.Fatal("rename does not use the NT FileRenameInformationEx information class (65)")
+	}
+	if !strings.Contains(normalizedSource, "windows.NtSetInformationFile(stagedHandle, &status, &buffer[0], uint32(len(buffer)), fileRenameInformationEx)") {
+		t.Fatal("rename does not commit through NtSetInformationFile with the NT information class")
+	}
+	if strings.Contains(normalizedSource, "SetFileInformationByHandle") {
+		t.Fatal("rename must not use the Win32 SetFileInformationByHandle wrapper")
+	}
+	if !strings.Contains(normalizedSource, "directory, err := r.root.Open(\".\")") {
+		t.Fatal("rename does not reopen a directory handle rooted by os.Root")
+	}
+	if !strings.Contains(normalizedSource, "buffer := fileRenameInfoExBuffer(directoryHandle, target)") {
+		t.Fatal("rename buffer does not confine the simple target to the rooted directory handle")
+	}
+	if !strings.Contains(normalizedSource, "runtime.KeepAlive(directory)") {
+		t.Fatal("rename does not keep the rooted directory handle alive through commit")
 	}
 	if strings.Contains(normalizedSource, "return fmt.Errorf(\"close OpenSpec binding stage: %w\", err)") {
 		t.Fatal("post-commit staged-handle close can report failure after a successful rename")
 	}
-	if !strings.Contains(normalizedSource, "\t_ = file.Close()\n\t// SetFileInformationByHandle is the commit point") {
+	if !strings.Contains(normalizedSource, "\t_ = file.Close()\n\t// NtSetInformationFile is the commit point") {
 		t.Fatal("successful rename does not best-effort close the staged handle before returning success")
 	}
 }
