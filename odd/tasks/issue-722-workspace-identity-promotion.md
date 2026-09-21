@@ -23,12 +23,13 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - Preserve identity metadata on archive.
 - On local purge, remove every local trace including aliases, redirects, workspace bindings, identity registry state, sync/governance metadata, and applicable SDD state; permit later recreation as a new project.
 - Keep Hive API deletion and project administration independent from local purge.
-- Carry canonical key/display name through Hive API and dashboard surfaces where necessary for consistent browsing and sync.
 - For immutable protected SDD apply progress, fail closed with a clear dependency on #724; do not rewrite hashes, receipts, or signed payloads in #722.
 
 ## Out of Scope
 
 - Hive API administrative deletion workflow.
+- A Hive API canonical/display registry or presentation contract; the API intentionally stores exact project literals and existing relocation sync is sufficient for #722.
+- Dashboard canonical/display changes; the dashboard currently browses and filters by the same exact API literal, so no #721-equivalent defect exists there.
 - Rewriting immutable SDD apply progress in place.
 - Implementing the general protected-progress supersession flow owned by #724.
 - Treating local purge as a cloud deletion or tombstone request.
@@ -58,7 +59,6 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - Mode: Standard ODD verification; strict TDD is not enabled by repository policy for non-SDD work.
 - Source: `AGENTS.md` requires strict TDD specifically for SDD implementation work.
 - Go runner: focused `go test` packages, followed by `go test ./...` and `go vet ./...` at the integrated boundary.
-- Frontend runner: resolve from the dashboard package before that work unit; do not invent a command.
 - Tests remain mandatory and should be authored with the behavior they protect.
 
 ## Delivery Strategy
@@ -135,36 +135,12 @@ The split produces a false data-loss signal, weakens project continuity, and can
   - Focused DB/governance/http/client tests for archive retention, purge completeness, idempotency, recreation, and cloud-handoff wording.
 - Commit: pending.
 
-### WU-06 — Hive API canonical/display identity compatibility
-
-- Route: delegated direct writer.
-- Trigger evidence: API migration plus repositories, services, models, handlers, mocks, and tests.
-- [ ] Design canonical/display storage without reviving the unsafe removed API registry semantics.
-- [ ] Key project aggregates, filters, audit/health, and sync behavior by canonical identity.
-- [ ] Preserve display spelling independently.
-- [ ] Maintain compatibility for existing stored project literals and sync clients.
-- Checks:
-  - Focused Hive API repository/service/handler tests and migrations.
-- Commit: pending.
-
-### WU-07 — Dashboard canonical-key browsing
-
-- Route: delegated direct writer.
-- Trigger evidence: multi-file TypeScript API/domain/UI tests.
-- [ ] Carry canonical key and display name through dashboard DTO/domain models.
-- [ ] Query/filter by canonical key and render display name.
-- [ ] Add the dashboard side of the #721 regression.
-- Checks:
-  - Resolve and run the package's documented focused test command.
-- Commit: pending.
-
-### WU-08 — Integrated verification and delivery slices
+### WU-06 — Integrated verification and delivery slices
 
 - Route: delegated verification according to native risk assessment after each work-unit commit; parent spot-checks one reported command.
 - Trigger evidence: verification commands must route through the verifier under repository orchestration policy.
 - [ ] Run `go test ./...`.
 - [ ] Run `go vet ./...`.
-- [ ] Run the resolved dashboard test command.
 - [ ] Verify #721 scenario end to end: A before Git, B after Git, data under both, promotion, one visible B, memories visible exactly once.
 - [ ] Record authored line totals and PR slice boundaries.
 - Checks: all commands and manual scenario above.
@@ -176,15 +152,15 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - [x] Adding or renaming to a usable Git repository promotes the workspace core state to the Git-derived key when unambiguous; full state inventory remains WU-04.
 - [x] Core promotion is atomic and idempotent with source/target revalidation; complete inventory and backup integration remain scoped to WU-04/WU-05.
 - [x] The retired source cannot be recreated by supported session, memory, prompt, import, passive observation, or sync ingress paths.
-- [x] Local project DTOs expose canonical key separately from display name; Hive API/dashboard projection remains pending.
-- [x] Local TUI renders display names but queries/filters/mutates by canonical key; dashboard remains pending.
-- [ ] The complete #721 promotion scenario shows the surviving memories exactly once under B; display-vs-key viewing and core A→B promotion are covered, while universal ingress/state migration remains pending.
+- [x] Local project DTOs expose canonical key separately from display name; no Hive API/dashboard identity change is required.
+- [x] Local TUI renders display names but queries/filters/mutates by canonical key; the dashboard uses one exact API literal and has no equivalent split.
+- [ ] The complete #721 promotion scenario shows the surviving memories exactly once under B; display-vs-key viewing, A→B promotion, and universal ingress/state migration are covered.
 - [ ] Archive retains bindings and redirects.
 - [ ] Purge removes all local traces and permits later recreation as a new project.
 - [ ] Local purge does not claim to delete Hive API data.
 - [x] Protected SDD apply progress is never rewritten and blocks promotion with an actionable #724 dependency.
 - [ ] Existing project literals remain compatible through migration.
-- [ ] Focused checks, `go test ./...`, `go vet ./...`, and dashboard tests pass.
+- [ ] Focused checks, `go test ./...`, and `go vet ./...` pass.
 
 ## Progress
 
@@ -208,6 +184,7 @@ The split produces a false data-loss signal, weakens project continuity, and can
 - 2026-09-21: WU-04 integrated #723's SDD store-binding DB slice as dependency commit `e2deb60f`; promotion moves source-only bindings, converges identical bindings, and fails closed on immutable conflicts after the protected-progress guard.
 - 2026-09-21: Independent verification rejected successive candidates until they added typed mutation payload rekeying, transaction-scoped resolution, namespace-safe cursors, reproject-first ordering, explicit local/remote/outcome evidence, request-scoped dispatch tokens, soft-delete presence, lifecycle serialization, and capability-gated follow-up withholding. The final candidate passed with no blocking or medium findings.
 - 2026-09-21: Native RDD approved and acknowledged the exact WU-04 workspace candidate under lineage `review-75c7168e7e8b3ce9`; commit `ee100265` preserves that reviewed tree. Two non-blocking advisories remain follow-up work: `R3-001` and `R4-unsupported-relocation-starvation` at `hive-daemon/internal/db/sync.go:502`.
+- 2026-09-21: Read-only scope audit confirmed WU-06 API identity and WU-07 dashboard work were unnecessary scope expansion. Hive API intentionally stores exact project literals after migrations 021/022 removed unsafe identity folds/registry; existing reproject and `from_project` relocation cover #722. The dashboard uses that same literal for display, route, and filter. User removed both work units; cloud administration remains separate.
 
 ## Verification Evidence
 
@@ -233,4 +210,4 @@ The split produces a false data-loss signal, weakens project continuity, and can
 
 ## Next Step
 
-Begin WU-04 universal ingress resolution and complete local-state migration from the verified WU-03 boundary.
+Complete WU-05 archive preservation and complete local purge, then run WU-06 integrated verification.
