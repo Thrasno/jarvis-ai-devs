@@ -55,6 +55,14 @@ Topic update rules:
 - Unsure about key → call `mem_suggest_topic_key` first
 - Observations saved WITHOUT a `topic_key` are append-only — never update them by ID; save a new observation instead
 
+## Repository File Persistence Boundary
+
+- Return ordinary investigation and status findings inline. This includes checkpoints and handoff notes unless a file-backed workflow applies.
+- Reusable knowledge defaults to Hive. A request to “persist these findings” means save it to Hive unless the user explicitly requests a repository file or path.
+- An explicit user request for a repository file or path is allowed. Established repository artifacts remain writable by their owning workflow.
+- The resolved SDD artifact-store mode controls SDD artifacts: `hive`: persist SDD artifacts only in Hive; create no project files. `openspec`: persist SDD artifacts in their established OpenSpec files. `hybrid`: persist SDD artifacts in both Hive and their established OpenSpec files. `none`: keep SDD artifacts inline only.
+- If Hive is unavailable, report the unavailability inline. Hive unavailability never authorizes a repository-file fallback.
+
 ## WHEN TO SEARCH MEMORY
 
 On any variation of "remember", "recall", "what did we do", "how did we solve", "recordar", "qué hicimos", or references to past work:

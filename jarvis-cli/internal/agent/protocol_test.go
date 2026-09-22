@@ -403,6 +403,43 @@ func TestGetHiveProtocol_UsesRootCanonicalEmbeddedSource(t *testing.T) {
 	}
 }
 
+func TestHiveProtocol_RepositoryFilePersistenceBoundary(t *testing.T) {
+	protocol := getHiveProtocol()
+	const boundary = "## Repository File Persistence Boundary"
+
+	if got := strings.Count(protocol, boundary); got != 1 {
+		t.Fatalf("canonical repository-file persistence boundary count = %d, want 1", got)
+	}
+	for _, want := range []string{
+		"Return ordinary investigation and status findings inline",
+		"Reusable knowledge defaults to Hive",
+		"An explicit user request for a repository file or path is allowed",
+		"Established repository artifacts remain writable by their owning workflow",
+		"`hive`: persist SDD artifacts only in Hive; create no project files",
+		"`openspec`: persist SDD artifacts in their established OpenSpec files",
+		"`hybrid`: persist SDD artifacts in both Hive and their established OpenSpec files",
+		"`none`: keep SDD artifacts inline only",
+		"Hive unavailability never authorizes a repository-file fallback",
+	} {
+		if !strings.Contains(protocol, want) {
+			t.Errorf("canonical repository-file persistence boundary missing %q", want)
+		}
+	}
+
+	skill := readAgentTestFile(t, "embed", "skills", "hive", "SKILL.md")
+	for _, want := range []string{
+		"The injected Hive protocol is the canonical repository-file persistence policy",
+		"do not restate or override it here",
+	} {
+		if !strings.Contains(skill, want) {
+			t.Errorf("Hive skill must defer to canonical repository-file persistence policy with %q", want)
+		}
+	}
+	if strings.Contains(skill, boundary) {
+		t.Fatal("Hive skill must not duplicate the canonical repository-file persistence boundary")
+	}
+}
+
 func readAgentTestFile(t *testing.T, parts ...string) string {
 	t.Helper()
 
