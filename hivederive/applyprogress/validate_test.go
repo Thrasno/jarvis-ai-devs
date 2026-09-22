@@ -78,6 +78,78 @@ func TestSupersessionSealTransition(t *testing.T) {
 	}
 }
 
+// Pair validation uses supplied snapshots; these tests do not establish store authority.
+func TestValidateSuccessorGenesisPairShape(t *testing.T) {
+	predecessor := Snapshot{Schema: SupersessionSnapshotSchema, Project: "project", Change: "old", Generation: 1, Revision: 2, TaskManifestSHA256: strings.Repeat("a", 64), Status: StatusSuperseded, Coverage: []Coverage{}, Batches: []BatchRef{}, SealIntent: &SealIntent{SuccessorProject: "project", SuccessorChange: "new", SuccessorManifestSHA256: strings.Repeat("c", 64), Actor: "agent", Reason: "replanned", Timestamp: "2026-01-01T00:00:00Z", OperationID: "request-1"}}
+	predecessor, _, err := SealSnapshot(predecessor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pointer := &SupersedesPointer{Project: predecessor.Project, Change: predecessor.Change, SealDigest: predecessor.Digest, OriginalManifestSHA256: predecessor.TaskManifestSHA256, Actor: predecessor.SealIntent.Actor, Reason: predecessor.SealIntent.Reason, Timestamp: predecessor.SealIntent.Timestamp, OperationID: predecessor.SealIntent.OperationID}
+	root := Snapshot{Schema: SupersessionSnapshotSchema, Project: "project", Change: "new", Generation: 1, Revision: 1, TaskManifestSHA256: strings.Repeat("c", 64), Status: StatusPartial, Coverage: []Coverage{}, Batches: []BatchRef{}, Supersedes: pointer}
+	check := func(name string, before, after Snapshot, valid bool) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			if got := ValidateSuccessorGenesisPair(before, after); (got == nil) != valid {
+				t.Fatalf("validation = %v, want valid %v", got, valid)
+			}
+		})
+	}
+	seal := func(s Snapshot) Snapshot {
+		t.Helper()
+		sealed, _, err := SealSnapshot(s)
+		if err != nil {
+			t.Fatalf("seal snapshot %+v: %v", s, err)
+		}
+		return sealed
+	}
+	check("matching pair shape", predecessor, seal(root), true)
+	for _, tt := range []struct {
+		name string
+		edit func(*Snapshot)
+	}{
+		{"pointer digest", func(s *Snapshot) { p := *s.Supersedes; p.SealDigest = strings.Repeat("d", 64); s.Supersedes = &p }},
+		{"pointer identity", func(s *Snapshot) { p := *s.Supersedes; p.Change = "other"; s.Supersedes = &p }},
+		{"pointer intent", func(s *Snapshot) { p := *s.Supersedes; p.Reason = "other"; s.Supersedes = &p }},
+		{"pointer manifest", func(s *Snapshot) {
+			p := *s.Supersedes
+			p.OriginalManifestSHA256 = strings.Repeat("d", 64)
+			s.Supersedes = &p
+		}},
+		{"project", func(s *Snapshot) { s.Project = "other" }},
+		{"change", func(s *Snapshot) { s.Change = "other" }},
+		{"manifest", func(s *Snapshot) { s.TaskManifestSHA256 = strings.Repeat("d", 64) }},
+		{"generation", func(s *Snapshot) { s.Generation = 2 }},
+		{"revision", func(s *Snapshot) { s.Revision = 2 }},
+		{"previous digest", func(s *Snapshot) { s.PreviousDigest = predecessor.Digest }},
+		{"coverage", func(s *Snapshot) { s.Coverage = []Coverage{{TaskID: "task", BatchID: "batch", EntryID: "entry"}} }},
+		{"evidence", func(s *Snapshot) {
+			s.Batches = []BatchRef{{BatchID: "apb-0123456789abcdef0123456789abcdef", SHA256: strings.Repeat("d", 64)}}
+		}},
+		{"continuation", func(s *Snapshot) { s.StreamSHA256 = strings.Repeat("d", 64); s.NextEntryID = "next" }},
+	} {
+		s := root
+		tt.edit(&s)
+		sealed, _, err := SealSnapshot(s)
+		if err != nil {
+			// Some cross-change mismatches also violate local snapshot shape.
+			check(tt.name, predecessor, s, false)
+		} else {
+			check(tt.name, predecessor, sealed, false)
+		}
+	}
+	broken := predecessor
+	broken.Digest = strings.Repeat("d", 64)
+	check("invalid predecessor digest", broken, seal(root), false)
+	changed := predecessor
+	intent := *changed.SealIntent
+	intent.Reason = "changed"
+	changed.SealIntent = &intent
+	changed = seal(changed)
+	check("changed signed intent", changed, seal(root), false)
+	check("same change remains strict", predecessor, predecessor, false)
+}
+
 func TestSuccessorPointerLocalShape(t *testing.T) {
 	root := Snapshot{Schema: SupersessionSnapshotSchema, Project: "project", Change: "new", Generation: 1, Revision: 1, TaskManifestSHA256: strings.Repeat("c", 64), Status: StatusPartial, Coverage: []Coverage{}, Batches: []BatchRef{}, Supersedes: &SupersedesPointer{Project: "project", Change: "old", SealDigest: strings.Repeat("d", 64), OriginalManifestSHA256: strings.Repeat("a", 64), Actor: "agent", Reason: "replanned", OperationID: "request-1", Timestamp: "2026-01-01T00:00:00Z"}}
 	sealed, raw, err := SealSnapshot(root)
