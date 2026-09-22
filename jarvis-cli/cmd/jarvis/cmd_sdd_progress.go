@@ -181,20 +181,38 @@ type hiveCheckpointReceiptStore interface {
 func defaultOpenSpec(root string) progressAdvancer { return sddprogress.OpenSpec{Root: root} }
 
 var newProgressOpenSpec = defaultOpenSpec
+
+// newProgressHive is the legacy env-only factory used by focused unit seams.
+// Product request handling uses newProgressHiveWithContext instead.
 var newProgressHive = func() (progressAdvancer, error) {
 	client, err := hiveclient.NewFromEnv()
 	return hiveProgressAdvancer{client: client}, err
 }
 
-type hiveProgressAdvancer struct{ client *hiveclient.Client }
+var newProgressHiveWithContext = func(ctx context.Context) (progressAdvancer, error) {
+	client, err := hiveclient.NewFromEnv()
+	return hiveProgressAdvancer{client: client, ctx: ctx}, err
+}
+
+type hiveProgressAdvancer struct {
+	client *hiveclient.Client
+	ctx    context.Context
+}
+
+func (h hiveProgressAdvancer) requestContext() context.Context {
+	if h.ctx != nil {
+		return h.ctx
+	}
+	return context.Background()
+}
 
 func (h hiveProgressAdvancer) Current(request sddprogress.AdvanceRequest) (sddprogress.AdvanceResult, error) {
-	result, err := h.client.GetApplyProgress(context.Background(), request.Snapshot.Project, request.Snapshot.Change)
+	result, err := h.client.GetApplyProgress(h.requestContext(), request.Snapshot.Project, request.Snapshot.Change)
 	return sddprogress.AdvanceResult{Generation: result.State.Generation, Revision: result.State.Revision, Digest: result.State.Digest, PayloadSHA256: result.Receipt.PayloadSHA256}, err
 }
 
 func (h hiveProgressAdvancer) CurrentCheckpoint(project, change string) (*applyprogress.Snapshot, error) {
-	result, err := h.client.GetApplyProgress(context.Background(), project, change)
+	result, err := h.client.GetApplyProgress(h.requestContext(), project, change)
 	var apiErr *hiveclient.ApplyProgressError
 	if errors.As(err, &apiErr) && apiErr.StatusCode == 404 && apiErr.Result.Code == "not_found" {
 		return nil, nil
@@ -215,7 +233,7 @@ func (h hiveProgressAdvancer) FetchAuthoritativeTasks(project, change string) (s
 }
 
 func (h hiveProgressAdvancer) FetchAuthoritativeCheckpointArtifacts(project, change string) (tasks, legacy string, found bool, err error) {
-	artifacts, err := h.client.FetchSDDArtifacts(context.Background(), project, change)
+	artifacts, err := h.client.FetchSDDArtifacts(h.requestContext(), project, change)
 	if err != nil {
 		return "", "", false, err
 	}
@@ -255,12 +273,12 @@ func (h hiveProgressAdvancer) LegacyAuthority(request sddprogress.AdvanceRequest
 // payload, so an occupied ID must win over stale or capacity diagnostics; a
 // normal candidate remains on Advance, where the daemon replays exact payloads.
 func (h hiveProgressAdvancer) ReceiptIdentity(project, change, requestID string) (bool, error) {
-	_, found, err := h.client.GetApplyProgressReceipt(context.Background(), project, change, requestID)
+	_, found, err := h.client.GetApplyProgressReceipt(h.requestContext(), project, change, requestID)
 	return found, err
 }
 
 func (h hiveProgressAdvancer) Advance(request sddprogress.AdvanceRequest) (sddprogress.AdvanceResult, error) {
-	result, err := h.client.AdvanceApplyProgress(context.Background(), hiveclient.ApplyProgressAdvanceRequest{
+	result, err := h.client.AdvanceApplyProgress(h.requestContext(), hiveclient.ApplyProgressAdvanceRequest{
 		Project: request.Snapshot.Project, Change: request.Snapshot.Change, RequestID: request.RequestID,
 		ExpectedGeneration: request.ExpectedGeneration, ExpectedRevision: request.ExpectedRevision, ExpectedDigest: request.ExpectedDigest,
 		LegacySourceSHA256: request.LegacySourceSHA256,
@@ -313,9 +331,24 @@ func configuredProgressStore(root string) progressAdvancer {
 	return sddprogress.Hybrid{Root: root, OpenSpec: open, Hive: hive}
 }
 
-func init() { sddCmd.AddCommand(newSddProgressCommand(configuredProgressStore)) }
+type progressStoreResolver func(context.Context, string, string, string) (progressAdvancer, error)
 
+func init() { sddCmd.AddCommand(newBoundSddProgressCommand(resolveBoundProgressStore)) }
+
+// newSddProgressCommand preserves the narrow store-only seam used by progress
+// unit tests. Product wiring must use newBoundSddProgressCommand so every
+// mutation resolves the request's authoritative binding first.
 func newSddProgressCommand(open func(string) progressAdvancer) *cobra.Command {
+	return newSddProgressCommandWithResolver(func(_ context.Context, root, _, _ string) (progressAdvancer, error) {
+		return open(root), nil
+	})
+}
+
+func newBoundSddProgressCommand(resolve progressStoreResolver) *cobra.Command {
+	return newSddProgressCommandWithResolver(resolve)
+}
+
+func newSddProgressCommandWithResolver(resolve progressStoreResolver) *cobra.Command {
 	var root, requestPath string
 	advance := &cobra.Command{
 		Use:           "advance",
@@ -338,7 +371,11 @@ func newSddProgressCommand(open func(string) progressAdvancer) *cobra.Command {
 			if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 				return errors.New("decode advance request: trailing JSON value")
 			}
-			output, err := runSddProgressAdvance(open(root), root, request)
+			store, err := resolve(cmd.Context(), root, request.Snapshot.Project, request.Snapshot.Change)
+			if err != nil {
+				return err
+			}
+			output, err := runSddProgressAdvance(store, root, request)
 			if encodeErr := json.NewEncoder(cmd.OutOrStdout()).Encode(output); encodeErr != nil && err == nil {
 				return encodeErr
 			}
@@ -367,7 +404,11 @@ func newSddProgressCommand(open func(string) progressAdvancer) *cobra.Command {
 			if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 				return errors.New("decode checkpoint request: trailing JSON value")
 			}
-			output, err := runSddProgressCheckpoint(open(root), request)
+			store, err := resolve(cmd.Context(), root, request.Project, request.Change)
+			if err != nil {
+				return err
+			}
+			output, err := runSddProgressCheckpoint(store, request)
 			if encodeErr := json.NewEncoder(cmd.OutOrStdout()).Encode(output); encodeErr != nil && err == nil {
 				return encodeErr
 			}
@@ -394,7 +435,11 @@ func newSddProgressCommand(open func(string) progressAdvancer) *cobra.Command {
 			if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 				return errors.New("decode continuation upgrade request: trailing JSON value")
 			}
-			output, err := runSddProgressUpgradeContinuation(open(root), request)
+			store, err := resolve(cmd.Context(), root, request.Project, request.Change)
+			if err != nil {
+				return err
+			}
+			output, err := runSddProgressUpgradeContinuation(store, request)
 			if encodeErr := json.NewEncoder(cmd.OutOrStdout()).Encode(output); encodeErr != nil && err == nil {
 				return encodeErr
 			}

@@ -178,23 +178,31 @@ func (h Hybrid) UpgradeLegacy(request AdvanceRequest) (AdvanceResult, bool, erro
 		return AdvanceResult{}, false, ErrBackendDiverged
 	}
 
-	// A durable partial receipt is sufficient recovery authority even though the
-	// already-migrated OpenSpec side no longer presents legacy bytes. Derive the
-	// source binding from the remaining authority only when the caller did not
-	// retain it, then permit only its exact payload to resume the missing side.
+	// A receipt without legacy provenance may belong to an ordinary v2 operation.
+	// Check its payload exactly as received before consulting a legacy authority:
+	// an exact v2 match must continue through Advance's idempotent receipt repair.
+	// A mismatch remains a legacy recovery attempt, whose source binding may be
+	// derived only from the protected remaining authority.
 	if receipt, found, err := h.receipt(request.RequestID); err != nil {
 		return AdvanceResult{}, false, err
 	} else if found {
+		payload, payloadErr := payloadDigestFor(request)
+		if payloadErr != nil {
+			return AdvanceResult{}, false, payloadErr
+		}
 		if !applyprogress.ValidDigest(request.LegacySourceSHA256) {
+			if receipt.Payload == payload {
+				return AdvanceResult{}, false, nil
+			}
 			right, rightErr := hiveAuthority.LegacyAuthority(request)
 			if rightErr != nil || !right.Found {
 				return AdvanceResult{}, false, ErrBackendDiverged
 			}
 			request.LegacySourceSHA256 = applyprogress.LegacySourceSHA256(right.Progress)
-		}
-		payload, payloadErr := payloadDigestFor(request)
-		if payloadErr != nil {
-			return AdvanceResult{}, false, payloadErr
+			payload, payloadErr = payloadDigestFor(request)
+			if payloadErr != nil {
+				return AdvanceResult{}, false, payloadErr
+			}
 		}
 		if receipt.Payload != payload {
 			return AdvanceResult{}, false, ErrRequestConflict
