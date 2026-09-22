@@ -101,6 +101,7 @@ Route: delegated writer. Trigger: multi-file write across complex workflows and 
 - WU-02 writer after correction: `cd jarvis-cli && go vet ./...` — PASS.
 - WU-02 writer after correction: `git diff --check` — PASS.
 - WU-02 parent spot check: `cd jarvis-cli && go test ./internal/hiveui ./internal/terminalui` — PASS (cached).
+- WU-02 work-unit commit: `9f5796c9de8f68b9e75e5da6754aba34e350390a` (`fix(hiveui): bound primary viewport screens`).
 
 ## Next step
-Commit work unit 720-02, run native RDD for its committed range, then branch 720-03 from the approved boundary.
+Record the WU-02 commit evidence, run native RDD for its committed range, then branch 720-03 from the approved boundary.
