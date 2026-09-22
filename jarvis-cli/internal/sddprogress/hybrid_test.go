@@ -586,6 +586,113 @@ func hybridReceiptAcknowledges(h Hybrid, request AdvanceRequest, payload, side s
 	return ack != nil && ack.Generation == request.Snapshot.Generation && ack.Revision == request.Snapshot.Revision && ack.Digest == request.Snapshot.Digest && ack.Payload == payload
 }
 
+// sealHiveFixture uses an independent durable backend behind the Hive seam.
+// It also provides a one-shot transport interruption before Hive publication.
+type sealHiveFixture struct {
+	store     OpenSpec
+	interrupt bool
+}
+
+func (b *sealHiveFixture) Advance(r AdvanceRequest) (AdvanceResult, error) {
+	if b.interrupt {
+		b.interrupt = false
+		return AdvanceResult{}, errInterrupted
+	}
+	return b.store.Advance(r)
+}
+
+func (b *sealHiveFixture) CurrentSnapshot(AdvanceRequest) (*applyprogress.Snapshot, error) {
+	return b.store.Current()
+}
+
+func TestHybridSupersessionAfterBothTaskAuthoritiesChange(t *testing.T) {
+	for _, hiveFirst := range []bool{false, true} {
+		t.Run(map[bool]string{false: "hive interrupted", true: "openspec interrupted"}[hiveFirst], func(t *testing.T) {
+			root, hiveRoot := t.TempDir(), t.TempDir()
+			for _, dir := range []string{root, hiveRoot} {
+				if err := os.WriteFile(filepath.Join(dir, "tasks.md"), []byte("- [ ] 1.1 task\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			open := OpenSpec{Root: root}
+			hive := &sealHiveFixture{store: OpenSpec{Root: hiveRoot}}
+			initial := request(t, "old-request", "apb-00000000000000000000000000000001", 1, 1, "")
+			prepareContinuationSuccessor(t, &initial, "apb-00000000000000000000000000000002")
+			for _, store := range []OpenSpec{open, hive.store} {
+				if _, err := store.Advance(initial); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, dir := range []string{root, hiveRoot} {
+				if err := os.WriteFile(filepath.Join(dir, "tasks.md"), []byte("- [ ] 1.1 changed\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, newManifest, err := applyprogress.TaskManifest([]applyprogress.Task{{ID: "1.1", Text: "changed"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			seal := initial
+			seal.RequestID = "seal-request"
+			seal.ExpectedGeneration, seal.ExpectedRevision, seal.ExpectedDigest = initial.Snapshot.Generation, initial.Snapshot.Revision, initial.Snapshot.Digest
+			seal.Batches = nil
+			seal.Snapshot.Schema = applyprogress.SupersessionSnapshotSchema
+			seal.Snapshot.Revision++
+			seal.Snapshot.PreviousDigest = initial.Snapshot.Digest
+			seal.Snapshot.Status = applyprogress.StatusSuperseded
+			seal.Snapshot.StreamSHA256, seal.Snapshot.NextEntryIndex, seal.Snapshot.NextEntryID = "", 0, ""
+			seal.Snapshot.SealIntent = &applyprogress.SealIntent{SuccessorProject: "jarvis-dev", SuccessorChange: "successor", SuccessorManifestSHA256: newManifest, Actor: "agent", Reason: "replanned", Timestamp: "2026-01-01T00:00:00Z", OperationID: "seal-request"}
+			seal.Snapshot, _, err = applyprogress.SealSnapshot(seal.Snapshot)
+			if err != nil || !applyprogress.IsSupersessionSeal(initial.Snapshot, seal.Snapshot) {
+				t.Fatalf("seal fixture: %v", err)
+			}
+			if hiveFirst {
+				open.BeforeRename = func() error { return errInterrupted }
+			} else {
+				hive.interrupt = true
+			}
+			h := Hybrid{Root: root, OpenSpec: open, Hive: hive, HiveFirst: hiveFirst}
+			if _, err := h.Advance(seal); !errors.Is(err, errInterrupted) {
+				t.Fatalf("interrupted seal: %v", err)
+			}
+			if _, err := h.Current(seal); !errors.Is(err, ErrBackendDiverged) {
+				t.Fatalf("partial heads: %v", err)
+			}
+			open.BeforeRename = nil
+			h.OpenSpec = open
+			if _, err := h.Advance(seal); err != nil {
+				t.Fatalf("recovery: %v", err)
+			}
+			current, err := h.Current(seal)
+			if err != nil || current == nil || current.Digest != seal.Snapshot.Digest {
+				t.Fatalf("equal sealed heads: %v, %v", current, err)
+			}
+			if _, err := h.Advance(seal); err != nil {
+				t.Fatalf("exact retry: %v", err)
+			}
+			evidencePath := filepath.Join(hiveRoot, "apply-evidence", initial.Batches[0].BatchID+".json")
+			evidence, err := os.ReadFile(evidencePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(evidencePath, []byte("corrupt"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.Current(seal); !errors.Is(err, ErrBackendDiverged) {
+				t.Fatalf("corrupt Hive evidence: %v", err)
+			}
+			if err := os.WriteFile(evidencePath, evidence, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			conflict := seal
+			conflict.ExpectedRevision++
+			if _, err := h.Advance(conflict); !errors.Is(err, ErrRequestConflict) {
+				t.Fatalf("different payload: %v", err)
+			}
+		})
+	}
+}
+
 func TestHybridRecordsFailureAndRejectsChangedRequest(t *testing.T) {
 	r := request(t, "hybrid", "apb-00000000000000000000000000000001", 1, 1, "")
 	open, hive := &retryBackend{}, &retryBackend{err: errInterrupted}
