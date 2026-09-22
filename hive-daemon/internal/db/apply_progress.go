@@ -481,8 +481,13 @@ func (d *DB) AdvanceApplyProgress(request ApplyProgressAdvance) (ApplyProgressAd
 	if err := validateImportedApplyProgressEvidence(tx, request, current, snapshotBytes, referenced); err != nil {
 		return ApplyProgressAdvanceResult{}, err
 	}
-	if err := validateApplyProgressAgainstAuthoritativeTasks(tx, request, snapshotBytes, referenced); err != nil {
-		return ApplyProgressAdvanceResult{}, err
+	// A seal preserves the signed predecessor's immutable evidence under its old
+	// manifest. Only that exact shared transition may skip changed Hive tasks.
+	seal := headPresent && applyprogress.IsSupersessionSeal(current.Snapshot, snapshot)
+	if !seal {
+		if err := validateApplyProgressAgainstAuthoritativeTasks(tx, request, snapshotBytes, referenced); err != nil {
+			return ApplyProgressAdvanceResult{}, err
+		}
 	}
 	if headPresent {
 		var validationErr error
