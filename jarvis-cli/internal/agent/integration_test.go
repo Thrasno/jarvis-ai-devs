@@ -1352,6 +1352,9 @@ func TestGeneratedRuntimeAcceptance_RenderedArtifactsProveGuardrails(t *testing.
 			if got := strings.Count(rendered, "# Hive Persistent Memory — Protocol"); got != 1 {
 				t.Fatalf("Hive protocol body count = %d, want 1\n%s", got, rendered)
 			}
+			if got := strings.Count(rendered, "## Repository File Persistence Boundary"); got != 1 {
+				t.Fatalf("repository-file persistence boundary count = %d, want 1\n%s", got, rendered)
+			}
 			projection, err := config.ProjectInstruction(rendered)
 			if err != nil {
 				t.Fatalf("ProjectInstruction: %v", err)

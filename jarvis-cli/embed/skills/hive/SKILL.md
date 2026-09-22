@@ -7,6 +7,10 @@ scope: core
 
 # Hive Memory — Complete Usage Protocol
 
+## Repository File Persistence Guidance
+
+The injected Hive protocol is the canonical repository-file persistence policy. Follow that boundary, including its SDD store-mode rules; do not restate or override it here.
+
 ## Section 1 — MCP Tool Reference
 
 ### mcp__hive__mem_save

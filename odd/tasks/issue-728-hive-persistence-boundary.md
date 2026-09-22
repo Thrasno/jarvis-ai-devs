@@ -35,9 +35,9 @@ Unsolicited files mutate the repository, duplicate Hive persistence, and blur th
 ## Tasks
 
 ### 728-01 — Define and verify the persistence boundary
-- [ ] Add failing contract/rendering tests covering inline findings, Hive-default persistence, explicit file requests, established artifacts, all four SDD store modes, and no filesystem fallback.
-- [ ] Add the canonical protocol boundary and align the Hive skill.
-- [ ] Run focused tests and applicable module verification.
+- [x] Add failing contract/rendering tests covering inline findings, Hive-default persistence, explicit file requests, established artifacts, all four SDD store modes, and no filesystem fallback.
+- [x] Add the canonical protocol boundary and align the Hive skill.
+- [x] Run focused tests and applicable module verification.
 - [ ] Record the work-unit commit and native assessment/review outcome.
 
 Route: delegated writer. Trigger: multi-file write across canonical assets and tests.
@@ -55,9 +55,17 @@ Route: delegated writer. Trigger: multi-file write across canonical assets and t
 - Issue approved on GitHub.
 - Implementation authorized by the user.
 - Tracking document created before source writes.
+- Canonical protocol, skill deferral, and generated-surface contract tests implemented across four authorized files.
+- Writer verification and independent verification passed; native assessment was unavailable and the risk-gated plan required the independent verifier.
 
 ## Verification evidence
-Pending.
+- Writer: `cd jarvis-cli && go test ./internal/agent` — PASS.
+- Writer: `cd jarvis-cli && go test ./...` — PASS.
+- Writer: `cd jarvis-cli && go vet ./...` — PASS.
+- Writer: `git diff --check` — PASS.
+- Independent verifier: all four commands PASS; no blocking findings.
+- Parent spot check: `cd jarvis-cli && go test ./internal/agent` — PASS (cached).
+- Native assessment: unavailable/schema incompatible; treated as high risk and independently verified.
 
 ## Next step
-Delegate task 728-01 in this isolated worktree.
+Create the work-unit commit, record its hash, and prepare the single-PR delivery.
