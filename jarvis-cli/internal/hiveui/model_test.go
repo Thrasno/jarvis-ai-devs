@@ -2145,17 +2145,49 @@ func (f *fakeMemoryLoader) MemoryByID(_ context.Context, id int64) (hiveclient.M
 	return hiveclient.Memory{ID: id, Content: f.content}, nil
 }
 
-// TestWindowSizeMsgUpdatesWidth verifies that Update handles tea.WindowSizeMsg
-// and stores the terminal width in m.width.
-func TestWindowSizeMsgUpdatesWidth(t *testing.T) {
+// TestWindowSizeMsgCapturesDimensions verifies that Update records terminal
+// dimensions and calculates the bounded central content height.
+func TestWindowSizeMsgCapturesDimensions(t *testing.T) {
 	m := NewModelWithSnapshot(Snapshot{})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	got, ok := updated.(Model)
 	if !ok {
 		t.Fatalf("Update returned non-Model type %T", updated)
 	}
-	if got.width != 120 {
-		t.Fatalf("width = %d, want 120", got.width)
+	if got.width != 120 || got.height != 40 {
+		t.Fatalf("dimensions = %dx%d, want 120x40", got.width, got.height)
+	}
+	if got.viewport.height != 38 {
+		t.Fatalf("viewport height = %d, want 38", got.viewport.height)
+	}
+}
+
+func TestWindowSizeMsgClampsViewportOffsetOnResize(t *testing.T) {
+	projects := make([]hiveclient.Project, 10)
+	m := Model{
+		snapshot: Snapshot{Projects: projects},
+		screen:   ScreenProjects,
+		viewport: verticalViewport{height: 8, offset: 9},
+	}
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 5})
+	got := updated.(Model)
+	if got.viewport.height != 3 {
+		t.Fatalf("viewport height after resize = %d, want 3", got.viewport.height)
+	}
+	if got.viewport.offset != 4 {
+		t.Fatalf("viewport offset after resize = %d, want selected project row to remain visible at 4", got.viewport.offset)
+	}
+	assertContains(t, got.View(), "▌   0  0  0")
+
+	updated, _ = got.Update(tea.WindowSizeMsg{Width: 80, Height: 1})
+	got = updated.(Model)
+	if got.viewport.height != 0 || got.viewport.offset != 0 || !got.viewport.bounded {
+		t.Fatalf("tiny terminal viewport = %#v, want known exhausted viewport", got.viewport)
+	}
+	visibleRange := got.viewport.rangeFor(len(projects))
+	if visibleRange.End != 0 || visibleRange.Label() != "0 of 10" || visibleRange.MoreBelow() != "↓ 10 more" {
+		t.Fatalf("tiny terminal range = %#v (%q, %q), want exhausted content metadata", visibleRange, visibleRange.Label(), visibleRange.MoreBelow())
 	}
 }
 
