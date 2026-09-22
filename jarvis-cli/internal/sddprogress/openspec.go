@@ -129,6 +129,24 @@ func (s OpenSpec) advance(request AdvanceRequest, legacy []byte) (AdvanceResult,
 	if err != nil {
 		return AdvanceResult{}, err
 	}
+	var predecessorStage *immutableStage
+	if currentErr == nil && current != nil && applyprogress.IsSupersessionSeal(*current, snapshot) {
+		if _, err := s.referencedBatches(*current); err != nil {
+			return AdvanceResult{}, err
+		}
+		receipts, err := s.committedReceiptSnapshots()
+		if err != nil {
+			return AdvanceResult{}, err
+		}
+		if len(receipts[current.Digest]) == 0 {
+			stage, err := s.predecessorAuthorityStage(*current)
+			if err != nil {
+				return AdvanceResult{}, err
+			}
+			predecessorStage = &stage
+			stages = append(stages, stage)
+		}
+	}
 	if err := s.validateStaging(stages); err != nil {
 		return AdvanceResult{}, err
 	}
@@ -221,6 +239,11 @@ func (s OpenSpec) advance(request AdvanceRequest, legacy []byte) (AdvanceResult,
 	if err := s.ensureReferencedBatches(snapshot); err != nil {
 		return AdvanceResult{}, err
 	}
+	if predecessorStage != nil {
+		if err := writeImmutable(predecessorStage.path, predecessorStage.data, s.syncDir, s.BeforeImmutablePublish); err != nil {
+			return AdvanceResult{}, err
+		}
+	}
 	receiptData, err := json.Marshal(immutableReceipt{Payload: payload, Snapshot: snapshot})
 	if err != nil {
 		return AdvanceResult{}, err
@@ -242,6 +265,29 @@ func (s OpenSpec) advance(request AdvanceRequest, legacy []byte) (AdvanceResult,
 // ValidateRequestManifest binds every OpenSpec publication to the frozen
 // authoritative tasks.md parser result before it creates evidence, receipts, or a head.
 func (s OpenSpec) ValidateRequestManifest(request AdvanceRequest) error {
+	if request.Snapshot.Status == applyprogress.StatusSuperseded {
+		previous, _, err := s.current()
+		if err == nil && previous != nil && applyprogress.IsSupersessionSeal(*previous, request.Snapshot) {
+			_, err = s.referencedBatches(*previous)
+			return err
+		}
+		// An exact committed retry has no live predecessor head. Its signed
+		// predecessor is retained by the immutable receipt lineage.
+		if err == nil && previous != nil && previous.Digest == request.Snapshot.Digest {
+			receipts, receiptErr := s.committedReceiptSnapshots()
+			if receiptErr != nil {
+				return receiptErr
+			}
+			parents := receipts[previous.PreviousDigest]
+			if len(parents) != 0 {
+				if len(parents) != 1 || !applyprogress.IsSupersessionSeal(parents[0].Snapshot, *previous) {
+					return ErrConflict
+				}
+				_, err = s.referencedBatches(parents[0].Snapshot)
+				return err
+			}
+		}
+	}
 	manifest, strictErr := s.authoritativeTaskManifest()
 	if strictErr == nil && request.Snapshot.TaskManifestSHA256 == manifest {
 		return nil
@@ -440,6 +486,14 @@ func (s OpenSpec) authoritativeTasksForManifest(manifest string) ([]applyprogres
 // topology that Hive requires before an initial or successor OpenSpec head can
 // be published.
 func (s OpenSpec) validateCandidateProgress(data []byte, snapshot applyprogress.Snapshot, batches map[string]applyprogress.Batch) error {
+	if snapshot.Status == applyprogress.StatusSuperseded {
+		previous, _, err := s.current()
+		if err != nil || previous == nil || !applyprogress.IsSupersessionSeal(*previous, snapshot) {
+			return ErrConflict
+		}
+		_, err = s.referencedBatches(*previous)
+		return err
+	}
 	tasks, err := s.authoritativeTasksForManifest(snapshot.TaskManifestSHA256)
 	if err != nil {
 		return err
@@ -460,6 +514,21 @@ func (s OpenSpec) validateCandidateProgress(data []byte, snapshot applyprogress.
 }
 
 func (s OpenSpec) validateCurrentProgress(snapshot applyprogress.Snapshot, data []byte) error {
+	if snapshot.Status == applyprogress.StatusSuperseded {
+		receipts, err := s.committedReceiptSnapshots()
+		if err != nil {
+			return err
+		}
+		parents := receipts[snapshot.PreviousDigest]
+		if len(parents) != 0 {
+			if len(parents) != 1 || !applyprogress.IsSupersessionSeal(parents[0].Snapshot, snapshot) {
+				return ErrConflict
+			}
+			_, err = s.referencedBatches(parents[0].Snapshot)
+			return err
+		}
+		return ErrConflict
+	}
 	tasks, err := s.authoritativeTasksForManifest(snapshot.TaskManifestSHA256)
 	if err != nil {
 		return err
@@ -567,7 +636,7 @@ func (s OpenSpec) committedReceiptSnapshots() (map[string][]immutableReceipt, er
 	}
 	receipts := make(map[string][]immutableReceipt, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if entry.IsDir() || strings.HasPrefix(entry.Name(), ".apply-progress-stage-") {
 			continue
 		}
 		data, err := readRegularFile(filepath.Join(dir, entry.Name()))
@@ -1249,6 +1318,16 @@ func (s OpenSpec) validateReceiptLineage(head *applyprogress.Snapshot, requireRe
 type immutableStage struct {
 	path string
 	data []byte
+}
+
+// predecessorAuthorityStage preserves the actual published head before replacing
+// it with a seal. Its content and destination are determined only by that head.
+func (s OpenSpec) predecessorAuthorityStage(head applyprogress.Snapshot) (immutableStage, error) {
+	data, err := json.Marshal(immutableReceipt{Payload: head.Digest, Snapshot: head})
+	if err != nil {
+		return immutableStage{}, err
+	}
+	return immutableStage{path: filepath.Join(s.Root, ".apply-progress-receipts", "supersession-predecessor-"+head.Digest+".json"), data: data}, nil
 }
 
 // expectedStaging describes every content-bound stage that this exact request may

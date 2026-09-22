@@ -28,7 +28,7 @@ The task manifest is stream identity. A mismatch currently blocks progress but o
 
 ## Actionable checklist
 
-- [ ] **ODD-724-01 — Versioned seal and successor model.** Shared snapshot schema compatibility, strict old-v2 decoder/digest preservation, terminal `superseded`, signed seal intent and `supersedes`, shared seal-shape predicate, `ValidateSuccessor` transition and negative cases. Focused `hivederive` package RED/GREEN and vet; include regressions for legacy explicit-zero and continuation. Candidate work-unit commit: `feat(sdd): model change supersession in protected progress`.
+- [x] **ODD-724-01 — Versioned seal and successor model.** Shared snapshot schema compatibility, strict old-v2 decoder/digest preservation, terminal `superseded`, signed seal intent and `supersedes`, shared seal-shape predicate, `ValidateSuccessor` transition and negative cases. Focused `hivederive` package RED/GREEN and vet; include regressions for legacy explicit-zero and continuation. Candidate work-unit commit: `feat(sdd): model change supersession in protected progress`.
 - [ ] **ODD-724-02 — OpenSpec exact-seal publication.** Branch manifest/candidate/current validation only on shared seal shape, validating signed previous head and immutable referenced batches while bypassing current tasks solely for seal. Preserve receipt replay and ordinary strictness; cover changed tasks, continuation-bound head, concurrent writer, corrupt evidence and retries. Focused CLI `internal/sddprogress` RED/GREEN. Commit with tests.
 - [ ] **ODD-724-03 — Hive and hybrid exact-seal publication.** Daemon authoritative-task guard and CLI checkpoint guard use shared seal form; retain per-change CAS and receipt identity, no early success on hybrid partial publication. Test authoritative new tasks, source corruption, divergence, interrupted side and exact replay in daemon/CLI. Commit with tests.
 - [ ] **ODD-724-04 — Fresh successor and cross-change status.** Resolve new unoccupied name; create genesis 1/1 from signed seal intent, validate frozen new tasks, refuse adoption, verify signed pointer and old seal across changes, expose derived pending/mismatch states and exact retry routing. Test interruption between seal and creation, payload conflict and same-project identity. Commit with tests.
@@ -42,12 +42,13 @@ The bilingual approved issue body is normative. In particular: old immutable evi
 
 - [x] Read-only code/issue research and line forecast completed; issue approved by maintainer.
 - [x] Feature branch created from clean `master`; delivery chain strategy chosen explicitly.
-- [ ] ODD-724-01 in progress after this file and its Engram mirror are read back.
+- [x] ODD-724-01 complete: snapshot v3 model, exact seal predicate, signed intent and pointer, historical v2 compatibility. Delegated writer observed RED then GREEN; independent verifier found and corrected a generation-zero historical-root seal defect; subsequent uncached focused tests, vet and diff checks passed. Work-unit commit `714b9ee4008ee02e75b54343ff279829f9eb6795` (408 authored diff lines, including this plan's initial version). Native review lineage `review-becc0cb1d29ffd85` approved and acknowledged with burned authority.
+- [ ] ODD-724-02 in progress next.
 
 ## Verification evidence and work-unit commits
 
-None yet. Tests, native risk assessment and commits are pending.
+WU-01: `cd hivederive && go test -count=1 ./applyprogress` PASS; `cd hivederive && go vet ./applyprogress` PASS; `git diff --check` PASS; independent read-only verifier PASS after correcting its first FAIL. Native ASSESS over committed range returned `unassessable` (`schema-incompatible`); committed-range inspect/start/reviewer completed and acknowledgement burned as `review-becc0cb1d29ffd85`. Work-unit commit: `714b9ee4008ee02e75b54343ff279829f9eb6795` (368 additions, 40 deletions). Broader module tests and remaining work units pending.
 
 ## Next step
 
-Read back this document and its full Engram mirror, project the checklist to the visible todo list, then dispatch ODD-724-01 with narrow edit surfaces and strict TDD.
+Dispatch ODD-724-02 for OpenSpec exact-seal publication under strict TDD, after synchronizing this file, Engram mirror and visible todo list. Keep WU-01 commit unchanged; record later evidence in separate work-unit/documentation commits.

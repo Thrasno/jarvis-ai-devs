@@ -14,6 +14,141 @@ import (
 
 var errInterrupted = errors.New("interrupted before rename")
 
+func TestOpenSpecSupersessionAfterTaskEdit(t *testing.T) {
+	for _, mode := range []string{"receipt-backed", "historical-receiptless", "historical-publish-interrupted"} {
+		t.Run(mode, func(t *testing.T) {
+			receiptPresent := mode == "receipt-backed"
+			root := t.TempDir()
+			tasks := filepath.Join(root, "tasks.md")
+			if err := os.WriteFile(tasks, []byte("- [ ] 1.1 task\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			store := OpenSpec{Root: root}
+			initial := request(t, "old-request", "apb-00000000000000000000000000000001", 1, 1, "")
+			prepareContinuationSuccessor(t, &initial, "apb-00000000000000000000000000000002")
+			if _, err := store.Advance(initial); err != nil {
+				t.Fatal(err)
+			}
+			oldEvidence, err := os.ReadFile(filepath.Join(root, "apply-evidence", initial.Batches[0].BatchID+".json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !receiptPresent {
+				if err := os.Remove(filepath.Join(root, ".apply-progress-receipts", initial.RequestID+".json")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(tasks, []byte("- [ ] 1.1 changed\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, newManifest, err := applyprogress.TaskManifest([]applyprogress.Task{{ID: "1.1", Text: "changed"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			seal := initial
+			seal.RequestID = "seal-request"
+			seal.ExpectedGeneration, seal.ExpectedRevision, seal.ExpectedDigest = initial.Snapshot.Generation, initial.Snapshot.Revision, initial.Snapshot.Digest
+			seal.Batches = nil
+			seal.Snapshot.Schema = applyprogress.SupersessionSnapshotSchema
+			seal.Snapshot.Revision++
+			seal.Snapshot.PreviousDigest = initial.Snapshot.Digest
+			seal.Snapshot.Status = applyprogress.StatusSuperseded
+			seal.Snapshot.StreamSHA256, seal.Snapshot.NextEntryIndex, seal.Snapshot.NextEntryID = "", 0, ""
+			seal.Snapshot.SealIntent = &applyprogress.SealIntent{SuccessorProject: "jarvis-dev", SuccessorChange: "successor", SuccessorManifestSHA256: newManifest, Actor: "agent", Reason: "replanned", Timestamp: "2026-01-01T00:00:00Z", OperationID: "seal-request"}
+			seal.Snapshot, _, err = applyprogress.SealSnapshot(seal.Snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !applyprogress.IsSupersessionSeal(initial.Snapshot, seal.Snapshot) {
+				t.Fatal("invalid seal fixture")
+			}
+			ordinary := seal
+			ordinary.Snapshot = initial.Snapshot
+			ordinary.Snapshot.Revision++
+			ordinary.Snapshot.PreviousDigest = initial.Snapshot.Digest
+			ordinary.Snapshot, _, err = applyprogress.SealSnapshot(ordinary.Snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Advance(ordinary); err == nil {
+				t.Fatal("ordinary advance after edit accepted")
+			}
+			if !receiptPresent {
+				interrupted := store
+				if mode == "historical-receiptless" {
+					interrupted.BeforeImmutablePublish = func() error { return errInterrupted }
+				} else {
+					interrupted.BeforeRename = func() error { return errInterrupted }
+				}
+				if _, err := interrupted.Advance(seal); !errors.Is(err, errInterrupted) {
+					t.Fatalf("interrupted publication: %v", err)
+				}
+				if _, err := store.Current(); !errors.Is(err, ErrPublicationInterrupted) {
+					t.Fatalf("interrupted stage not observable: %v", err)
+				}
+			}
+			if _, err := store.Advance(seal); err != nil {
+				t.Fatalf("seal after edit: %v", err)
+			}
+			if current, err := store.Current(); err != nil || current == nil || current.Digest != seal.Snapshot.Digest {
+				t.Fatalf("sealed current: %v, %v", current, err)
+			}
+			if _, err := store.Advance(seal); err != nil {
+				t.Fatalf("exact retry: %v", err)
+			}
+			if !receiptPresent {
+				seed := filepath.Join(root, ".apply-progress-receipts", "supersession-predecessor-"+initial.Snapshot.Digest+".json")
+				bytes, err := os.ReadFile(seed)
+				if err != nil {
+					t.Fatalf("missing predecessor authority: %v", err)
+				}
+				if err := os.Remove(seed); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.Current(); err == nil {
+					t.Fatal("accepted forged seal without predecessor authority")
+				}
+				if err := os.WriteFile(seed, bytes, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.Current(); err != nil {
+					t.Fatalf("restored authority: %v", err)
+				}
+			}
+			if evidence, err := os.ReadFile(filepath.Join(root, "apply-evidence", initial.Batches[0].BatchID+".json")); err != nil || !bytes.Equal(evidence, oldEvidence) {
+				t.Fatalf("old evidence changed: %v", err)
+			}
+			competing := seal
+			competing.RequestID = "competing-request"
+			if _, err := store.Advance(competing); err == nil {
+				t.Fatal("concurrent writer accepted")
+			}
+			for _, content := range []string{"missing", "corrupt"} {
+				t.Run(content, func(t *testing.T) {
+					path := filepath.Join(root, "apply-evidence", initial.Batches[0].BatchID+".json")
+					if content == "missing" {
+						if err := os.Rename(path, path+".held"); err != nil {
+							t.Fatal(err)
+						}
+						defer os.Rename(path+".held", path)
+					} else {
+						if err := os.WriteFile(path, []byte("corrupt"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+						defer os.WriteFile(path, oldEvidence, 0o600)
+					}
+					if _, err := store.Current(); err == nil {
+						t.Fatal("corrupt historical evidence accepted by Current")
+					}
+					if _, err := store.Advance(seal); err == nil {
+						t.Fatal("corrupt historical evidence accepted by retry")
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestOpenSpecAdvanceRejectsTamperedBatchBeforeWriting(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "tasks.md"), []byte("- [ ] 1.1 one\n- [ ] 1.2 two\n- [ ] 1.3 three\n"), 0o600); err != nil {
