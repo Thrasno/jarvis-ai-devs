@@ -8,8 +8,9 @@ import (
 )
 
 const (
-	SnapshotSchema = "jarvis.sdd-apply-progress/v2"
-	EvidenceSchema = "jarvis.sdd-apply-evidence/v2"
+	SnapshotSchema             = "jarvis.sdd-apply-progress/v2"
+	SupersessionSnapshotSchema = "jarvis.sdd-apply-progress/v3"
+	EvidenceSchema             = "jarvis.sdd-apply-evidence/v2"
 	// MaxDocumentRunes leaves transport and enclosing-document headroom while bounding each canonical protocol document.
 	MaxDocumentRunes = 40000
 	// SnapshotCapacityWarningPercent and SnapshotCapacityWarningRemainingRunes
@@ -51,8 +52,9 @@ func ValidDigest(value string) bool { return validDigest(value) }
 type Status string
 
 const (
-	StatusPartial  Status = "partial"
-	StatusComplete Status = "complete"
+	StatusPartial    Status = "partial"
+	StatusComplete   Status = "complete"
+	StatusSuperseded Status = "superseded"
 )
 
 type EvidenceKind string
@@ -108,6 +110,29 @@ type Coverage struct {
 	EntryID string `json:"entry_id"`
 }
 
+// SealIntent freezes the destination and retry identity in a terminal predecessor head.
+type SealIntent struct {
+	SuccessorProject        string `json:"successor_project"`
+	SuccessorChange         string `json:"successor_change"`
+	SuccessorManifestSHA256 string `json:"successor_manifest_sha256"`
+	Actor                   string `json:"actor"`
+	Reason                  string `json:"reason"`
+	Timestamp               string `json:"timestamp"`
+	OperationID             string `json:"operation_id"`
+}
+
+// SupersedesPointer authenticates the predecessor seal from a fresh successor.
+type SupersedesPointer struct {
+	Project                string `json:"project"`
+	Change                 string `json:"change"`
+	SealDigest             string `json:"seal_digest"`
+	OriginalManifestSHA256 string `json:"original_manifest_sha256"`
+	Actor                  string `json:"actor"`
+	Reason                 string `json:"reason"`
+	OperationID            string `json:"operation_id"`
+	Timestamp              string `json:"timestamp"`
+}
+
 type Snapshot struct {
 	Schema             string     `json:"schema"`
 	Project            string     `json:"project"`
@@ -121,10 +146,12 @@ type Snapshot struct {
 	Batches            []BatchRef `json:"batches"`
 	// StreamSHA256 and the next-entry cursor bind a partial snapshot to its complete evidence stream.
 	// Snapshot JSON serializes this as an atomic group; NextEntryIndex may be zero.
-	StreamSHA256   string `json:"-"`
-	NextEntryIndex int    `json:"-"`
-	NextEntryID    string `json:"-"`
-	Digest         string `json:"digest"`
+	StreamSHA256   string             `json:"-"`
+	NextEntryIndex int                `json:"-"`
+	NextEntryID    string             `json:"-"`
+	SealIntent     *SealIntent        `json:"-"`
+	Supersedes     *SupersedesPointer `json:"-"`
+	Digest         string             `json:"digest"`
 
 	// historicalZeroContinuation is set only by the canonical decoder for the
 	// pre-continuation v2 wire shape, which explicitly serialized all three zero

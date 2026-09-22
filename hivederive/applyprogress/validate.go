@@ -189,8 +189,17 @@ func ValidateSuccessor(previous, successor Snapshot, batches map[string]Batch) e
 	if previous.Project != successor.Project || previous.Change != successor.Change || previous.Revision == ^uint64(0) || successor.Revision != previous.Revision+1 || successor.PreviousDigest != previous.Digest || (!sameEpochTransition && !legacyEpochTransition) {
 		return invalid(CodeInvalidBase, "coordinates")
 	}
-	if previous.Status == StatusComplete || previous.TaskManifestSHA256 != successor.TaskManifestSHA256 {
+	if previous.Status == StatusComplete || previous.Status == StatusSuperseded || previous.TaskManifestSHA256 != successor.TaskManifestSHA256 {
 		return invalid(CodeInvalidBase, "immutable identity")
+	}
+	if successor.Status == StatusSuperseded {
+		if !IsSupersessionSeal(previous, successor) {
+			return invalid(CodeInvalidBase, "supersession seal")
+		}
+		return nil
+	}
+	if previous.Schema != successor.Schema || previous.SealIntent != nil || successor.SealIntent != nil || !equalSupersedes(previous.Supersedes, successor.Supersedes) {
+		return invalid(CodeInvalidBase, "snapshot version or link")
 	}
 	if len(successor.Batches) < len(previous.Batches) || !slices.Equal(successor.Batches[:len(previous.Batches)], previous.Batches) {
 		return invalid(CodeInvalidBase, "batches")
@@ -275,11 +284,33 @@ func ValidateSuccessor(previous, successor Snapshot, batches map[string]Batch) e
 	return nil
 }
 
+// IsSupersessionSeal reports the sole allowed terminal transition without task lookup.
+// It compares signed heads and requires identical immutable evidence and coverage.
+func IsSupersessionSeal(previous, candidate Snapshot) bool {
+	return VerifySnapshot(previous) == nil && VerifySnapshot(candidate) == nil &&
+		previous.Status == StatusPartial && candidate.Status == StatusSuperseded &&
+		(previous.Schema == SnapshotSchema || previous.Schema == SupersessionSnapshotSchema) &&
+		candidate.Schema == SupersessionSnapshotSchema && candidate.SealIntent != nil &&
+		previous.Project == candidate.Project && previous.Change == candidate.Change &&
+		previous.Generation != 0 && previous.Generation == candidate.Generation && previous.Revision != ^uint64(0) &&
+		candidate.Revision == previous.Revision+1 && candidate.PreviousDigest == previous.Digest &&
+		candidate.TaskManifestSHA256 == previous.TaskManifestSHA256 &&
+		slices.Equal(previous.Batches, candidate.Batches) && slices.Equal(previous.Coverage, candidate.Coverage) &&
+		!candidate.hasContinuation() && equalSupersedes(previous.Supersedes, candidate.Supersedes)
+}
+
+func equalSupersedes(a, b *SupersedesPointer) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
 // ValidateHistoricalZeroRootUpgrade validates the one migration transition from a
 // decoder-confirmed explicit-zero v2 root. It preserves the authenticated root
 // bytes and permits only the continuation binding validated by ValidateSuccessor.
 func ValidateHistoricalZeroRootUpgrade(previous, successor Snapshot, batches map[string]Batch) error {
-	if !previous.RequiresContinuationUpgrade() || previous.Generation != 0 || previous.Revision != 0 || previous.PreviousDigest != "" {
+	if !previous.RequiresContinuationUpgrade() || previous.Generation != 0 || previous.Revision != 0 || previous.PreviousDigest != "" || successor.Status == StatusSuperseded {
 		return invalid(CodeInvalidBase, "historical explicit-zero root")
 	}
 	return ValidateSuccessor(previous, successor, batches)
