@@ -43,7 +43,7 @@ Projects, memories, timeline, warnings, backups, API health, purge, batch merge,
 - [x] Store terminal height and implement the project-owned vertical range/viewport foundation.
 - [x] Preserve pre-resize rendering and prevent negative dimensions or panics.
 - [x] Run focused tests and applicable module verification.
-- [ ] Record the work-unit commit and native assessment/review outcome.
+- [x] Record the work-unit commit and native assessment/review outcome.
 
 Route: delegated writer. Trigger: multi-file write across Hive TUI/layout implementation and tests.
 
@@ -92,6 +92,7 @@ Route: delegated writer. Trigger: multi-file write across complex workflows and 
 - Independent verifier after correction: all four commands PASS; prior medium finding resolved.
 - Parent spot check: `cd jarvis-cli && go test ./internal/hiveui ./internal/terminalui` — PASS (cached).
 - Native assessment: unavailable/empty output; treated as high risk and independently verified.
+- Work-unit commit: `1fb12fb892c8d502c7d71074bee505671ec44ef4` (`fix(hiveui): add vertical viewport foundation`).
 
 ## Next step
-Create the 720-01 work-unit commit, record its hash, and branch 720-02 from it.
+Branch 720-02 from the completed foundation and migrate the primary P0 views.
