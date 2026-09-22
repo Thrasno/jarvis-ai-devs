@@ -3,6 +3,7 @@
 package sddbinding
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,6 +13,68 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"golang.org/x/sys/unix"
 )
+
+func TestChangeRootLockContextRejectsCanceledContext(t *testing.T) {
+	root, err := openChangeRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if unlock, err := root.lockContext(ctx); !errors.Is(err, context.Canceled) || unlock != nil {
+		t.Fatalf("lockContext() = unlockPresent=%t, err=%v; want false, context.Canceled", unlock != nil, err)
+	}
+}
+
+func TestChangeRootLockContextExpiresDuringPhysicalContention(t *testing.T) {
+	changeDir := t.TempDir()
+	holder, err := openChangeRoot(changeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	waiter, err := openChangeRoot(changeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer waiter.Close()
+
+	releaseHolder, err := holder.lock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseHolder()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	unlock, err := waiter.lockContext(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) || unlock != nil {
+		t.Fatalf("lockContext() = unlockPresent=%t, err=%v; want false, context.DeadlineExceeded", unlock != nil, err)
+	}
+}
+
+func TestChangeRootLockContextUnlockIsIdempotent(t *testing.T) {
+	root, err := openChangeRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+
+	unlock, err := root.lockContext(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	unlock()
+
+	unlock, err = root.lockContext(context.Background())
+	if err != nil {
+		t.Fatalf("lockContext() after repeated unlock = %v", err)
+	}
+	unlock()
+}
 
 func TestReadOpenSpecRejectsFIFOWithoutBlocking(t *testing.T) {
 	changeDir := t.TempDir()

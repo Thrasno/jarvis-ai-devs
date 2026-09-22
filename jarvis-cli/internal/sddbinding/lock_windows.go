@@ -3,6 +3,7 @@
 package sddbinding
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -14,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -75,6 +77,15 @@ func rootMutexName(root *os.Root) (string, error) {
 
 func (r *changeRoot) Close() error { return r.root.Close() }
 
+func (r *changeRoot) samePhysicalDirectory(other *changeRoot) (bool, error) {
+	return r.mutexName == other.mutexName, nil
+}
+
+const (
+	lockContextInitialBackoff = 10 * time.Millisecond
+	lockContextMaximumBackoff = 100 * time.Millisecond
+)
+
 func (r *changeRoot) lock() (func(), error) {
 	name, err := windows.UTF16PtrFromString(r.mutexName)
 	if err != nil {
@@ -110,6 +121,84 @@ func (r *changeRoot) lock() (func(), error) {
 			runtime.UnlockOSThread()
 		})
 	}, nil
+}
+
+func (r *changeRoot) lockContext(ctx context.Context) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	name, err := windows.UTF16PtrFromString(r.mutexName)
+	if err != nil {
+		return nil, fmt.Errorf("lock OpenSpec binding directory: %w", err)
+	}
+	handle, createErr := windows.CreateMutex(nil, false, name)
+	if createErr != nil && !errors.Is(createErr, windows.ERROR_ALREADY_EXISTS) {
+		if handle != 0 {
+			_ = windows.CloseHandle(handle)
+		}
+		return nil, fmt.Errorf("lock OpenSpec binding directory: %w", createErr)
+	}
+	if handle == 0 {
+		return nil, errors.New("lock OpenSpec binding directory: invalid mutex handle")
+	}
+
+	runtime.LockOSThread()
+	cleanup := func() {
+		_ = windows.CloseHandle(handle)
+		runtime.UnlockOSThread()
+	}
+	if err := ctx.Err(); err != nil {
+		cleanup()
+		return nil, err
+	}
+
+	backoff := lockContextInitialBackoff
+	for {
+		result, waitErr := windows.WaitForSingleObject(handle, 0)
+		if waitErr != nil {
+			cleanup()
+			return nil, fmt.Errorf("lock OpenSpec binding directory: %w", waitErr)
+		}
+		switch result {
+		case windows.WAIT_OBJECT_0, windows.WAIT_ABANDONED:
+			if err := ctx.Err(); err != nil {
+				_ = windows.ReleaseMutex(handle)
+				cleanup()
+				return nil, err
+			}
+			var once sync.Once
+			return func() {
+				once.Do(func() {
+					_ = windows.ReleaseMutex(handle)
+					cleanup()
+				})
+			}, nil
+		case uint32(windows.WAIT_TIMEOUT):
+			timer := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				cleanup()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+			if backoff < lockContextMaximumBackoff {
+				backoff *= 2
+				if backoff > lockContextMaximumBackoff {
+					backoff = lockContextMaximumBackoff
+				}
+			}
+		default:
+			cleanup()
+			return nil, errors.New("lock OpenSpec binding directory: unexpected wait result")
+		}
+	}
 }
 
 func (r *changeRoot) readState() (stateRecord, error) {
