@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -30,6 +31,295 @@ func canonicalSddTestWorkspace(t *testing.T) string {
 		t.Fatalf("canonicalize test workspace: %v", err)
 	}
 	return workspace
+}
+
+func crossCommandAdvanceRequest(t *testing.T, project, change, requestID string) sddprogress.AdvanceRequest {
+	t.Helper()
+	request := progressRequest(t, requestID, "apb-00000000000000000000000000000723", 1, "")
+	request.Snapshot.Project, request.Snapshot.Change = project, change
+	request.Batches[0].Project, request.Batches[0].Change = project, change
+	batch, _, err := applyprogress.SealBatch(request.Batches[0])
+	if err != nil {
+		t.Fatalf("seal cross-command batch: %v", err)
+	}
+	request.Batches[0] = batch
+	request.Snapshot.Batches[0].SHA256 = batch.SHA256
+	snapshot, _, err := applyprogress.SealSnapshot(request.Snapshot)
+	if err != nil {
+		t.Fatalf("seal cross-command snapshot: %v", err)
+	}
+	request.Snapshot = snapshot
+	return request
+}
+
+func requireCrossCommandAdvanceRequest(t *testing.T, r *http.Request, project, change string, request sddprogress.AdvanceRequest) {
+	t.Helper()
+	expected, err := json.Marshal(hiveclient.ApplyProgressAdvanceRequest{
+		Project: request.Snapshot.Project, Change: request.Snapshot.Change, RequestID: request.RequestID,
+		ExpectedGeneration: request.ExpectedGeneration, ExpectedRevision: request.ExpectedRevision, ExpectedDigest: request.ExpectedDigest,
+		LegacySourceSHA256: request.LegacySourceSHA256, Snapshot: request.Snapshot, Batches: request.Batches,
+	})
+	if err != nil {
+		t.Fatalf("marshal expected Hive progress request: %v", err)
+	}
+	requireSDDRequest(t, r, http.MethodPost, "/sdd/changes/"+change+"/apply-progress/advance", "", string(expected))
+	if request.Snapshot.Project != project || request.Snapshot.Change != change {
+		t.Fatalf("test request coordinates = %s/%s, want %s/%s", request.Snapshot.Project, request.Snapshot.Change, project, change)
+	}
+}
+
+func crossCommandHybridReceiptPayload(t *testing.T, root, requestID string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, ".apply-progress-hybrid-receipts", requestID+".json"))
+	if err != nil {
+		t.Fatalf("read durable hybrid receipt: %v", err)
+	}
+	var receipt struct {
+		Payload string `json:"payload"`
+	}
+	if err := json.Unmarshal(data, &receipt); err != nil || receipt.Payload == "" {
+		t.Fatalf("decode durable hybrid receipt = %s, err=%v", data, err)
+	}
+	return receipt.Payload
+}
+
+func crossCommandCommittedHiveResult(t *testing.T, root string, request sddprogress.AdvanceRequest) hiveclient.ApplyProgressResult {
+	t.Helper()
+	return hiveclient.ApplyProgressResult{
+		Outcome: "committed",
+		State: hiveclient.ApplyProgressState{
+			Generation: request.Snapshot.Generation,
+			Revision:   request.Snapshot.Revision,
+			Digest:     request.Snapshot.Digest,
+			Snapshot:   request.Snapshot,
+			Batches:    request.Batches,
+		},
+		Receipt: hiveclient.ApplyProgressReceipt{
+			RequestID:     request.RequestID,
+			PayloadSHA256: crossCommandHybridReceiptPayload(t, root, request.RequestID),
+		},
+	}
+}
+
+func crossCommandMismatchedPayload(payload string) string {
+	if strings.HasPrefix(payload, "0") {
+		return "1" + payload[1:]
+	}
+	return "0" + payload[1:]
+}
+
+func TestCrossCommandBoundSddProgressSurvivesEnvironmentRestart(t *testing.T) {
+	const (
+		project = "jarvis-dev"
+		change  = "issue-723"
+	)
+
+	for _, tt := range []struct {
+		name                string
+		initialMode         string
+		changedMode         string
+		wantFirstErr        bool
+		wantSecondErr       bool
+		wantBinding         string
+		wantAdopts          int
+		wantPosts           int
+		wantArtifacts       int
+		wantProgress        int
+		hivePayloadMismatch bool
+	}{
+		{name: "Hive", initialMode: "hive", changedMode: "invalid", wantBinding: "hive", wantAdopts: 1, wantPosts: 1, wantArtifacts: 1, wantProgress: 1},
+		{name: "OpenSpec", initialMode: "openspec", changedMode: "hive", wantBinding: "openspec", wantAdopts: 0, wantPosts: 0, wantArtifacts: 1, wantProgress: 1},
+		{name: "Hybrid receipt recovery", initialMode: "hybrid", changedMode: "invalid", wantFirstErr: true, wantBinding: "hybrid", wantAdopts: 1, wantPosts: 2, wantArtifacts: 2, wantProgress: 1},
+		{name: "Hybrid blocks mismatched Hive acknowledgement", initialMode: "hybrid", changedMode: "invalid", wantFirstErr: true, wantSecondErr: true, wantBinding: "hybrid", wantAdopts: 1, wantPosts: 2, wantArtifacts: 2, wantProgress: 1, hivePayloadMismatch: true},
+		{name: "None", initialMode: "none", changedMode: "invalid", wantFirstErr: true, wantSecondErr: true, wantBinding: "", wantAdopts: 0, wantPosts: 0, wantArtifacts: 2, wantProgress: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			workspace := canonicalSddTestWorkspace(t)
+			root := filepath.Join(workspace, "openspec", "changes", change)
+			if err := os.MkdirAll(root, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "tasks.md"), []byte("- [ ] 1.1 task\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(workspace)
+
+			request := crossCommandAdvanceRequest(t, project, change, "cross-command-"+strings.ToLower(strings.ReplaceAll(tt.name, " ", "-")))
+			requestData, err := json.Marshal(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			requestPath := filepath.Join(workspace, "request.json")
+			if err := os.WriteFile(requestPath, requestData, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			var backend struct {
+				binding      string
+				adoptions    int
+				advancePosts int
+				artifacts    int
+				progress     int
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/sdd/changes/" + change + "/store-binding":
+					requireSDDRequest(t, r, http.MethodGet, r.URL.Path, "project="+project, "")
+					if backend.binding == "" {
+						w.WriteHeader(http.StatusNotFound)
+						_, _ = fmt.Fprint(w, `{"code":"not_found"}`)
+						return
+					}
+					_, _ = fmt.Fprintf(w, `{"binding":{"project":%q,"change":%q,"schema_version":"1","mode":%q,"provenance":"initial:environment:JARVIS_SDD_STORE_MODE","created_at":"2026-08-01T10:00:00Z"}}`, project, change, backend.binding)
+				case "/sdd/changes/" + change + "/store-binding/adopt":
+					requireSDDRequest(t, r, http.MethodPost, r.URL.Path, "", fmt.Sprintf(`{"project":%q,"mode":%q,"provenance":"initial:environment:JARVIS_SDD_STORE_MODE"}`, project, tt.initialMode))
+					if backend.binding != "" || tt.wantBinding == "openspec" || tt.wantBinding == "" {
+						t.Fatalf("unexpected Hive binding adoption for %s", tt.name)
+					}
+					backend.binding = tt.wantBinding
+					backend.adoptions++
+					w.WriteHeader(http.StatusCreated)
+					_, _ = fmt.Fprintf(w, `{"binding":{"project":%q,"change":%q,"schema_version":"1","mode":%q,"provenance":"initial:environment:JARVIS_SDD_STORE_MODE","created_at":"2026-08-01T10:00:00Z"},"created":true}`, project, change, backend.binding)
+				case "/sdd/changes/" + change + "/artifacts":
+					requireSDDRequest(t, r, http.MethodGet, r.URL.Path, "project="+project, "")
+					backend.artifacts++
+					_, _ = fmt.Fprint(w, `{"artifacts":[{"artifact":"tasks","content":"- [ ] 1.1 task\n"}]}`)
+				case "/sdd/changes/" + change + "/apply-progress":
+					requireSDDRequest(t, r, http.MethodGet, r.URL.Path, "project="+project, "")
+					backend.progress++
+					_, _ = fmt.Fprint(w, `{}`)
+				case "/sdd/changes/" + change + "/apply-progress/advance":
+					requireCrossCommandAdvanceRequest(t, r, project, change, request)
+					backend.advancePosts++
+					if tt.wantBinding == "hybrid" && backend.advancePosts == 1 {
+						w.WriteHeader(http.StatusServiceUnavailable)
+						_, _ = fmt.Fprint(w, `{"outcome":"unavailable","code":"offline"}`)
+						return
+					}
+					if tt.wantBinding == "hybrid" {
+						result := crossCommandCommittedHiveResult(t, root, request)
+						if tt.hivePayloadMismatch {
+							result.Receipt.PayloadSHA256 = crossCommandMismatchedPayload(result.Receipt.PayloadSHA256)
+						}
+						if err := json.NewEncoder(w).Encode(result); err != nil {
+							t.Fatalf("encode Hive progress result: %v", err)
+						}
+						return
+					}
+					_, _ = fmt.Fprint(w, `{"outcome":"committed"}`)
+				default:
+					t.Fatalf("unexpected request: %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+				}
+			}))
+			t.Cleanup(server.Close)
+			t.Setenv("HIVE_DAEMON_URL", server.URL)
+			t.Setenv("JARVIS_SDD_STORE_MODE", tt.initialMode)
+
+			firstRoot := root
+			if tt.wantBinding == "hive" || tt.wantBinding == "" {
+				firstRoot = ""
+			}
+			if tt.wantBinding == "hybrid" {
+				first := newBoundSddProgressCommand(resolveBoundProgressStore)
+				first.SetOut(&bytes.Buffer{})
+				first.SetErr(&bytes.Buffer{})
+				first.SetArgs([]string{"advance", "--root", root, "--request", requestPath})
+				if err := first.Execute(); (err != nil) != tt.wantFirstErr {
+					t.Fatalf("first command error = %v, want error=%t", err, tt.wantFirstErr)
+				}
+				first = nil // The recovery invocation must construct a fresh command and Hive client.
+			} else {
+				if _, err := resolveBoundProgressStore(context.Background(), firstRoot, project, change); (err != nil) != tt.wantFirstErr {
+					t.Fatalf("first resolution error = %v, want error=%t", err, tt.wantFirstErr)
+				}
+				// The first factory result is intentionally discarded before constructing
+				// the second command, so its client cannot be reused in this test.
+			}
+
+			beforeFilesystem := snapshotBoundArchiveFilesystem(t, workspace)
+			beforeBackend := backend
+			t.Setenv("JARVIS_SDD_STORE_MODE", tt.changedMode)
+			second := newBoundSddProgressCommand(resolveBoundProgressStore)
+			second.SetOut(&bytes.Buffer{})
+			second.SetErr(&bytes.Buffer{})
+			args := []string{"advance", "--request", requestPath}
+			if tt.wantBinding == "openspec" || tt.wantBinding == "hybrid" {
+				args = append([]string{"advance", "--root", root}, args[1:]...)
+			}
+			second.SetArgs(args)
+			err = second.Execute()
+			if (err != nil) != tt.wantSecondErr {
+				t.Fatalf("second command error = %v, want error=%t", err, tt.wantSecondErr)
+			}
+
+			wantBackendBinding := tt.wantBinding
+			if wantBackendBinding == "openspec" {
+				wantBackendBinding = ""
+			}
+			if backend.binding != wantBackendBinding || backend.adoptions != tt.wantAdopts || backend.advancePosts != tt.wantPosts || backend.artifacts != tt.wantArtifacts || backend.progress != tt.wantProgress {
+				t.Fatalf("request classes = binding:%q adopts:%d posts:%d artifacts:%d progress:%d, want binding:%q adopts:%d posts:%d artifacts:%d progress:%d", backend.binding, backend.adoptions, backend.advancePosts, backend.artifacts, backend.progress, wantBackendBinding, tt.wantAdopts, tt.wantPosts, tt.wantArtifacts, tt.wantProgress)
+			}
+
+			switch tt.wantBinding {
+			case "hive", "":
+				if after := snapshotBoundArchiveFilesystem(t, workspace); after != beforeFilesystem {
+					t.Fatalf("non-OpenSpec filesystem changed:\nwant %q\n got %q", beforeFilesystem, after)
+				}
+			case "openspec":
+				if backend.advancePosts != beforeBackend.advancePosts || backend.adoptions != beforeBackend.adoptions || backend.binding != beforeBackend.binding {
+					t.Fatalf("OpenSpec-bound restart mutated Hive backend: before=%#v after=%#v", beforeBackend, backend)
+				}
+			case "hybrid":
+				receiptDir := filepath.Join(root, ".apply-progress-hybrid-receipts")
+				receipts, err := os.ReadDir(receiptDir)
+				if err != nil || len(receipts) != 1 {
+					t.Fatalf("hybrid receipts = %v, err=%v; want exactly the recovered receipt", receipts, err)
+				}
+				data, err := os.ReadFile(filepath.Join(receiptDir, receipts[0].Name()))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var receipt struct {
+					Payload     string `json:"payload"`
+					OpenSpec    string `json:"openspec"`
+					Hive        string `json:"hive"`
+					OpenSpecAck *struct {
+						Generation uint64 `json:"generation"`
+						Revision   uint64 `json:"revision"`
+						Digest     string `json:"digest"`
+						Payload    string `json:"payload"`
+					} `json:"openspec_ack"`
+					HiveAck *struct {
+						Generation uint64 `json:"generation"`
+						Revision   uint64 `json:"revision"`
+						Digest     string `json:"digest"`
+						Payload    string `json:"payload"`
+					} `json:"hive_ack"`
+				}
+				if err := json.Unmarshal(data, &receipt); err != nil || receipt.Payload == "" || receipt.OpenSpec != "committed" || receipt.OpenSpecAck == nil {
+					t.Fatalf("recovered receipt = %s, err=%v", data, err)
+				}
+				if receipt.OpenSpecAck.Generation != request.Snapshot.Generation || receipt.OpenSpecAck.Revision != request.Snapshot.Revision || receipt.OpenSpecAck.Digest != request.Snapshot.Digest || receipt.OpenSpecAck.Payload != receipt.Payload {
+					t.Fatalf("OpenSpec acknowledgement = %#v, want request generation=%d revision=%d digest=%q payload=%q", receipt.OpenSpecAck, request.Snapshot.Generation, request.Snapshot.Revision, request.Snapshot.Digest, receipt.Payload)
+				}
+				if tt.hivePayloadMismatch {
+					if receipt.Hive != "failed" || receipt.HiveAck != nil {
+						t.Fatalf("mismatched Hive acknowledgement did not block recovery: receipt=%s", data)
+					}
+					break
+				}
+				if receipt.Hive != "committed" || receipt.HiveAck == nil {
+					t.Fatalf("recovered receipt = %s, want committed Hive acknowledgement", data)
+				}
+				if receipt.HiveAck.Generation != request.Snapshot.Generation || receipt.HiveAck.Revision != request.Snapshot.Revision || receipt.HiveAck.Digest != request.Snapshot.Digest || receipt.HiveAck.Payload != receipt.Payload {
+					t.Fatalf("Hive acknowledgement = %#v, want request generation=%d revision=%d digest=%q payload=%q", receipt.HiveAck, request.Snapshot.Generation, request.Snapshot.Revision, request.Snapshot.Digest, receipt.Payload)
+				}
+			}
+			if tt.wantBinding == "openspec" && reflect.DeepEqual(beforeBackend, backend) == false {
+				t.Fatalf("OpenSpec-bound backend snapshot changed: before=%#v after=%#v", beforeBackend, backend)
+			}
+		})
+	}
 }
 
 func snapshotBoundArchiveFilesystem(t *testing.T, root string) string {
