@@ -64,7 +64,7 @@ func TestBoundSddArchiveHivePersistedBindingIgnoresEnvironmentWithoutFilesystemM
 		project = "jarvis-dev"
 		change  = "issue-723"
 	)
-	workspace := t.TempDir()
+	workspace := canonicalSddTestWorkspace(t)
 	if err := os.WriteFile(filepath.Join(workspace, "sentinel.txt"), []byte("unchanged"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestBoundSddArchiveUnboundAdoptsBindingBeforeBlockingLifecycleMutation(t *t
 		project = "jarvis-dev"
 		change  = "issue-723"
 	)
-	workspace := t.TempDir()
+	workspace := canonicalSddTestWorkspace(t)
 	if err := os.WriteFile(filepath.Join(workspace, "sentinel.txt"), []byte("unchanged"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestBoundSddArchiveHiveBlocksMissingBlankOrUnreadyClosure(t *testing.T) {
 		{name: "incomplete readiness", archiveReport: &validReport, tasks: "- [ ] 1.1 task\n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			workspace := t.TempDir()
+			workspace := canonicalSddTestWorkspace(t)
 			t.Chdir(workspace)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
@@ -298,7 +298,7 @@ func TestBoundSddArchiveOpenSpecPersistedBindingIgnoresHiveEnvironmentAndRenames
 		project = "jarvis-dev"
 		change  = "issue-653"
 	)
-	workspace := t.TempDir()
+	workspace := canonicalSddTestWorkspace(t)
 	root, _ := writeBoundArchiveReadyOpenSpec(t, workspace, change, "# Archive report\n")
 	writeOpenSpecBinding(t, workspace, change, "openspec", "persisted:test", nil)
 	requests := 0
@@ -347,7 +347,7 @@ func TestBoundSddArchiveHybridRequiresMatchingReportsBeforeRename(t *testing.T) 
 		{name: "Hive error", localReport: "# Archive report\n", artifactCode: http.StatusServiceUnavailable},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			workspace := t.TempDir()
+			workspace := canonicalSddTestWorkspace(t)
 			root, request := writeBoundArchiveReadyOpenSpec(t, workspace, change, tt.localReport)
 			writeOpenSpecBinding(t, workspace, change, "hybrid", "persisted:test", nil)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -398,7 +398,7 @@ func TestBoundSddArchiveHybridUsesOnlyComparedViews(t *testing.T) {
 		project = "jarvis-dev"
 		change  = "issue-653"
 	)
-	workspace := t.TempDir()
+	workspace := canonicalSddTestWorkspace(t)
 	root, request := writeBoundArchiveReadyOpenSpec(t, workspace, change, "# Archive report\n")
 	writeOpenSpecBinding(t, workspace, change, "hybrid", "persisted:test", nil)
 
@@ -438,7 +438,7 @@ func TestBoundSddArchiveHybridBlocksReportMutationInLockedCallback(t *testing.T)
 		project = "jarvis-dev"
 		change  = "issue-653"
 	)
-	workspace := t.TempDir()
+	workspace := canonicalSddTestWorkspace(t)
 	root, request := writeBoundArchiveReadyOpenSpec(t, workspace, change, "# Archive report\n")
 	writeOpenSpecBinding(t, workspace, change, "hybrid", "persisted:test", nil)
 
@@ -488,7 +488,7 @@ func TestBoundSddArchiveHybridBlocksReportMutationInLockedCallback(t *testing.T)
 }
 
 func TestResolveBoundSddArchiveCoordinatesRejectsNonCanonicalRootSpellings(t *testing.T) {
-	workspace := t.TempDir()
+	workspace := canonicalSddTestWorkspace(t)
 	root := filepath.Join(workspace, "openspec", "changes", "issue-653")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
@@ -507,7 +507,7 @@ func TestResolveBoundSddArchiveCoordinatesRejectsNonCanonicalRootSpellings(t *te
 }
 
 func TestBoundSddArchiveRejectsNoneAndNonCanonicalCoordinatesBeforeEffects(t *testing.T) {
-	workspace := t.TempDir()
+	workspace := canonicalSddTestWorkspace(t)
 	root := filepath.Join(workspace, "openspec", "changes", "issue-653")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
