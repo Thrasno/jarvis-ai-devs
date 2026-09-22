@@ -496,6 +496,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateMemoryGuard(key)
 	}
 	if m.screen == ScreenProjectNormalization {
+		if updated, handled := m.scrollComplexViewportLine(key); handled {
+			return updated, nil
+		}
+		if updated, handled := m.scrollComplexViewport(key); handled {
+			return updated, nil
+		}
 		if key.Type == tea.KeyCtrlC && !m.normalizationSubmitting {
 			return m, tea.Quit
 		}
@@ -545,6 +551,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.offset = 0
 	case runeKey(key, 'c'):
 		m.screen = ScreenAPIConfig
+		m.viewport.offset = 0
 		return m.startConfigLoad()
 	case key.Type == tea.KeyDown || runeKey(key, 'j'):
 		m = m.navigateViewport(1)
@@ -610,24 +617,24 @@ func (m Model) View() string {
 	case ScreenBackups:
 		return m.backupsView()
 	case ScreenBackupDetail:
-		return m.backupDetailView()
+		return m.complexViewportFrame(m.backupDetailView())
 	case ScreenAPIHealth:
 		return m.apiHealthView()
 	case ScreenAPIConfig:
-		return m.apiConfigView()
+		return m.complexViewportFrame(m.apiConfigView())
 	case ScreenMemoryGuard:
-		return m.memoryGuardView()
+		return m.complexViewportFrame(m.memoryGuardView())
 	case ScreenProjectArchive:
-		return m.projectArchiveView()
+		return m.complexViewportFrame(m.projectArchiveView())
 	case ScreenProjectMerge:
 		if m.projectMergeBatchExecutor != nil {
-			return m.batchProjectMergeView()
+			return m.complexViewportFrame(m.batchProjectMergeView())
 		}
-		return m.projectMergeView()
+		return m.complexViewportFrame(m.projectMergeView())
 	case ScreenProjectPurge:
-		return m.projectPurgeView()
+		return m.complexViewportFrame(m.projectPurgeView())
 	case ScreenProjectNormalization:
-		return m.projectNormalizationView()
+		return m.complexViewportFrame(m.projectNormalizationView())
 	}
 
 	w := max(m.width, 80)
@@ -714,8 +721,8 @@ func (m Model) viewportItemCount() int {
 		return len(m.primaryViewportContentLines())
 	case ScreenMemoryDetail, ScreenAPIHealth:
 		return m.viewportContentLineCount()
-	case ScreenAPIConfig:
-		return configFieldCount
+	case ScreenAPIConfig, ScreenMemoryGuard, ScreenProjectArchive, ScreenProjectMerge, ScreenProjectPurge, ScreenProjectNormalization, ScreenBackupDetail:
+		return len(m.complexViewportContentLines())
 	case ScreenDashboard:
 		return len(m.dashboardActionRows())
 	default:
@@ -756,6 +763,10 @@ func (m Model) selectableItemCount() int {
 		return len(m.snapshot.Warnings)
 	case ScreenBackups:
 		return len(m.snapshot.Backups)
+	case ScreenAPIConfig:
+		return configFieldCount
+	case ScreenProjectPurge, ScreenProjectMerge:
+		return len(m.snapshot.Projects)
 	default:
 		return len(m.dashboardActionRows())
 	}
@@ -809,6 +820,35 @@ func (m Model) scrollViewport(delta int) Model {
 	return m
 }
 
+// scrollComplexViewport handles only navigation keys that no text field or
+// confirmation flow owns. This keeps guarded typing behavior unchanged while
+// making long non-selectable complex-screen content reachable.
+func (m Model) scrollComplexViewport(key tea.KeyMsg) (Model, bool) {
+	switch key.Type {
+	case tea.KeyPgDown:
+		return m.scrollViewport(max(1, effectiveViewport(m.viewport, m.viewportItemCount()).height)), true
+	case tea.KeyPgUp:
+		return m.scrollViewport(-max(1, effectiveViewport(m.viewport, m.viewportItemCount()).height)), true
+	case tea.KeyHome:
+		return m.scrollViewport(-m.viewportItemCount()), true
+	case tea.KeyEnd:
+		return m.scrollViewport(m.viewportItemCount()), true
+	default:
+		return m, false
+	}
+}
+
+func (m Model) scrollComplexViewportLine(key tea.KeyMsg) (Model, bool) {
+	switch {
+	case key.Type == tea.KeyDown:
+		return m.scrollViewport(1), true
+	case key.Type == tea.KeyUp:
+		return m.scrollViewport(-1), true
+	default:
+		return m, false
+	}
+}
+
 func (m Model) moveSelectionBy(delta int) Model {
 	switch m.screen {
 	case ScreenProjects:
@@ -819,6 +859,10 @@ func (m Model) moveSelectionBy(delta int) Model {
 		m.warningIndex = max(0, min(len(m.snapshot.Warnings)-1, m.warningIndex+delta))
 	case ScreenBackups:
 		m.backupIndex = max(0, min(len(m.snapshot.Backups)-1, m.backupIndex+delta))
+	case ScreenAPIConfig:
+		m.configCursor = configField(max(0, min(configFieldCount-1, int(m.configCursor)+delta)))
+	case ScreenProjectPurge, ScreenProjectMerge:
+		m.projectIndex = max(0, min(len(m.snapshot.Projects)-1, m.projectIndex+delta))
 	default:
 		m.cursor = max(0, min(len(m.dashboardActionRows())-1, m.cursor+delta))
 	}
@@ -843,6 +887,10 @@ func (m Model) moveSelectionToBoundary(last bool) Model {
 		m.warningIndex = index
 	case ScreenBackups:
 		m.backupIndex = index
+	case ScreenAPIConfig:
+		m.configCursor = configField(index)
+	case ScreenProjectPurge, ScreenProjectMerge:
+		m.projectIndex = index
 	default:
 		m.cursor = index
 	}
@@ -861,7 +909,7 @@ func (m Model) viewportSelectionIndex() int {
 	if m.hasSelectableViewportItems() {
 		anchored := m
 		anchored.viewportSelectionAnchor = true
-		for i, line := range anchored.primaryViewportContentLines() {
+		for i, line := range anchored.viewportContentLines() {
 			if strings.Contains(line, viewportSelectionAnchor) {
 				return i
 			}
@@ -905,20 +953,77 @@ func scrollViewport(viewport verticalViewport, delta, total int) verticalViewpor
 }
 
 func (m Model) hasScrollableViewportContent() bool {
-	return m.screen == ScreenMemoryDetail || m.screen == ScreenAPIHealth
+	switch m.screen {
+	case ScreenMemoryDetail, ScreenAPIHealth:
+		return true
+	case ScreenMemoryGuard, ScreenProjectArchive, ScreenProjectMerge, ScreenProjectPurge, ScreenProjectNormalization, ScreenBackupDetail:
+		return !m.hasSelectableViewportItems()
+	default:
+		return false
+	}
 }
 
 func (m Model) hasSelectableViewportItems() bool {
 	switch m.screen {
 	case ScreenProjects, ScreenProjectMemories, ScreenDeletedMemories, ScreenTimeline, ScreenWarnings, ScreenBackups:
 		return true
+	case ScreenAPIConfig:
+		return m.configService != nil && !m.configLoading && m.configLoadErr == nil
+	case ScreenProjectPurge:
+		return m.projectDeleteStep == projectPurgeSelect
+	case ScreenProjectMerge:
+		return m.projectMergeBatchExecutor != nil && m.mergeStep == mergeStepSelectSources
 	default:
 		return false
 	}
 }
 
 func (m Model) viewportContentLineCount() int {
-	return len(terminalui.PhysicalLines(m.viewportContent(), m.frameWidth()))
+	return len(m.viewportContentLines())
+}
+
+func (m Model) viewportContentLines() []string {
+	switch m.screen {
+	case ScreenProjects, ScreenProjectMemories, ScreenDeletedMemories, ScreenTimeline, ScreenWarnings, ScreenBackups:
+		return m.primaryViewportContentLines()
+	case ScreenMemoryDetail, ScreenAPIHealth:
+		return terminalui.PhysicalLines(m.viewportContent(), m.frameWidth())
+	default:
+		return m.complexViewportContentLines()
+	}
+}
+
+func (m Model) complexViewportContentLines() []string {
+	full := m.complexViewportFullView()
+	lines := strings.Split(full, "\n")
+	if len(lines) < 2 {
+		return nil
+	}
+	return terminalui.PhysicalLines(strings.Join(lines[1:len(lines)-1], "\n"), m.frameWidth())
+}
+
+func (m Model) complexViewportFullView() string {
+	switch m.screen {
+	case ScreenMemoryGuard:
+		return m.memoryGuardView()
+	case ScreenProjectArchive:
+		return m.projectArchiveView()
+	case ScreenProjectMerge:
+		if m.projectMergeBatchExecutor != nil {
+			return m.batchProjectMergeView()
+		}
+		return m.projectMergeView()
+	case ScreenProjectPurge:
+		return m.projectPurgeView()
+	case ScreenProjectNormalization:
+		return m.projectNormalizationView()
+	case ScreenBackupDetail:
+		return m.backupDetailView()
+	case ScreenAPIConfig:
+		return m.apiConfigView()
+	default:
+		return ""
+	}
 }
 
 // frameWidth uses the actual known terminal width. Before the first resize,
@@ -946,6 +1051,23 @@ func (m Model) viewportFrame(header, content, footer string) string {
 		return header + "\n" + content + "\n" + footer
 	}
 	return m.boundedViewportFrame(header, strings.Split(content, "\n"), footer)
+}
+
+// complexViewportFrame applies the shared bounded-height frame to screens
+// whose existing renderers already produce a header, central content, and help
+// footer. Their input handlers retain ownership of text and confirmation keys.
+func (m Model) complexViewportFrame(full string) string {
+	if !m.viewport.bounded {
+		return full
+	}
+	if m.viewportTooNarrow() {
+		return m.terminalTooSmallFrame()
+	}
+	lines := strings.Split(full, "\n")
+	if len(lines) < 2 {
+		return full
+	}
+	return m.boundedViewportFrame(lines[0], lines[1:len(lines)-1], lines[len(lines)-1])
 }
 
 // boundedViewportFrame reserves a physical row for overflow feedback, then
@@ -1073,6 +1195,7 @@ func (m Model) open() Model {
 			return m
 		}
 		m.screen = ScreenProjectNormalization
+		m.viewport.offset = 0
 	default:
 		m.message = action.label + " is not available in this navigation sub-slice. No local Hive state was changed."
 	}
@@ -1360,6 +1483,7 @@ func (m Model) startMemoryGuard(operation string) Model {
 	m.guardReason = ""
 	m.guardConfirmation = ""
 	m.guardSubmitting = false
+	m.viewport.offset = 0
 	m.message = ""
 	return m
 }
@@ -1368,6 +1492,12 @@ func (m Model) updateMemoryGuard(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.guardSubmitting {
 		m.message = fmt.Sprintf("Guarded memory %s is already pending through hive-daemon. Wait for the result before leaving or submitting again.", m.guardOperation)
 		return m, nil
+	}
+	if updated, handled := m.scrollComplexViewportLine(key); handled {
+		return updated, nil
+	}
+	if updated, handled := m.scrollComplexViewport(key); handled {
+		return updated, nil
 	}
 	switch {
 	case key.Type == tea.KeyEsc:
@@ -1715,6 +1845,7 @@ func (m Model) startProjectArchive() Model {
 	m.projectArchiveConfirmation = ""
 	m.projectArchiveStep = memoryGuardBackupID
 	m.projectArchiveSubmitting = false
+	m.viewport.offset = 0
 	m.message = ""
 	return m
 }
@@ -1723,6 +1854,12 @@ func (m Model) updateProjectArchive(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.projectArchiveSubmitting {
 		m.message = "Guarded project archive is already pending through hive-daemon. Wait for the result before leaving or submitting again."
 		return m, nil
+	}
+	if updated, handled := m.scrollComplexViewportLine(key); handled {
+		return updated, nil
+	}
+	if updated, handled := m.scrollComplexViewport(key); handled {
+		return updated, nil
 	}
 	switch {
 	case key.Type == tea.KeyEsc:
@@ -1866,6 +2003,7 @@ func (m Model) startProjectPurge() Model {
 	m.projectDeleteConfirmation = ""
 	m.projectDeleteStep = projectPurgeSelect
 	m.projectDeleteSubmitting = false
+	m.viewport.offset = 0
 	m.message = ""
 	return m
 }
@@ -1874,6 +2012,11 @@ func (m Model) updateProjectPurge(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.projectDeleteSubmitting {
 		m.message = "Guarded project purge is already pending through hive-daemon. Wait for the result before leaving or submitting again."
 		return m, nil
+	}
+	if m.projectDeleteStep != projectPurgeSelect {
+		if updated, handled := m.scrollComplexViewport(key); handled {
+			return updated, nil
+		}
 	}
 	// At the select step, j/k/Up/Down navigate the project list.
 	if m.projectDeleteStep == projectPurgeSelect {
@@ -1886,10 +2029,20 @@ func (m Model) updateProjectPurge(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if n > 0 && m.projectIndex < n-1 {
 				m.projectIndex++
 			}
+			m = m.followViewportSelection()
 		case key.Type == tea.KeyUp || runeKey(key, 'k'):
 			if m.projectIndex > 0 {
 				m.projectIndex--
 			}
+			m = m.followViewportSelection()
+		case key.Type == tea.KeyPgDown:
+			m = m.moveSelectionBy(max(1, effectiveViewport(m.viewport, m.viewportItemCount()).height))
+		case key.Type == tea.KeyPgUp:
+			m = m.moveSelectionBy(-max(1, effectiveViewport(m.viewport, m.viewportItemCount()).height))
+		case key.Type == tea.KeyHome:
+			m = m.moveSelectionToBoundary(false)
+		case key.Type == tea.KeyEnd:
+			m = m.moveSelectionToBoundary(true)
 		case key.Type == tea.KeyEnter:
 			return m.submitProjectPurge()
 		}
@@ -2020,7 +2173,7 @@ func (m Model) projectPurgeView() string {
 			for i, p := range m.snapshot.Projects {
 				cursor := "  "
 				if i == m.projectIndex {
-					cursor = cursorStyle.Render("▌") + " "
+					cursor = m.viewportCursor() + " "
 				}
 				row := p.Name
 				if i == m.projectIndex {
@@ -2076,6 +2229,7 @@ func (m Model) startProjectMerge() Model {
 	m.projectMergeConfirmation = ""
 	m.projectMergeStep = projectMergeTarget
 	m.projectMergeSubmitting = false
+	m.viewport.offset = 0
 	m.message = ""
 	return m
 }
@@ -2084,6 +2238,12 @@ func (m Model) updateProjectMerge(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.projectMergeSubmitting {
 		m.message = "Guarded project merge is already pending through hive-daemon. Wait for the result before leaving or submitting again."
 		return m, nil
+	}
+	if updated, handled := m.scrollComplexViewportLine(key); handled {
+		return updated, nil
+	}
+	if updated, handled := m.scrollComplexViewport(key); handled {
+		return updated, nil
 	}
 	switch {
 	case key.Type == tea.KeyEsc:
@@ -2284,6 +2444,7 @@ func (m Model) startBatchProjectMerge() Model {
 	m.mergeConfirmText = ""
 	m.mergeBatchResult = nil
 	m.mergeBatchSubmitting = false
+	m.viewport.offset = 0
 	m.message = ""
 	return m
 }
@@ -2293,6 +2454,22 @@ func (m Model) updateBatchProjectMerge(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.mergeBatchSubmitting {
 		m.message = "Batch merge is already pending through hive-daemon. Wait for the result."
 		return m, nil
+	}
+	if m.mergeStep == mergeStepImpact || m.mergeStep == mergeStepExecuting || m.mergeStep == mergeStepResult {
+		if updated, handled := m.scrollComplexViewportLine(key); handled {
+			return updated, nil
+		}
+		if runeKey(key, 'j') {
+			return m.scrollViewport(1), nil
+		}
+		if runeKey(key, 'k') {
+			return m.scrollViewport(-1), nil
+		}
+	}
+	if m.mergeStep != mergeStepSelectSources {
+		if updated, handled := m.scrollComplexViewport(key); handled {
+			return updated, nil
+		}
 	}
 	switch {
 	case key.Type == tea.KeyEsc:
@@ -2319,11 +2496,33 @@ func (m Model) updateBatchProjectMerge(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Type == tea.KeyDown:
 		if m.mergeStep == mergeStepSelectSources {
 			m.projectIndex = wrapIndex(m.projectIndex+1, len(m.snapshot.Projects))
+			m = m.followViewportSelection()
 		}
 		return m, nil
 	case key.Type == tea.KeyUp:
 		if m.mergeStep == mergeStepSelectSources {
 			m.projectIndex = wrapIndex(m.projectIndex-1, len(m.snapshot.Projects))
+			m = m.followViewportSelection()
+		}
+		return m, nil
+	case key.Type == tea.KeyPgDown:
+		if m.mergeStep == mergeStepSelectSources {
+			m = m.moveSelectionBy(max(1, effectiveViewport(m.viewport, m.viewportItemCount()).height))
+		}
+		return m, nil
+	case key.Type == tea.KeyPgUp:
+		if m.mergeStep == mergeStepSelectSources {
+			m = m.moveSelectionBy(-max(1, effectiveViewport(m.viewport, m.viewportItemCount()).height))
+		}
+		return m, nil
+	case key.Type == tea.KeyHome:
+		if m.mergeStep == mergeStepSelectSources {
+			m = m.moveSelectionToBoundary(false)
+		}
+		return m, nil
+	case key.Type == tea.KeyEnd:
+		if m.mergeStep == mergeStepSelectSources {
+			m = m.moveSelectionToBoundary(true)
 		}
 		return m, nil
 	case key.Type == tea.KeyBackspace:
@@ -2576,7 +2775,7 @@ func (m Model) renderSelectSourcesPanel(sb *strings.Builder, panelW int) {
 	for i, project := range m.snapshot.Projects {
 		cursor := "  "
 		if i == m.projectIndex {
-			cursor = cursorStyle.Render("▌") + " "
+			cursor = m.viewportCursor() + " "
 		}
 		selected := "[ ] "
 		if containsString(m.mergeSelectedSources, project.CanonicalKey()) {
@@ -3190,10 +3389,16 @@ func (m Model) updateAPIConfig(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Type == tea.KeyDown || runeKey(key, 'j'):
 		m.configCursor = configField((int(m.configCursor) + 1) % configFieldCount)
+		m = m.followViewportSelection()
 		return m, nil
 
 	case key.Type == tea.KeyUp || runeKey(key, 'k'):
 		m.configCursor = configField((int(m.configCursor) - 1 + configFieldCount) % configFieldCount)
+		m = m.followViewportSelection()
+		return m, nil
+
+	case key.Type == tea.KeyPgDown || key.Type == tea.KeyPgUp || key.Type == tea.KeyHome || key.Type == tea.KeyEnd:
+		m, _ = m.scrollComplexViewport(key)
 		return m, nil
 
 	case key.Type == tea.KeyEnter:
@@ -3485,7 +3690,7 @@ func (m Model) apiConfigView() string {
 func (m Model) renderConfigField(field configField, label, value string, panelW int) string {
 	cursor := "  "
 	if m.configCursor == field {
-		cursor = cursorStyle.Render("▌") + " "
+		cursor = m.viewportCursor() + " "
 	}
 	var row string
 	if value != "" {
