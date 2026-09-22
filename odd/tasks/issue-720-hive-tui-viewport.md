@@ -53,15 +53,15 @@ Route: delegated writer. Trigger: multi-file write across Hive TUI/layout implem
 - [x] Render deterministic visible-range and overflow feedback.
 - [x] Preserve empty states, shortcuts, and back navigation.
 - [x] Run focused tests and applicable module verification.
-- [ ] Record the work-unit commit and native assessment/review outcome.
+- [x] Record the work-unit commit and native assessment/review outcome.
 
 Route: delegated writer. Trigger: multi-file write and broad P0 view migration.
 
 ### 720-03 — Cover complex workflows and P1 screens
-- [ ] Add regressions for purge, batch merge, normalization, forms, confirmations, and multiline result/error states.
-- [ ] Apply the shared height contract to remaining P0/P1 screens.
-- [ ] Prove text input and guarded operations retain key ownership and semantics.
-- [ ] Run focused tests, complete module tests, and vet.
+- [x] Add regressions for purge, batch merge, normalization, forms, confirmations, and multiline result/error states.
+- [x] Apply the shared height contract to remaining P0/P1 screens.
+- [x] Prove text input and guarded operations retain key ownership and semantics.
+- [x] Run focused tests, complete module tests, and vet.
 - [ ] Record the work-unit commit and native assessment/review outcome.
 
 Route: delegated writer. Trigger: multi-file write across complex workflows and regression suites.
@@ -102,6 +102,15 @@ Route: delegated writer. Trigger: multi-file write across complex workflows and 
 - WU-02 writer after correction: `git diff --check` — PASS.
 - WU-02 parent spot check: `cd jarvis-cli && go test ./internal/hiveui ./internal/terminalui` — PASS (cached).
 - WU-02 work-unit commit: `9f5796c9de8f68b9e75e5da6754aba34e350390a` (`fix(hiveui): bound primary viewport screens`).
+- WU-02 evidence commit: `f4b55f1cbcd4078d2f15df6053ad4b1f6b8e137f` (`chore(odd): record primary viewport evidence`).
+- Native RDD 720-02: approved and acknowledged; lineage `review-065edeb54f752943`. Informational advisory `R3-feedback-width` opened no correction and remains separate later work.
+- Work unit 720-03 bounded purge, batch merge, normalization, forms, confirmations, and multiline result/error screens while preserving confirmation/text-input key ownership.
+- WU-03 RED: complex viewport regressions failed on unbounded batch, config-error, and purge frames before implementation.
+- WU-03 writer: `cd jarvis-cli && go test ./internal/hiveui ./internal/terminalui` — PASS.
+- WU-03 writer: `cd jarvis-cli && go test ./...` — PASS.
+- WU-03 writer: `cd jarvis-cli && go vet ./...` — PASS.
+- WU-03 writer: `git diff --check` — PASS.
+- WU-03 parent spot check: `cd jarvis-cli && go test ./internal/hiveui ./internal/terminalui` — PASS (cached).
 
 ## Next step
-Record the WU-02 commit evidence, run native RDD for its committed range, then branch 720-03 from the approved boundary.
+Commit work unit 720-03, run native RDD for its committed range, then prepare the Feature Branch Chain delivery.
