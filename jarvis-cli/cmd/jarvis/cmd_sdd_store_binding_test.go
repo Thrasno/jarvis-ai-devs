@@ -295,7 +295,9 @@ func TestBoundSddProgressWriterCancellationUsesCommandContextForHiveAndHybrid(t 
 				storeBuilt          bool
 				returned            bool
 			}
-			writerStarted := make(chan struct{}, 1)
+			writerStarted := make(chan struct{})
+			var writerStartedOnce sync.Once
+			signalWriterStarted := func() { writerStartedOnce.Do(func() { close(writerStarted) }) }
 			releaseWriter := make(chan struct{})
 			var releaseOnce sync.Once
 			release := func() { releaseOnce.Do(func() { close(releaseWriter) }) }
@@ -335,7 +337,7 @@ func TestBoundSddProgressWriterCancellationUsesCommandContextForHiveAndHybrid(t 
 						requests.writerBeforeStore++
 					}
 					requests.Unlock()
-					writerStarted <- struct{}{}
+					signalWriterStarted()
 					<-releaseWriter
 				default:
 					requests.Lock()
@@ -361,8 +363,17 @@ func TestBoundSddProgressWriterCancellationUsesCommandContextForHiveAndHybrid(t 
 				t.Fatal(err)
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
+			cancelerDone := make(chan struct{})
+			go func() {
+				defer close(cancelerDone)
+				select {
+				case <-writerStarted:
+					cancel()
+				case <-ctx.Done():
+				}
+			}()
 			resolve := func(ctx context.Context, root, project, change string) (progressAdvancer, error) {
 				store, err := resolveBoundProgressStore(ctx, root, project, change)
 				if err == nil {
@@ -381,13 +392,20 @@ func TestBoundSddProgressWriterCancellationUsesCommandContextForHiveAndHybrid(t 
 			requests.Lock()
 			requests.returned = true
 			requests.Unlock()
-			if !errors.Is(err, context.DeadlineExceeded) {
-				t.Fatalf("writer error = %v, want context deadline exceeded", err)
-			}
 			select {
 			case <-writerStarted:
 			default:
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					t.Fatal("writer did not begin before the watchdog deadline")
+				}
 				t.Fatal("writer adapter was not reached")
+			}
+			<-cancelerDone
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("writer error = %v, watchdog deadline exceeded", err)
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("writer error = %v, want context canceled", err)
 			}
 			release()
 			server.Close()
