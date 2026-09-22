@@ -6,18 +6,19 @@ Artifact store mode (`hive | openspec | hybrid | none`) controls where SDD phase
 
 This contract is about assistant/prompt SDD persistence only. Do not treat Jarvis product Hive, Hive API, or Hive ↔ Hive API synchronization as SDD artifact persistence.
 
+## Authoritative Store Binding
+
+There is one immutable authoritative binding per `project/change`: `hive`, `openspec`, or `hybrid`. `none` is never persisted. A persisted binding wins even when `JARVIS_SDD_STORE_MODE` changes or is invalid; that environment variable selects only an as-yet-unbound change.
+
+Backend ownership is fixed: Hive stores its binding in SQLite; OpenSpec stores its binding in `openspec/changes/{change-name}/state.yaml`; hybrid requires matching copies in both places. Never invent a neutral registry. A malformed, unsupported, noncanonical, or divergent binding blocks fail closed. An outage or protocol failure is not absence, and hybrid never selects one copy as a winner.
+
+Every status, continue, progress (`advance`, `checkpoint`, `upgrade-continuation`), and archive operation must resolve or adopt the binding before selecting a backend. Status may adopt a binding, so do not describe status adoption as read-only recovery. Planning artifacts do not select authority. Legacy adoption is protected by canonical `apply-progress`; blank, malformed, noncanonical, blocked, or divergent progress blocks adoption.
+
 ## Mode Resolution
 
-The orchestrator passes `artifact_store.mode` with one of: `hive | openspec | hybrid | none`.
+The orchestrator passes the resolved `artifact_store.mode` with one of: `hive | openspec | hybrid | none`. For an unbound change only, `JARVIS_SDD_STORE_MODE` or the explicit preflight choice selects the initial mode. Persist `hive`, `openspec`, or `hybrid` immediately through its owner; leave `none` inline-only and unpersisted.
 
-The orchestrator asks the user which mode to use when a new SDD change starts or when an existing change is continued for the first time in a session. The choice is cached for the session.
-
-Default behavior when the user does not specify a mode:
-
-1. Use `hive` when Hive MCP tools are available.
-2. Use `none` when Hive MCP tools are unavailable and no file-backed mode was explicitly requested.
-
-Never force `openspec/` creation unless the orchestrator explicitly passed `openspec` or `hybrid`.
+Never force `openspec/` creation unless the resolved binding is `openspec` or `hybrid`.
 
 ## Mode Roles
 
@@ -45,7 +46,7 @@ Topic keys group related artifact saves; they are not artifact identity, recency
 |------|-----------|----------|---------------|
 | `hive` | Hive MCP search, then full observation retrieval | Hive MCP save | Never |
 | `openspec` | Filesystem paths from `openspec-convention.md` | Filesystem paths from `openspec-convention.md` | Yes |
-| `hybrid` | Hive first, filesystem fallback | Hive and filesystem in the same phase | Yes |
+| `hybrid` | Independently validate Hive and OpenSpec; either unavailable, malformed, or divergent side blocks | Hive and filesystem in the same phase | Yes |
 | `none` | Orchestrator prompt context only | Nowhere | Never |
 
 ### Hive Mode
@@ -68,7 +69,7 @@ Topic keys group related artifact saves; they are not artifact identity, recency
 ### Hybrid Mode
 
 - Persist every artifact to both Hive and OpenSpec in the same phase.
-- Read priority: Hive first; fall back to filesystem if Hive returns no matching artifact.
+- Independently validate both sides before use. Missing, unavailable, malformed, or different copies block; never select a side arbitrarily.
 - Write behavior: the phase artifact is complete only after the Hive save and filesystem write both succeed.
 - State clearly in the return envelope if either store failed.
 
@@ -101,7 +102,7 @@ If a runtime/orchestrator state artifact is explicitly available, use this conve
 |------|---------------|---------------|
 | `hive` | `mcp__hive__mem_save(topic_key: "sdd/{change-name}/state", project: "{project}", capture_prompt: false, ...)` | `mcp__hive__mem_search("sdd/{change-name}/state", project: "{project}")` → `mcp__hive__mem_get_observation(id)` |
 | `openspec` | Write `openspec/changes/{change-name}/state.yaml` | Read `openspec/changes/{change-name}/state.yaml` |
-| `hybrid` | Save to Hive and write `state.yaml` | Hive first, filesystem fallback |
+| `hybrid` | Save to Hive and write `state.yaml` | Independently validate matching Hive and OpenSpec state; fail closed otherwise |
 | `none` | Not possible | Not possible |
 
 Phase artifacts follow the same mode:

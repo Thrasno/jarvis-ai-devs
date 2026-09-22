@@ -37,12 +37,17 @@ type sddStore interface {
 	GetApplyProgressEvidence(project, change, batchID, expectedHeadDigest string) (applyprogress.Batch, error)
 	GetApplyProgressReceipt(project, change, requestID string) (db.ApplyProgressReceipt, error)
 	AdvanceApplyProgress(db.ApplyProgressAdvance) (db.ApplyProgressAdvanceResult, error)
+	GetSDDStoreBinding(context.Context, string, string) (db.SDDStoreBinding, bool, error)
+	AdoptSDDStoreBinding(context.Context, string, string, db.SDDStoreBindingRequest) (db.SDDStoreBinding, bool, error)
 }
 
 type ApplyProgressAdvanceRequest = db.ApplyProgressAdvance
 type ApplyProgressState = db.ApplyProgressState
 type ApplyProgressReceipt = db.ApplyProgressReceipt
 type ApplyProgressAdvanceResult = db.ApplyProgressAdvanceResult
+type SDDStoreBinding = db.SDDStoreBinding
+type SDDStoreBindingRequest = db.SDDStoreBindingRequest
+type SDDStoreBindingConflictError = db.SDDStoreBindingConflictError
 
 // SDDArtifact is the daemon response projection for one known artifact.
 type SDDArtifact struct {
@@ -64,6 +69,41 @@ type SDDChangePage struct {
 
 type sddCursor struct {
 	After string `json:"after"`
+}
+
+// GetSDDStoreBinding reads an immutable binding without requiring an existing
+// governance project or Hive artifact row. The database remains authoritative for
+// project canonicalization.
+func (s *Service) GetSDDStoreBinding(ctx context.Context, project, change string) (SDDStoreBinding, bool, error) {
+	project = strings.TrimSpace(project)
+	if project == "" {
+		return SDDStoreBinding{}, false, ErrProjectRequired
+	}
+	change, err := validateSDDChange(change)
+	if err != nil {
+		return SDDStoreBinding{}, false, err
+	}
+	if s.sdd == nil {
+		return SDDStoreBinding{}, false, errors.New("SDD store is not configured")
+	}
+	return s.sdd.GetSDDStoreBinding(ctx, project, change)
+}
+
+// AdoptSDDStoreBinding establishes the first immutable binding without requiring
+// a prior governance project or Hive artifact row.
+func (s *Service) AdoptSDDStoreBinding(ctx context.Context, project, change string, request SDDStoreBindingRequest) (SDDStoreBinding, bool, error) {
+	project = strings.TrimSpace(project)
+	if project == "" {
+		return SDDStoreBinding{}, false, ErrProjectRequired
+	}
+	change, err := validateSDDChange(change)
+	if err != nil {
+		return SDDStoreBinding{}, false, err
+	}
+	if s.sdd == nil {
+		return SDDStoreBinding{}, false, errors.New("SDD store is not configured")
+	}
+	return s.sdd.AdoptSDDStoreBinding(ctx, project, change, request)
 }
 
 func (s *Service) FetchSDDArtifacts(ctx context.Context, project, change string) ([]SDDArtifact, error) {

@@ -53,6 +53,82 @@ func TestServiceSDDValidation(t *testing.T) {
 	}
 }
 
+func TestServiceSDDStoreBindingAdoptsBeforeArtifactsAndPreservesConflict(t *testing.T) {
+	_, service := newSDDService(t)
+	ctx := context.Background()
+
+	created, wasCreated, err := service.AdoptSDDStoreBinding(ctx, " Project ", " change ", governance.SDDStoreBindingRequest{
+		Mode:       db.SDDStoreModeHive,
+		Provenance: " daemon-governance ",
+	})
+	require.NoError(t, err)
+	assert.True(t, wasCreated)
+	assert.Equal(t, "project", created.Project)
+	assert.Equal(t, "change", created.Change)
+	assert.Equal(t, db.SDDStoreBindingSchemaVersion, created.SchemaVersion)
+	assert.Equal(t, db.SDDStoreModeHive, created.Mode)
+	assert.Equal(t, "daemon-governance", created.Provenance)
+	assert.True(t, created.CreatedAt.Equal(created.CreatedAt.UTC()))
+
+	read, found, err := service.GetSDDStoreBinding(ctx, "project", "change")
+	require.NoError(t, err)
+	assert.True(t, found)
+	assert.Equal(t, created, read)
+
+	replayed, wasCreated, err := service.AdoptSDDStoreBinding(ctx, "project", "change", governance.SDDStoreBindingRequest{
+		Mode:       db.SDDStoreModeHive,
+		Provenance: "daemon-governance",
+	})
+	require.NoError(t, err)
+	assert.False(t, wasCreated)
+	assert.Equal(t, created, replayed)
+
+	_, _, err = service.AdoptSDDStoreBinding(ctx, "project", "change", governance.SDDStoreBindingRequest{
+		Mode:       db.SDDStoreModeHybrid,
+		Provenance: "other-source",
+	})
+	var conflict *governance.SDDStoreBindingConflictError
+	require.ErrorAs(t, err, &conflict)
+	assert.Equal(t, created, conflict.Existing)
+	assert.Equal(t, "project", conflict.Requested.Project)
+	assert.Equal(t, "change", conflict.Requested.Change)
+	assert.Equal(t, db.SDDStoreModeHybrid, conflict.Requested.Mode)
+	assert.Equal(t, "other-source", conflict.Requested.Provenance)
+}
+
+func TestServiceSDDStoreBindingValidationAndMissing(t *testing.T) {
+	_, service := newSDDService(t)
+	ctx := context.Background()
+
+	_, found, err := service.GetSDDStoreBinding(ctx, "project", "absent")
+	require.NoError(t, err)
+	assert.False(t, found)
+
+	for _, tt := range []struct {
+		name    string
+		project string
+		change  string
+		request governance.SDDStoreBindingRequest
+		want    error
+	}{
+		{name: "project", project: " ", change: "change", want: governance.ErrProjectRequired},
+		{name: "change", project: "project", change: " ", want: governance.ErrSDDChangeRequired},
+		{name: "change separator", project: "project", change: "a/b", want: governance.ErrSDDChangeInvalid},
+		{name: "mode", project: "project", change: "change", request: governance.SDDStoreBindingRequest{Mode: db.SDDStoreModeNone, Provenance: "source"}, want: db.ErrSDDStoreBindingInvalid},
+		{name: "provenance", project: "project", change: "change", request: governance.SDDStoreBindingRequest{Mode: db.SDDStoreModeHive, Provenance: " "}, want: db.ErrSDDStoreBindingInvalid},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.request.Mode == "" {
+				_, _, err := service.GetSDDStoreBinding(ctx, tt.project, tt.change)
+				assert.ErrorIs(t, err, tt.want)
+				return
+			}
+			_, _, err := service.AdoptSDDStoreBinding(ctx, tt.project, tt.change, tt.request)
+			assert.ErrorIs(t, err, tt.want)
+		})
+	}
+}
+
 func TestServiceListSDDChangesPaginatesAfterProjection(t *testing.T) {
 	store, service := newSDDService(t)
 	for _, change := range []string{"alpha", "bravo", "charlie", "delta", "echo"} {

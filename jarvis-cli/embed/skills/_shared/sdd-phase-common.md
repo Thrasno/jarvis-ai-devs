@@ -44,6 +44,12 @@ Every phase that produces an artifact MUST persist it. Skipping this BREAKS the 
 
 Supported artifact store modes for Jarvis skill/runtime instructions: `hive | openspec | hybrid | none`.
 
+### Bound Store Resolution
+
+A persisted `hive`, `openspec`, or `hybrid` binding is immutable authority for its `project/change`; `none` is never persisted. Persisted binding wins even when `JARVIS_SDD_STORE_MODE` changes or is invalid. Resolve or adopt the binding before selecting a backend for status, continue, progress (`advance`, `checkpoint`, `upgrade-continuation`), or archive; planning artifacts cannot select authority.
+
+Hive binding lives in SQLite, OpenSpec binding lives in `openspec/changes/{change-name}/state.yaml`, and hybrid requires matching copies. Outage or protocol failure is not absence. Blank, malformed, unsupported, noncanonical, blocked, or divergent binding/protected progress fails closed; hybrid never chooses a copy arbitrarily. Legacy adoption is protected by canonical `apply-progress` only.
+
 ### Hive mode
 
 ```

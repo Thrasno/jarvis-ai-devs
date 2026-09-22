@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/governance"
@@ -26,6 +27,147 @@ import (
 )
 
 var updateApplyProgressFixtures = flag.Bool("update", false, "update shared apply-progress wire fixtures")
+
+func TestSDDStoreBindingHTTPCreatedReplayConflictAndProjection(t *testing.T) {
+	_, server := newSDDHTTPServer(t)
+	path := "/sdd/changes/change%25_/store-binding/adopt"
+	body := `{"project":"project","mode":"hive","provenance":"governance"}`
+
+	created := httptest.NewRecorder()
+	server.ServeHTTP(created, httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)))
+	require.Equal(t, http.StatusCreated, created.Code, created.Body.String())
+	var createdEnvelope struct {
+		Binding struct {
+			Project       string `json:"project"`
+			Change        string `json:"change"`
+			SchemaVersion string `json:"schema_version"`
+			Mode          string `json:"mode"`
+			Provenance    string `json:"provenance"`
+			CreatedAt     string `json:"created_at"`
+		} `json:"binding"`
+		Created *bool `json:"created"`
+	}
+	require.NoError(t, json.NewDecoder(created.Body).Decode(&createdEnvelope))
+	require.NotNil(t, createdEnvelope.Created)
+	assert.True(t, *createdEnvelope.Created)
+	assert.Equal(t, "project", createdEnvelope.Binding.Project)
+	assert.Equal(t, "change%_", createdEnvelope.Binding.Change)
+	assert.Equal(t, "1", createdEnvelope.Binding.SchemaVersion)
+	assert.Equal(t, "hive", createdEnvelope.Binding.Mode)
+	assert.Equal(t, "governance", createdEnvelope.Binding.Provenance)
+	parsedCreatedAt, err := time.Parse(time.RFC3339, createdEnvelope.Binding.CreatedAt)
+	require.NoError(t, err)
+	assert.Equal(t, createdEnvelope.Binding.CreatedAt, parsedCreatedAt.UTC().Format(time.RFC3339))
+
+	replayed := httptest.NewRecorder()
+	server.ServeHTTP(replayed, httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)))
+	require.Equal(t, http.StatusOK, replayed.Code, replayed.Body.String())
+	var replayedEnvelope struct {
+		Binding map[string]any `json:"binding"`
+		Created *bool          `json:"created"`
+	}
+	require.NoError(t, json.NewDecoder(replayed.Body).Decode(&replayedEnvelope))
+	require.NotNil(t, replayedEnvelope.Created)
+	assert.False(t, *replayedEnvelope.Created)
+	assert.Equal(t, "hive", replayedEnvelope.Binding["mode"])
+
+	get := httptest.NewRecorder()
+	server.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/sdd/changes/change%25_/store-binding?project=project", nil))
+	require.Equal(t, http.StatusOK, get.Code, get.Body.String())
+	var getEnvelope map[string]any
+	require.NoError(t, json.NewDecoder(get.Body).Decode(&getEnvelope))
+	assert.NotContains(t, getEnvelope, "created")
+	assert.Equal(t, "change%_", getEnvelope["binding"].(map[string]any)["change"])
+
+	conflict := httptest.NewRecorder()
+	server.ServeHTTP(conflict, httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"project":"project","mode":"hybrid","provenance":"other"}`)))
+	require.Equal(t, http.StatusConflict, conflict.Code, conflict.Body.String())
+	var conflictEnvelope map[string]any
+	require.NoError(t, json.NewDecoder(conflict.Body).Decode(&conflictEnvelope))
+	assert.Equal(t, "binding_conflict", conflictEnvelope["code"])
+	existing := conflictEnvelope["existing"].(map[string]any)
+	assert.Equal(t, "project", existing["project"])
+	assert.Equal(t, "change%_", existing["change"])
+	assert.Equal(t, "1", existing["schema_version"])
+	assert.Equal(t, "hive", existing["mode"])
+	assert.Equal(t, "governance", existing["provenance"])
+	assert.Equal(t, createdEnvelope.Binding.CreatedAt, existing["created_at"])
+	requested := conflictEnvelope["requested"].(map[string]any)
+	assert.Equal(t, "project", requested["project"])
+	assert.Equal(t, "change%_", requested["change"])
+	assert.Equal(t, "1", requested["schema_version"])
+	assert.Equal(t, "hybrid", requested["mode"])
+	assert.Equal(t, "other", requested["provenance"])
+	assert.NotContains(t, requested, "created_at")
+}
+
+func TestSDDStoreBindingHTTPRejectsMissingAndInvalidRequests(t *testing.T) {
+	store, server := newSDDHTTPServer(t)
+	missing := httptest.NewRecorder()
+	server.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/sdd/changes/change/store-binding?project=project", nil))
+	require.Equal(t, http.StatusNotFound, missing.Code, missing.Body.String())
+	assertSDDStoreBindingCode(t, missing, "not_found")
+
+	for _, tt := range []struct {
+		name, method, path, body string
+	}{
+		{name: "invalid mode", method: http.MethodPost, path: "/sdd/changes/change/store-binding/adopt", body: `{"project":"project","mode":"none","provenance":"source"}`},
+		{name: "blank provenance", method: http.MethodPost, path: "/sdd/changes/change/store-binding/adopt", body: `{"project":"project","mode":"hive","provenance":" "}`},
+		{name: "blank project", method: http.MethodPost, path: "/sdd/changes/change/store-binding/adopt", body: `{"project":" ","mode":"hive","provenance":"source"}`},
+		{name: "invalid change", method: http.MethodPost, path: "/sdd/changes/a%5Cb/store-binding/adopt", body: `{"project":"project","mode":"hive","provenance":"source"}`},
+		{name: "caller schema", method: http.MethodPost, path: "/sdd/changes/change/store-binding/adopt", body: `{"project":"project","mode":"hive","provenance":"source","schema_version":"2"}`},
+		{name: "caller change", method: http.MethodPost, path: "/sdd/changes/change/store-binding/adopt", body: `{"project":"project","change":"other","mode":"hive","provenance":"source"}`},
+		{name: "duplicate project", method: http.MethodPost, path: "/sdd/changes/change/store-binding/adopt", body: `{"project":"alpha","project":"beta","mode":"hive","provenance":"source"}`},
+		{name: "duplicate mode", method: http.MethodPost, path: "/sdd/changes/change/store-binding/adopt", body: `{"project":"project","mode":"hive","mode":"hybrid","provenance":"source"}`},
+		{name: "duplicate provenance", method: http.MethodPost, path: "/sdd/changes/change/store-binding/adopt", body: `{"project":"project","mode":"hive","provenance":"first","provenance":"second"}`},
+		{name: "case alias", method: http.MethodPost, path: "/sdd/changes/change/store-binding/adopt", body: `{"Project":"project","mode":"hive","provenance":"source"}`},
+		{name: "null project", method: http.MethodPost, path: "/sdd/changes/change/store-binding/adopt", body: `{"project":null,"mode":"hive","provenance":"source"}`},
+		{name: "numeric mode", method: http.MethodPost, path: "/sdd/changes/change/store-binding/adopt", body: `{"project":"project","mode":1,"provenance":"source"}`},
+		{name: "boolean provenance", method: http.MethodPost, path: "/sdd/changes/change/store-binding/adopt", body: `{"project":"project","mode":"hive","provenance":true}`},
+		{name: "missing query project", method: http.MethodGet, path: "/sdd/changes/change/store-binding"},
+		{name: "duplicate query project", method: http.MethodGet, path: "/sdd/changes/change/store-binding?project=alpha&project=beta"},
+		{name: "trailing json", method: http.MethodPost, path: "/sdd/changes/change/store-binding/adopt", body: `{"project":"project","mode":"hive","provenance":"source"} {}`},
+		{name: "oversized body", method: http.MethodPost, path: "/sdd/changes/change/store-binding/adopt", body: fmt.Sprintf(`{"project":"project","mode":"hive","provenance":%q}`, strings.Repeat("x", 64<<10))},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			server.ServeHTTP(response, httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body)))
+			require.Equal(t, http.StatusUnprocessableEntity, response.Code, response.Body.String())
+			assertSDDStoreBindingCode(t, response, "validation")
+		})
+	}
+
+	require.NoError(t, store.Close())
+	unavailable := httptest.NewRecorder()
+	server.ServeHTTP(unavailable, httptest.NewRequest(http.MethodGet, "/sdd/changes/change/store-binding?project=project", nil))
+	require.Equal(t, http.StatusServiceUnavailable, unavailable.Code, unavailable.Body.String())
+	var unavailableEnvelope map[string]any
+	require.NoError(t, json.NewDecoder(unavailable.Body).Decode(&unavailableEnvelope))
+	assert.Equal(t, map[string]any{"code": "unavailable"}, unavailableEnvelope)
+}
+
+func TestSDDStoreBindingHTTPRejectsZeroTimestampProjection(t *testing.T) {
+	store, server := newSDDHTTPServer(t)
+	_, err := store.RawDB().Exec(`INSERT INTO sdd_store_bindings (project, change_name, schema_version, mode, provenance, created_at) VALUES ('project', 'zero-time', '1', 'hive', 'source', '0001-01-01 00:00:00')`)
+	require.NoError(t, err)
+
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/sdd/changes/zero-time/store-binding?project=project", nil))
+	require.Equal(t, http.StatusServiceUnavailable, response.Code, response.Body.String())
+	assertSDDStoreBindingCode(t, response, "unavailable")
+
+	conflict := httptest.NewRecorder()
+	server.ServeHTTP(conflict, httptest.NewRequest(http.MethodPost, "/sdd/changes/zero-time/store-binding/adopt", strings.NewReader(`{"project":"project","mode":"hybrid","provenance":"other"}`)))
+	require.Equal(t, http.StatusServiceUnavailable, conflict.Code, conflict.Body.String())
+	assertSDDStoreBindingCode(t, conflict, "unavailable")
+}
+
+func assertSDDStoreBindingCode(t *testing.T, response *httptest.ResponseRecorder, want string) {
+	t.Helper()
+	var envelope map[string]any
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&envelope))
+	assert.Equal(t, want, envelope["code"])
+}
 
 func TestSDDArtifactsHTTPUsesSQLiteProjection(t *testing.T) {
 	store, server := newSDDHTTPServer(t)

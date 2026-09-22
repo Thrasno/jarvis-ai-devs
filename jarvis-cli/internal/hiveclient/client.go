@@ -109,6 +109,65 @@ type SDDArtifact struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// SDDStoreMode is the durable artifact-store mode for an SDD change binding.
+type SDDStoreMode string
+
+const (
+	SDDStoreModeHive   SDDStoreMode = "hive"
+	SDDStoreModeHybrid SDDStoreMode = "hybrid"
+)
+
+// SDDStoreBinding is the immutable store decision for one canonical project
+// and SDD change.
+type SDDStoreBinding struct {
+	Project       string       `json:"project"`
+	Change        string       `json:"change"`
+	SchemaVersion string       `json:"schema_version"`
+	Mode          SDDStoreMode `json:"mode"`
+	Provenance    string       `json:"provenance"`
+	CreatedAt     time.Time    `json:"created_at"`
+}
+
+// SDDStoreBindingRequest supplies the values that may be selected only once.
+type SDDStoreBindingRequest struct {
+	Mode       SDDStoreMode `json:"mode"`
+	Provenance string       `json:"provenance"`
+}
+
+// ErrSDDStoreBindingConflict identifies a valid immutable binding conflict.
+var ErrSDDStoreBindingConflict = errors.New("SDD store binding conflict")
+
+// SDDStoreBindingConflictError retains the daemon's exact immutable values when
+// an adoption request differs from the existing binding.
+type SDDStoreBindingConflictError struct {
+	Existing  SDDStoreBinding
+	Requested SDDStoreBinding
+}
+
+func (e *SDDStoreBindingConflictError) Error() string {
+	return fmt.Sprintf("SDD store binding conflict: existing schema=%q mode=%q provenance=%q differs from requested schema=%q mode=%q provenance=%q",
+		e.Existing.SchemaVersion, e.Existing.Mode, e.Existing.Provenance,
+		e.Requested.SchemaVersion, e.Requested.Mode, e.Requested.Provenance)
+}
+
+func (e *SDDStoreBindingConflictError) Unwrap() error {
+	return ErrSDDStoreBindingConflict
+}
+
+// SDDStoreBindingProtocolError reports an invalid authority response that was
+// rejected before it could become a client-visible binding.
+type SDDStoreBindingProtocolError struct {
+	StatusCode int
+	Reason     string
+}
+
+func (e *SDDStoreBindingProtocolError) Error() string {
+	if e.StatusCode == 0 {
+		return "invalid SDD store binding response: " + e.Reason
+	}
+	return fmt.Sprintf("invalid SDD store binding response (status %d): %s", e.StatusCode, e.Reason)
+}
+
 type SDDPageRequest struct {
 	Limit  int
 	Cursor string
@@ -668,6 +727,342 @@ func (c *Client) ListSDDChanges(ctx context.Context, project string, request SDD
 		return SDDChangePage{}, err
 	}
 	return page, nil
+}
+
+const maxSDDStoreBindingResponseBytes = 64 << 10
+
+// GetSDDStoreBinding reads the immutable binding for a project/change pair.
+// A daemon 404 with the exact not_found envelope means no binding exists.
+func (c *Client) GetSDDStoreBinding(ctx context.Context, project, change string) (SDDStoreBinding, bool, error) {
+	status, body, err := c.doSDDStoreBindingRequest(ctx, http.MethodGet, project, change, nil)
+	if err != nil {
+		return SDDStoreBinding{}, false, err
+	}
+	if status == http.StatusNotFound {
+		code, err := decodeSDDStoreBindingError(body)
+		if err != nil {
+			return SDDStoreBinding{}, false, sddStoreBindingProtocolError(status, err)
+		}
+		if code == "not_found" {
+			return SDDStoreBinding{}, false, nil
+		}
+		return SDDStoreBinding{}, false, &APIError{StatusCode: status, Message: code}
+	}
+	if status != http.StatusOK {
+		return SDDStoreBinding{}, false, sddStoreBindingStatusError(status, body)
+	}
+	binding, created, err := decodeSDDStoreBindingSuccess(body, false)
+	if err != nil {
+		return SDDStoreBinding{}, false, sddStoreBindingProtocolError(status, err)
+	}
+	if created != nil {
+		return SDDStoreBinding{}, false, sddStoreBindingProtocolError(status, errors.New("GET response must omit created"))
+	}
+	if err := validateSDDStoreBinding(binding, project, change, true); err != nil {
+		return SDDStoreBinding{}, false, sddStoreBindingProtocolError(status, err)
+	}
+	return binding, true, nil
+}
+
+// AdoptSDDStoreBinding establishes a binding or returns its exact replay. A
+// divergent immutable value is returned as SDDStoreBindingConflictError.
+func (c *Client) AdoptSDDStoreBinding(ctx context.Context, project, change string, request SDDStoreBindingRequest) (SDDStoreBinding, bool, error) {
+	request.Mode = SDDStoreMode(strings.TrimSpace(string(request.Mode)))
+	request.Provenance = strings.TrimSpace(request.Provenance)
+	payload := struct {
+		Project    string       `json:"project"`
+		Mode       SDDStoreMode `json:"mode"`
+		Provenance string       `json:"provenance"`
+	}{Project: project, Mode: request.Mode, Provenance: request.Provenance}
+	status, body, err := c.doSDDStoreBindingRequest(ctx, http.MethodPost, project, change, payload)
+	if err != nil {
+		return SDDStoreBinding{}, false, err
+	}
+	if status == http.StatusConflict {
+		conflict, err := decodeSDDStoreBindingConflict(body, project, change, request)
+		if err != nil {
+			return SDDStoreBinding{}, false, sddStoreBindingProtocolError(status, err)
+		}
+		return SDDStoreBinding{}, false, conflict
+	}
+	if status != http.StatusOK && status != http.StatusCreated {
+		return SDDStoreBinding{}, false, sddStoreBindingStatusError(status, body)
+	}
+	binding, created, err := decodeSDDStoreBindingSuccess(body, true)
+	if err != nil {
+		return SDDStoreBinding{}, false, sddStoreBindingProtocolError(status, err)
+	}
+	if created == nil || *created != (status == http.StatusCreated) {
+		return SDDStoreBinding{}, false, sddStoreBindingProtocolError(status, errors.New("adopt response created value does not match status"))
+	}
+	if err := validateSDDStoreBinding(binding, project, change, true); err != nil {
+		return SDDStoreBinding{}, false, sddStoreBindingProtocolError(status, err)
+	}
+	if binding.SchemaVersion != "1" || binding.Mode != request.Mode || binding.Provenance != request.Provenance {
+		return SDDStoreBinding{}, false, sddStoreBindingProtocolError(status, errors.New("adopt response differs from requested immutable values"))
+	}
+	return binding, *created, nil
+}
+
+func (c *Client) doSDDStoreBindingRequest(ctx context.Context, method, project, change string, payload any) (int, []byte, error) {
+	u := *c.baseURL
+	path := "/sdd/changes/" + url.PathEscape(change) + "/store-binding"
+	if method == http.MethodPost {
+		path += "/adopt"
+	}
+	setURLPath(&u, path)
+	if method == http.MethodGet {
+		u.RawQuery = url.Values{"project": {project}}.Encode()
+	}
+	var body io.Reader
+	if method == http.MethodPost {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return 0, nil, err
+		}
+		body = bytes.NewReader(encoded)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, u.String(), body)
+	if err != nil {
+		return 0, nil, err
+	}
+	if method == http.MethodPost {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response, err := c.http.Do(request)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer func() { _ = response.Body.Close() }()
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, maxSDDStoreBindingResponseBytes+1))
+	if err != nil {
+		return 0, nil, err
+	}
+	if len(responseBody) > maxSDDStoreBindingResponseBytes {
+		return 0, nil, sddStoreBindingProtocolError(response.StatusCode, errors.New("response body exceeds 64 KiB"))
+	}
+	return response.StatusCode, responseBody, nil
+}
+
+func sddStoreBindingStatusError(status int, body []byte) error {
+	code, err := decodeSDDStoreBindingError(body)
+	if err != nil {
+		return sddStoreBindingProtocolError(status, err)
+	}
+	return &APIError{StatusCode: status, Message: code}
+}
+
+func sddStoreBindingProtocolError(status int, err error) error {
+	return &SDDStoreBindingProtocolError{StatusCode: status, Reason: err.Error()}
+}
+
+func decodeSDDStoreBindingSuccess(body []byte, requireCreated bool) (SDDStoreBinding, *bool, error) {
+	allowed := map[string]struct{}{"binding": {}}
+	if requireCreated {
+		allowed["created"] = struct{}{}
+	}
+	fields, err := decodeSDDStoreBindingObject(body, allowed)
+	if err != nil {
+		return SDDStoreBinding{}, nil, err
+	}
+	bindingValue, ok := fields["binding"]
+	if !ok {
+		return SDDStoreBinding{}, nil, errors.New("response is missing binding")
+	}
+	binding, err := decodeSDDStoreBinding(bindingValue, true)
+	if err != nil {
+		return SDDStoreBinding{}, nil, err
+	}
+	if !requireCreated {
+		return binding, nil, nil
+	}
+	createdValue, ok := fields["created"]
+	if !ok {
+		return SDDStoreBinding{}, nil, errors.New("adopt response is missing created")
+	}
+	created, err := decodeSDDStoreBindingBool(createdValue)
+	if err != nil {
+		return SDDStoreBinding{}, nil, fmt.Errorf("invalid created: %w", err)
+	}
+	return binding, &created, nil
+}
+
+func decodeSDDStoreBindingConflict(body []byte, project, change string, request SDDStoreBindingRequest) (*SDDStoreBindingConflictError, error) {
+	fields, err := decodeSDDStoreBindingObject(body, map[string]struct{}{"code": {}, "existing": {}, "requested": {}})
+	if err != nil {
+		return nil, err
+	}
+	code, err := decodeSDDStoreBindingString(fields["code"])
+	if err != nil || code != "binding_conflict" {
+		return nil, errors.New("conflict response code is not binding_conflict")
+	}
+	existing, err := decodeSDDStoreBinding(fields["existing"], true)
+	if err != nil {
+		return nil, err
+	}
+	requested, err := decodeSDDStoreBinding(fields["requested"], false)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateSDDStoreBinding(existing, project, change, true); err != nil {
+		return nil, err
+	}
+	if err := validateSDDStoreBinding(requested, project, change, false); err != nil {
+		return nil, err
+	}
+	if requested.SchemaVersion != "1" || requested.Mode != request.Mode || requested.Provenance != request.Provenance {
+		return nil, errors.New("conflict requested binding differs from submitted immutable values")
+	}
+	if existing.SchemaVersion == requested.SchemaVersion && existing.Mode == requested.Mode && existing.Provenance == requested.Provenance {
+		return nil, errors.New("conflict existing binding does not differ from requested immutable values")
+	}
+	return &SDDStoreBindingConflictError{Existing: existing, Requested: requested}, nil
+}
+
+func decodeSDDStoreBindingError(body []byte) (string, error) {
+	fields, err := decodeSDDStoreBindingObject(body, map[string]struct{}{"code": {}})
+	if err != nil {
+		return "", err
+	}
+	code, err := decodeSDDStoreBindingString(fields["code"])
+	if err != nil || code == "" {
+		return "", errors.New("error response has invalid code")
+	}
+	return code, nil
+}
+
+func decodeSDDStoreBinding(raw json.RawMessage, includeCreatedAt bool) (SDDStoreBinding, error) {
+	allowed := map[string]struct{}{
+		"project": {}, "change": {}, "schema_version": {}, "mode": {}, "provenance": {},
+	}
+	if includeCreatedAt {
+		allowed["created_at"] = struct{}{}
+	}
+	fields, err := decodeSDDStoreBindingObject(raw, allowed)
+	if err != nil {
+		return SDDStoreBinding{}, err
+	}
+	binding := SDDStoreBinding{}
+	for key, destination := range map[string]*string{
+		"project": &binding.Project, "change": &binding.Change, "schema_version": &binding.SchemaVersion, "provenance": &binding.Provenance,
+	} {
+		value, err := decodeSDDStoreBindingString(fields[key])
+		if err != nil {
+			return SDDStoreBinding{}, fmt.Errorf("invalid binding %s: %w", key, err)
+		}
+		*destination = value
+	}
+	mode, err := decodeSDDStoreBindingString(fields["mode"])
+	if err != nil {
+		return SDDStoreBinding{}, fmt.Errorf("invalid binding mode: %w", err)
+	}
+	binding.Mode = SDDStoreMode(mode)
+	if includeCreatedAt {
+		createdAt, err := decodeSDDStoreBindingString(fields["created_at"])
+		if err != nil {
+			return SDDStoreBinding{}, fmt.Errorf("invalid binding created_at: %w", err)
+		}
+		if !strings.HasSuffix(createdAt, "Z") {
+			return SDDStoreBinding{}, errors.New("binding created_at must be UTC")
+		}
+		binding.CreatedAt, err = time.Parse(time.RFC3339, createdAt)
+		if err != nil || binding.CreatedAt.IsZero() || binding.CreatedAt.UTC().Format(time.RFC3339) != createdAt {
+			return SDDStoreBinding{}, errors.New("binding created_at must be nonzero RFC3339")
+		}
+	}
+	return binding, nil
+}
+
+func validateSDDStoreBinding(binding SDDStoreBinding, project, change string, requireCreatedAt bool) error {
+	if binding.Project != CanonicalProjectKey(project) {
+		return errors.New("binding project does not match requested canonical project")
+	}
+	if strings.TrimSpace(binding.Change) != strings.TrimSpace(change) {
+		return errors.New("binding change does not match request")
+	}
+	if strings.TrimSpace(binding.SchemaVersion) == "" {
+		return errors.New("binding schema version is blank")
+	}
+	if binding.Mode != SDDStoreModeHive && binding.Mode != SDDStoreModeHybrid {
+		return errors.New("binding mode is invalid")
+	}
+	if binding.Provenance == "" || binding.Provenance != strings.TrimSpace(binding.Provenance) {
+		return errors.New("binding provenance is blank or untrimmed")
+	}
+	if requireCreatedAt && (binding.CreatedAt.IsZero() || binding.CreatedAt.Location() != time.UTC) {
+		return errors.New("binding created_at is invalid")
+	}
+	if !requireCreatedAt && !binding.CreatedAt.IsZero() {
+		return errors.New("requested binding must not include created_at")
+	}
+	return nil
+}
+
+func decodeSDDStoreBindingObject(data []byte, allowed map[string]struct{}) (map[string]json.RawMessage, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('{') {
+		return nil, errors.New("response must be a JSON object")
+	}
+	fields := make(map[string]json.RawMessage, len(allowed))
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		key, ok := token.(string)
+		if !ok {
+			return nil, errors.New("response object key is invalid")
+		}
+		if _, known := allowed[key]; !known {
+			return nil, fmt.Errorf("unknown response field %q", key)
+		}
+		if _, duplicate := fields[key]; duplicate {
+			return nil, fmt.Errorf("duplicate response field %q", key)
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, err
+		}
+		fields[key] = value
+	}
+	closing, err := decoder.Token()
+	if err != nil || closing != json.Delim('}') {
+		return nil, errors.New("response object is incomplete")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return nil, errors.New("response has trailing JSON")
+	}
+	for key := range allowed {
+		if _, ok := fields[key]; !ok {
+			return nil, fmt.Errorf("response is missing %q", key)
+		}
+	}
+	return fields, nil
+}
+
+func decodeSDDStoreBindingString(raw json.RawMessage) (string, error) {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", err
+	}
+	text, ok := value.(string)
+	if !ok {
+		return "", errors.New("must be a string")
+	}
+	return text, nil
+}
+
+func decodeSDDStoreBindingBool(raw json.RawMessage) (bool, error) {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return false, err
+	}
+	boolean, ok := value.(bool)
+	if !ok {
+		return false, errors.New("must be a boolean")
+	}
+	return boolean, nil
 }
 
 func (c *Client) GetApplyProgress(ctx context.Context, project, change string) (ApplyProgressResult, error) {
