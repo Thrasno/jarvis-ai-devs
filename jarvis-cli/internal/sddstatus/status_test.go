@@ -18,6 +18,25 @@ func artifacts(pairs ...string) map[string]sddstatus.ArtifactState {
 	return m
 }
 
+func TestComputeStatusJSONContractIncludesStoreBindingProvenance(t *testing.T) {
+	binding := &sddstatus.StoreBindingStatus{Mode: "hybrid", Provenance: "legacy:equivalent-progress", Persisted: true}
+	status := sddstatus.ComputeStatus("my-feature", "hybrid", sddstatus.Input{StoreBinding: binding})
+	binding.Mode = "mutated"
+
+	if status.StoreBinding == nil || status.StoreBinding.Mode != "hybrid" || status.StoreBinding.Provenance != "legacy:equivalent-progress" || !status.StoreBinding.Persisted {
+		t.Fatalf("storeBinding = %#v", status.StoreBinding)
+	}
+	body, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"storeBinding"`, `"mode":"hybrid"`, `"provenance":"legacy:equivalent-progress"`, `"persisted":true`} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("status JSON %s missing %s", body, want)
+		}
+	}
+}
+
 func TestComputeStatus_JSONContractIncludesRuntimeContext(t *testing.T) {
 	s := sddstatus.ComputeStatus("my-feature", "hive", sddstatus.Input{
 		Artifacts:        allPlanningDone(),

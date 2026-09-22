@@ -99,8 +99,8 @@ func TestSDDOrchestrator_PreflightHardGateCoversAllSDDEntryPoints(t *testing.T) 
 	for _, required := range []string{
 		"sdd session preflight (hard gate)",
 		"before executing any mutating, planning, init, apply, verify, or archive sdd command or natural-language sdd request",
-		"`/sdd-status` is read-only recovery",
-		"must not be blocked by missing session preflight",
+		"`/sdd-status` may inspect or adopt binding state without session preflight; it must not run phases or edit project artifacts.",
+		"binding adoption is an allowed persistence action, not a claim that status is purely read-only.",
 		"natural-language equivalents",
 		"hard gate rules",
 		"if the session has no preflight block",
@@ -111,6 +111,15 @@ func TestSDDOrchestrator_PreflightHardGateCoversAllSDDEntryPoints(t *testing.T) 
 	} {
 		if !strings.Contains(orchestrator, required) {
 			t.Fatalf("orchestrator preflight hard gate missing %q", required)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"`/sdd-status` is read-only recovery",
+		"read-only status",
+	} {
+		if strings.Contains(preflightSection, forbidden) {
+			t.Fatalf("orchestrator preflight hard gate must not restore the obsolete positive status claim %q", forbidden)
 		}
 	}
 
@@ -158,8 +167,16 @@ func TestSDDOrchestrator_PreflightOrderingBeforeInitGuard(t *testing.T) {
 	if !strings.Contains(initSection, "/sdd-init") {
 		t.Fatalf("init guard must treat /sdd-init as a mutating SDD command covered after preflight")
 	}
-	if !strings.Contains(initSection, "`/sdd-status` is read-only recovery") {
-		t.Fatalf("init guard must preserve /sdd-status as the no-preflight read-only exception")
+	if !strings.Contains(initSection, "`/sdd-status` does not run init; resolve or adopt its binding, then report available state, missing init, and recovery hints.") {
+		t.Fatalf("init guard must preserve status binding resolution without running init")
+	}
+	for _, forbidden := range []string{
+		"`/sdd-status` is read-only recovery",
+		"read-only status",
+	} {
+		if strings.Contains(initSection, forbidden) {
+			t.Fatalf("init guard must not restore the obsolete positive status claim %q", forbidden)
+		}
 	}
 }
 
@@ -189,7 +206,7 @@ func TestSDDOrchestrator_ExplicitSDDInitIsSatisfiedByInitGuardOnce(t *testing.T)
 	}
 }
 
-func TestSDDOrchestrator_StatusCommandIsDirectReadOnlyNotAutocompleteSkill(t *testing.T) {
+func TestSDDOrchestrator_StatusCommandIsDirectBindingAwareNotAutocompleteSkill(t *testing.T) {
 	orchestrator := readPolicyFile(t, "embed/orchestrator/sdd-orchestrator.md")
 	commandsSection := markdownSection(t, orchestrator, "### commands", "### sdd init guard")
 	skillsSection := markdownSection(t, commandsSection, "skills (appear in autocomplete):", "meta-commands")
@@ -205,22 +222,34 @@ func TestSDDOrchestrator_StatusCommandIsDirectReadOnlyNotAutocompleteSkill(t *te
 
 	for _, required := range []string{
 		"/sdd-status [change]",
-		"read-only status",
-		"direct orchestrator handling",
+		"status handled directly by the orchestrator",
 		"native `jarvis sdd status`",
+		"otherwise report available binding state and recovery hints without preflight, init, delegation, or project file edits.",
+		"status may adopt a binding.",
 		"won't appear in autocomplete",
 	} {
 		if !strings.Contains(metaSection, required) {
 			t.Fatalf("/sdd-status meta/direct handling contract missing %q", required)
 		}
 	}
+
+	for _, forbidden := range []string{
+		"`/sdd-status` is read-only recovery",
+		"read-only status",
+	} {
+		if strings.Contains(metaSection, forbidden) {
+			t.Fatalf("/sdd-status meta/direct handling must not restore the obsolete positive status claim %q", forbidden)
+		}
+	}
 }
 
-func TestSDDOrchestrator_PreflightDirectCommandPrecedenceIsNotContradictory(t *testing.T) {
+func TestSDDOrchestrator_PreflightDirectCommandPrecedenceKeepsStatusExceptionBounded(t *testing.T) {
 	orchestrator := readPolicyFile(t, "embed/orchestrator/sdd-orchestrator.md")
+	preflightSection := markdownSection(t, orchestrator, "### sdd session preflight", "### review workload guard")
 
 	for _, required := range []string{
-		"read-only status may run without session preflight",
+		"`/sdd-status` may run without session preflight; it reports available state and recovery hints without running init, delegating phases, or editing project artifacts.",
+		"binding adoption is an allowed persistence action, not a claim that status is purely read-only.",
 		"mutating, planning, apply, verify, and archive sdd commands require session preflight",
 		"unless all four preflight choices were already provided",
 		"the sdd session preflight hard gate takes precedence over direct-command bypass wording",
@@ -228,6 +257,15 @@ func TestSDDOrchestrator_PreflightDirectCommandPrecedenceIsNotContradictory(t *t
 	} {
 		if !strings.Contains(orchestrator, required) {
 			t.Fatalf("orchestrator preflight precedence contract missing %q", required)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"`/sdd-status` is read-only recovery",
+		"read-only status",
+	} {
+		if strings.Contains(preflightSection, forbidden) {
+			t.Fatalf("orchestrator preflight precedence must not restore the obsolete positive status claim %q", forbidden)
 		}
 	}
 

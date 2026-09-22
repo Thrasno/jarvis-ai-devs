@@ -29,6 +29,57 @@ type ArtifactSource interface {
 	ListChanges(ctx context.Context) ([]string, error)
 }
 
+// LegacyProgressObservation is the read-only protected progress found in one
+// store before an artifact-store binding exists. Planning artifacts are not
+// part of this authority decision.
+type LegacyProgressObservation struct {
+	Present bool
+	State   ArtifactState
+	Content string
+}
+
+// ObserveLegacyProgress reads one source without mutating it and projects only
+// its protected apply-progress state. Source failures remain failures because
+// an unavailable store cannot be treated as empty safely.
+func ObserveLegacyProgress(ctx context.Context, source ArtifactSource, changeName string) (LegacyProgressObservation, error) {
+	artifacts, contents, err := source.FetchArtifacts(ctx, changeName)
+	if err != nil {
+		return LegacyProgressObservation{}, err
+	}
+	state, present := artifacts[ArtifactApplyProgress]
+	if !present {
+		return LegacyProgressObservation{}, nil
+	}
+	return LegacyProgressObservation{Present: true, State: state, Content: contents[ArtifactApplyProgress]}, nil
+}
+
+// LegacyProgressEquivalent reports whether two unbound stores prove the same
+// protected progress. Blocked observations never prove equality. Canonical v2
+// snapshots use the existing normalized equality contract; older progress must
+// match exactly and cannot be blank.
+func LegacyProgressEquivalent(left, right LegacyProgressObservation) bool {
+	if !left.Present || !right.Present {
+		return left.Present == right.Present
+	}
+	if isBlockedApplyProgress(left.State) || isBlockedApplyProgress(right.State) {
+		return false
+	}
+	_, leftV2Err := applyprogress.DecodeCanonicalSnapshot([]byte(left.Content))
+	_, rightV2Err := applyprogress.DecodeCanonicalSnapshot([]byte(right.Content))
+	if leftV2Err == nil || rightV2Err == nil {
+		return leftV2Err == nil && rightV2Err == nil && sameV2Progress(left.Content, right.Content)
+	}
+	if resemblesV2Progress(left.Content) || resemblesV2Progress(right.Content) {
+		return false
+	}
+	return left.State != "" && strings.TrimSpace(left.Content) != "" && left.State == right.State && left.Content == right.Content
+}
+
+func resemblesV2Progress(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	return strings.HasPrefix(trimmed, "{") || strings.Contains(content, applyprogress.SnapshotSchema)
+}
+
 // HiveSource reads SDD artifacts from a running hive-daemon.
 type HiveSource struct {
 	client  *hiveclient.Client
