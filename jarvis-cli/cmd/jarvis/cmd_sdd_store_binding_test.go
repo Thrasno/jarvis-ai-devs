@@ -134,7 +134,7 @@ func TestCrossCommandBoundSddProgressSurvivesEnvironmentRestart(t *testing.T) {
 		{name: "None", initialMode: "none", changedMode: "invalid", wantFirstErr: true, wantSecondErr: true, wantBinding: "", wantAdopts: 0, wantPosts: 0, wantArtifacts: 2, wantProgress: 2},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			workspace := t.TempDir()
+			workspace := canonicalSddTestWorkspace(t)
 			root := filepath.Join(workspace, "openspec", "changes", change)
 			if err := os.MkdirAll(root, 0o755); err != nil {
 				t.Fatal(err)
