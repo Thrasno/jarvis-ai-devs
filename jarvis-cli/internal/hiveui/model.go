@@ -121,9 +121,11 @@ type Snapshot struct {
 }
 
 type Model struct {
-	// width holds the last known terminal width from tea.WindowSizeMsg.
-	// Zero means no sizing message received yet; views apply an 80-col floor.
+	// width and height hold the last known terminal dimensions from tea.WindowSizeMsg.
+	// viewport.bounded distinguishes pre-resize rendering from exhausted content space.
 	width        int
+	height       int
+	viewport     verticalViewport
 	snapshot     Snapshot
 	screen       Screen
 	cursor       int
@@ -443,6 +445,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if sz, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width = sz.Width
+		m.height = max(0, sz.Height)
+		m.viewport.bounded = true
+		m.viewport.height = terminalui.AvailableContentHeight(m.height, 1, 1)
+		m.viewport = m.viewport.clamp(m.viewportItemCount())
 		return m, nil
 	}
 	key, ok := msg.(tea.KeyMsg)
@@ -680,6 +686,27 @@ func (m Model) View() string {
 	sb.WriteString("\n")
 	sb.WriteString(helpBar([]KeyHint{{"j/k", "move"}, {"enter", "open"}, {"w", "warnings"}, {"g", "health"}, {"c", "config"}, {"b", "backups"}, {"q", "quit"}}, mode, w))
 	return sb.String()
+}
+
+// viewportItemCount returns the selectable item count for screens that will
+// consume the shared viewport foundation. Other screens have no list offset.
+func (m Model) viewportItemCount() int {
+	switch m.screen {
+	case ScreenProjects:
+		return len(m.snapshot.Projects)
+	case ScreenProjectMemories, ScreenDeletedMemories, ScreenTimeline:
+		return len(m.screenMemories())
+	case ScreenWarnings:
+		return len(m.snapshot.Warnings)
+	case ScreenBackups:
+		return len(m.snapshot.Backups)
+	case ScreenAPIConfig:
+		return configFieldCount
+	case ScreenDashboard:
+		return len(m.dashboardActionRows())
+	default:
+		return 0
+	}
 }
 
 func (m Model) move(delta int) Model {

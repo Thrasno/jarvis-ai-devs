@@ -39,10 +39,10 @@ Projects, memories, timeline, warnings, backups, API health, purge, batch merge,
 ## Tasks
 
 ### 720-01 — Build the shared vertical foundation
-- [ ] Add failing tests for height capture, available-area calculation, bounded offsets, resize clamping, tiny terminals, and overflow indicators.
-- [ ] Store terminal height and implement the project-owned vertical range/viewport foundation.
-- [ ] Preserve pre-resize rendering and prevent negative dimensions or panics.
-- [ ] Run focused tests and applicable module verification.
+- [x] Add behavior tests for height capture, available-area calculation, bounded offsets, resize clamping, tiny terminals, and overflow indicators.
+- [x] Store terminal height and implement the project-owned vertical range/viewport foundation.
+- [x] Preserve pre-resize rendering and prevent negative dimensions or panics.
+- [x] Run focused tests and applicable module verification.
 - [ ] Record the work-unit commit and native assessment/review outcome.
 
 Route: delegated writer. Trigger: multi-file write across Hive TUI/layout implementation and tests.
@@ -81,9 +81,17 @@ Route: delegated writer. Trigger: multi-file write across complex workflows and 
 - Implementation and parallel isolated worktrees authorized by the user.
 - Feature Branch Chain selected.
 - Tracking document created before source writes.
+- Work unit 720-01 implemented on `fix/issue-720-01-vertical-foundation` with a project-owned viewport/range helper and no new dependency.
+- Independent verification found and then confirmed correction of the unknown-height versus known exhausted-height ambiguity.
 
 ## Verification evidence
-Pending.
+- Writer: `cd jarvis-cli && go test ./internal/hiveui ./internal/terminalui` — PASS.
+- Writer: `cd jarvis-cli && go test ./...` — PASS.
+- Writer: `cd jarvis-cli && go vet ./...` — PASS.
+- Writer: `git diff --check` — PASS.
+- Independent verifier after correction: all four commands PASS; prior medium finding resolved.
+- Parent spot check: `cd jarvis-cli && go test ./internal/hiveui ./internal/terminalui` — PASS (cached).
+- Native assessment: unavailable/empty output; treated as high risk and independently verified.
 
 ## Next step
-Commit tracker metadata, create child branch `fix/issue-720-01-vertical-foundation`, and delegate task 720-01.
+Create the 720-01 work-unit commit, record its hash, and branch 720-02 from it.

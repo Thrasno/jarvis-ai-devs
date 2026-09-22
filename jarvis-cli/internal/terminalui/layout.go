@@ -12,6 +12,26 @@ type KeyHint struct {
 	Desc string
 }
 
+// AvailableContentHeight returns the height left after reserving fixed header
+// and footer lines. A zero height means terminal size is not known yet; callers
+// use that sentinel to preserve their unbounded pre-resize behavior.
+func AvailableContentHeight(terminalHeight, headerLines, footerLines int) int {
+	if terminalHeight <= 0 {
+		return 0
+	}
+	if headerLines < 0 {
+		headerLines = 0
+	}
+	if footerLines < 0 {
+		footerLines = 0
+	}
+	fixedLines := headerLines + footerLines
+	if fixedLines >= terminalHeight {
+		return 0
+	}
+	return terminalHeight - fixedLines
+}
+
 // PanelWidth returns a safe panel width based on terminal width, floored at 80.
 // It subtracts a 2-char margin on each side.
 func PanelWidth(termWidth int) int {
