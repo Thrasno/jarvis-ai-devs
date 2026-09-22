@@ -65,6 +65,16 @@ func TestVerticalViewportRange(t *testing.T) {
 	}
 }
 
+func TestVerticalViewportFollowAndScroll(t *testing.T) {
+	viewport := verticalViewport{height: 3, bounded: true}
+	if got := followViewport(viewport, 5, 10); got.offset != 3 {
+		t.Fatalf("follow offset = %d, want 3", got.offset)
+	}
+	if got := scrollViewport(viewport, 8, 10); got.offset != 7 {
+		t.Fatalf("scroll offset = %d, want 7", got.offset)
+	}
+}
+
 func TestVerticalViewportClamp(t *testing.T) {
 	tests := []struct {
 		name   string

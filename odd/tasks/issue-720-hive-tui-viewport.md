@@ -30,6 +30,11 @@ Projects, memories, timeline, warnings, backups, API health, purge, batch merge,
 - Tracker branch: `fix/issue-720-viewport-tracker`.
 - Forecast: 1,000–1,600 authored changed lines across three reviewable work units.
 - Each child branch targets its immediate parent; master receives the complete behavior through the tracker.
+- Maintainer-authorized `size:exception` for WU-02: 1,042 changed lines after one honest cohesive slicing pass. Re-splitting would rewrite the already reviewed commit and invalidate its RDD approval.
+- Tracker slice: `71144483a64915303da6fb1dbf80ae7e0cf28008..b6944b351958363bdf4514dba4195e02df46d2e6`.
+- WU-01 slice: `b6944b351958363bdf4514dba4195e02df46d2e6..a09c78b2da6adfc085b1212ab71bc059767f9682`.
+- WU-02 slice: `a09c78b2da6adfc085b1212ab71bc059767f9682..f4b55f1cbcd4078d2f15df6053ad4b1f6b8e137f`.
+- WU-03 slice: `f4b55f1cbcd4078d2f15df6053ad4b1f6b8e137f..4353128b4b70a52393f2a5096414b0cc5113fd57` plus the delivery-record updates that follow it.
 
 ## TDD and verification
 - TDD mode: ordinary ODD verification; strict TDD is scoped to SDD by `AGENTS.md`.
@@ -48,21 +53,21 @@ Projects, memories, timeline, warnings, backups, API health, purge, batch merge,
 Route: delegated writer. Trigger: multi-file write across Hive TUI/layout implementation and tests.
 
 ### 720-02 — Migrate primary P0 views
-- [ ] Add behavior tests for long Projects, project memories, memory detail, Timeline, Warnings, Backups, and API health views.
-- [ ] Keep selected rows visible under line, wraparound, page, and boundary navigation.
-- [ ] Render deterministic visible-range and overflow feedback.
-- [ ] Preserve empty states, shortcuts, and back navigation.
-- [ ] Run focused tests and applicable module verification.
-- [ ] Record the work-unit commit and native assessment/review outcome.
+- [x] Add behavior tests for long Projects, project memories, memory detail, Timeline, Warnings, Backups, and API health views.
+- [x] Keep selected rows visible under line, wraparound, page, and boundary navigation.
+- [x] Render deterministic visible-range and overflow feedback.
+- [x] Preserve empty states, shortcuts, and back navigation.
+- [x] Run focused tests and applicable module verification.
+- [x] Record the work-unit commit and native assessment/review outcome.
 
 Route: delegated writer. Trigger: multi-file write and broad P0 view migration.
 
 ### 720-03 — Cover complex workflows and P1 screens
-- [ ] Add regressions for purge, batch merge, normalization, forms, confirmations, and multiline result/error states.
-- [ ] Apply the shared height contract to remaining P0/P1 screens.
-- [ ] Prove text input and guarded operations retain key ownership and semantics.
-- [ ] Run focused tests, complete module tests, and vet.
-- [ ] Record the work-unit commit and native assessment/review outcome.
+- [x] Add regressions for purge, batch merge, normalization, forms, confirmations, and multiline result/error states.
+- [x] Apply the shared height contract to remaining P0/P1 screens.
+- [x] Prove text input and guarded operations retain key ownership and semantics.
+- [x] Run focused tests, complete module tests, and vet.
+- [x] Record the work-unit commit and native assessment/review outcome.
 
 Route: delegated writer. Trigger: multi-file write across complex workflows and regression suites.
 
@@ -93,6 +98,27 @@ Route: delegated writer. Trigger: multi-file write across complex workflows and 
 - Parent spot check: `cd jarvis-cli && go test ./internal/hiveui ./internal/terminalui` — PASS (cached).
 - Native assessment: unavailable/empty output; treated as high risk and independently verified.
 - Work-unit commit: `1fb12fb892c8d502c7d71074bee505671ec44ef4` (`fix(hiveui): add vertical viewport foundation`).
+- Native RDD 720-01: approved and acknowledged; lineage `review-7bccad296e77376e`.
+- Work unit 720-02 migrated all primary P0 views and added cursor-follow, page/boundary navigation, visible-range feedback, physical display-cell wrapping, and narrow-terminal fallback coverage.
+- WU-02 independent verification found narrow-width frame overflow and inconsistent HelpBar/chrome budgets; the bounded correction uses actual known width, one-row width-safe chrome, and shared navigation/rendering budgets.
+- WU-02 writer after correction: `cd jarvis-cli && go test ./internal/hiveui ./internal/terminalui` — PASS.
+- WU-02 writer after correction: `cd jarvis-cli && go test ./...` — PASS.
+- WU-02 writer after correction: `cd jarvis-cli && go vet ./...` — PASS.
+- WU-02 writer after correction: `git diff --check` — PASS.
+- WU-02 parent spot check: `cd jarvis-cli && go test ./internal/hiveui ./internal/terminalui` — PASS (cached).
+- WU-02 work-unit commit: `9f5796c9de8f68b9e75e5da6754aba34e350390a` (`fix(hiveui): bound primary viewport screens`).
+- WU-02 evidence commit: `f4b55f1cbcd4078d2f15df6053ad4b1f6b8e137f` (`chore(odd): record primary viewport evidence`).
+- Native RDD 720-02: approved and acknowledged; lineage `review-065edeb54f752943`. Informational advisory `R3-feedback-width` opened no correction and remains separate later work.
+- Work unit 720-03 bounded purge, batch merge, normalization, forms, confirmations, and multiline result/error screens while preserving confirmation/text-input key ownership.
+- WU-03 RED: complex viewport regressions failed on unbounded batch, config-error, and purge frames before implementation.
+- WU-03 writer: `cd jarvis-cli && go test ./internal/hiveui ./internal/terminalui` — PASS.
+- WU-03 writer: `cd jarvis-cli && go test ./...` — PASS.
+- WU-03 writer: `cd jarvis-cli && go vet ./...` — PASS.
+- WU-03 writer: `git diff --check` — PASS.
+- WU-03 parent spot check: `cd jarvis-cli && go test ./internal/hiveui ./internal/terminalui` — PASS (cached).
+- WU-03 work-unit commit: `32d75dce1dd0d2e7e6e909b65f61ec9fd2c98664` (`fix(hiveui): bound complex viewport workflows`).
+- WU-03 evidence commit: `04d52ca130097289e51b1d4208ec858c59372505` (`chore(odd): record complex viewport evidence`).
+- Native RDD 720-03: approved and acknowledged; lineage `review-e744027c44601583`. Informational advisory `R3-001` opened no correction and remains separate later work.
 
 ## Next step
-Branch 720-02 from the completed foundation and migrate the primary P0 views.
+Prepare the approved Feature Branch Chain for delivery when the user authorizes publication.
