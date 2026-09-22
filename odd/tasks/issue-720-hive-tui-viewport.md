@@ -30,6 +30,11 @@ Projects, memories, timeline, warnings, backups, API health, purge, batch merge,
 - Tracker branch: `fix/issue-720-viewport-tracker`.
 - Forecast: 1,000–1,600 authored changed lines across three reviewable work units.
 - Each child branch targets its immediate parent; master receives the complete behavior through the tracker.
+- Maintainer-authorized `size:exception` for WU-02: 1,042 changed lines after one honest cohesive slicing pass. Re-splitting would rewrite the already reviewed commit and invalidate its RDD approval.
+- Tracker slice: `b6944b351958363bdf4514dba4195e02df46d2e6`.
+- WU-01 slice: `1fb12fb892c8d502c7d71074bee505671ec44ef4..a09c78b2da6adfc085b1212ab71bc059767f9682`.
+- WU-02 slice: `9f5796c9de8f68b9e75e5da6754aba34e350390a..f4b55f1cbcd4078d2f15df6053ad4b1f6b8e137f`.
+- WU-03 slice: `32d75dce1dd0d2e7e6e909b65f61ec9fd2c98664..4353128b4b70a52393f2a5096414b0cc5113fd57` plus this delivery-record update.
 
 ## TDD and verification
 - TDD mode: ordinary ODD verification; strict TDD is scoped to SDD by `AGENTS.md`.
