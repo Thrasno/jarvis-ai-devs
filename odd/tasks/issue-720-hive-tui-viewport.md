@@ -111,6 +111,7 @@ Route: delegated writer. Trigger: multi-file write across complex workflows and 
 - WU-03 writer: `cd jarvis-cli && go vet ./...` — PASS.
 - WU-03 writer: `git diff --check` — PASS.
 - WU-03 parent spot check: `cd jarvis-cli && go test ./internal/hiveui ./internal/terminalui` — PASS (cached).
+- WU-03 work-unit commit: `32d75dce1dd0d2e7e6e909b65f61ec9fd2c98664` (`fix(hiveui): bound complex viewport workflows`).
 
 ## Next step
-Commit work unit 720-03, run native RDD for its committed range, then prepare the Feature Branch Chain delivery.
+Record the WU-03 commit evidence, run native RDD for its committed range, then prepare the Feature Branch Chain delivery.
