@@ -1374,6 +1374,103 @@ func sharedApplyProgressGetFixture(t *testing.T) []byte {
 	return data
 }
 
+func TestObserveLegacyProgressUsesOnlyProtectedProgress(t *testing.T) {
+	source := legacyProgressSource{
+		artifacts: map[string]sddstatus.ArtifactState{sddstatus.ArtifactProposal: sddstatus.ArtifactDone},
+		contents:  map[string]string{sddstatus.ArtifactProposal: "proposal"},
+	}
+	observation, err := sddstatus.ObserveLegacyProgress(context.Background(), source, "change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.Present || observation.State != "" || observation.Content != "" {
+		t.Fatalf("observation = %#v, want absent protected progress", observation)
+	}
+
+	source.artifacts[sddstatus.ArtifactApplyProgress] = sddstatus.ArtifactBlockedInvalid
+	source.contents[sddstatus.ArtifactApplyProgress] = "invalid progress"
+	observation, err = sddstatus.ObserveLegacyProgress(context.Background(), source, "change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !observation.Present || observation.State != sddstatus.ArtifactBlockedInvalid || observation.Content != "invalid progress" {
+		t.Fatalf("observation = %#v", observation)
+	}
+}
+
+func TestObserveLegacyProgressPropagatesSourceFailure(t *testing.T) {
+	want := errors.New("source unavailable")
+	_, err := sddstatus.ObserveLegacyProgress(context.Background(), legacyProgressSource{err: want}, "change")
+	if !errors.Is(err, want) {
+		t.Fatalf("error = %v, want source failure", err)
+	}
+}
+
+func TestLegacyProgressEquivalent(t *testing.T) {
+	canonical := legacyProgressSnapshot(t, "change")
+	divergent := legacyProgressSnapshot(t, "other-change")
+	for _, tt := range []struct {
+		name        string
+		left, right sddstatus.LegacyProgressObservation
+		want        bool
+	}{
+		{name: "both absent", want: true},
+		{name: "one present", left: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactDone, Content: "complete"}},
+		{name: "matching legacy", left: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactDone, Content: "complete"}, right: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactDone, Content: "complete"}, want: true},
+		{name: "legacy state mismatch", left: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactDone, Content: "complete"}, right: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactPartial, Content: "complete"}},
+		{name: "legacy content mismatch", left: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactDone, Content: "complete"}, right: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactDone, Content: "partial"}},
+		{name: "blank legacy content", left: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactDone}, right: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactDone}},
+		{name: "whitespace legacy content", left: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactDone, Content: " \t\n"}, right: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactDone, Content: " \t\n"}},
+		{name: "blank legacy state", left: sddstatus.LegacyProgressObservation{Present: true, Content: "complete"}, right: sddstatus.LegacyProgressObservation{Present: true, Content: "complete"}},
+		{name: "matching blocked states", left: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactBlockedInvalid, Content: "same"}, right: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactBlockedInvalid, Content: "same"}},
+		{name: "different blocked states", left: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactBlockedInvalid, Content: "same"}, right: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactBlockedBackendDiverged, Content: "same"}},
+		{name: "normalized canonical v2", left: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactDone, Content: canonical}, right: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactPartial, Content: canonical}, want: true},
+		{name: "divergent canonical v2", left: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactDone, Content: canonical}, right: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactDone, Content: divergent}},
+		{name: "canonical and legacy", left: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactDone, Content: canonical}, right: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactDone, Content: "complete"}},
+		{name: "matching malformed v2", left: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactDone, Content: `{"schema":"jarvis.sdd-apply-progress/v2"`}, right: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactDone, Content: `{"schema":"jarvis.sdd-apply-progress/v2"`}},
+		{name: "matching v2 lookalike", left: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactDone, Content: ` {"schema":"jarvis.sdd-apply-progress/v2"}`}, right: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactDone, Content: ` {"schema":"jarvis.sdd-apply-progress/v2"}`}},
+		{name: "matching spaced v2 lookalike", left: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactDone, Content: `{"schema" : "jarvis.sdd-apply-progress/v2"}`}, right: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactDone, Content: `{"schema" : "jarvis.sdd-apply-progress/v2"}`}},
+		{name: "matching escaped v2 lookalike", left: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactDone, Content: `{"schema":"jarvis.sdd-apply-progress\/v2"}`}, right: sddstatus.LegacyProgressObservation{Present: true, State: sddstatus.ArtifactDone, Content: `{"schema":"jarvis.sdd-apply-progress\/v2"}`}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sddstatus.LegacyProgressEquivalent(tt.left, tt.right); got != tt.want {
+				t.Fatalf("LegacyProgressEquivalent() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func legacyProgressSnapshot(t *testing.T, change string) string {
+	t.Helper()
+	_, data, err := applyprogress.SealSnapshot(applyprogress.Snapshot{
+		Schema:             applyprogress.SnapshotSchema,
+		Project:            "jarvis-dev",
+		Change:             change,
+		Generation:         1,
+		Revision:           1,
+		TaskManifestSHA256: strings.Repeat("a", 64),
+		Status:             applyprogress.StatusPartial,
+		Coverage:           []applyprogress.Coverage{},
+		Batches:            []applyprogress.BatchRef{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+type legacyProgressSource struct {
+	artifacts map[string]sddstatus.ArtifactState
+	contents  map[string]string
+	err       error
+}
+
+func (s legacyProgressSource) FetchArtifacts(context.Context, string) (map[string]sddstatus.ArtifactState, map[string]string, error) {
+	return s.artifacts, s.contents, s.err
+}
+
+func (legacyProgressSource) ListChanges(context.Context) ([]string, error) { return nil, nil }
+
 func newHiveSource(t *testing.T, baseURL string) *sddstatus.HiveSource {
 	t.Helper()
 	client, err := hiveclient.New(baseURL)

@@ -3,13 +3,17 @@
 package sddbinding
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -66,11 +70,68 @@ func openChangeRoot(changeDir string) (*changeRoot, error) {
 
 func (r *changeRoot) Close() error { return unix.Close(r.fd) }
 
+func (r *changeRoot) samePhysicalDirectory(other *changeRoot) (bool, error) {
+	var left, right unix.Stat_t
+	if err := unix.Fstat(r.fd, &left); err != nil {
+		return false, fmt.Errorf("%w: resolution lock directory identity", ErrUnsafePath)
+	}
+	if err := unix.Fstat(other.fd, &right); err != nil {
+		return false, fmt.Errorf("%w: OpenSpec change directory identity", ErrUnsafePath)
+	}
+	return left.Dev == right.Dev && left.Ino == right.Ino, nil
+}
+
+const (
+	lockContextInitialBackoff = 10 * time.Millisecond
+	lockContextMaximumBackoff = 100 * time.Millisecond
+)
+
 func (r *changeRoot) lock() (func(), error) {
 	if err := unix.Flock(r.fd, unix.LOCK_EX); err != nil {
 		return nil, fmt.Errorf("lock OpenSpec binding directory: %w", err)
 	}
 	return func() { _ = unix.Flock(r.fd, unix.LOCK_UN) }, nil
+}
+
+func (r *changeRoot) lockContext(ctx context.Context) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	backoff := lockContextInitialBackoff
+	for {
+		err := unix.Flock(r.fd, unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			if err := ctx.Err(); err != nil {
+				_ = unix.Flock(r.fd, unix.LOCK_UN)
+				return nil, err
+			}
+			var once sync.Once
+			return func() { once.Do(func() { _ = unix.Flock(r.fd, unix.LOCK_UN) }) }, nil
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
+			return nil, fmt.Errorf("lock OpenSpec binding directory: %w", err)
+		}
+
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+		if backoff < lockContextMaximumBackoff {
+			backoff *= 2
+			if backoff > lockContextMaximumBackoff {
+				backoff = lockContextMaximumBackoff
+			}
+		}
+	}
 }
 
 func (r *changeRoot) readState() (stateRecord, error) {

@@ -48,7 +48,7 @@ func AdoptOpenSpec(changeDir string, requested Binding) (Binding, bool, error) {
 	}
 	defer root.Close()
 
-	doc, state, exists, err := readStateDocument(root)
+	doc, _, exists, err := readStateDocument(root)
 	if err != nil {
 		return Binding{}, false, err
 	}
@@ -61,7 +61,15 @@ func AdoptOpenSpec(changeDir string, requested Binding) (Binding, bool, error) {
 		return Binding{}, false, err
 	}
 	defer unlock()
-	doc, state, exists, err = readStateDocument(root)
+	return adoptOpenSpecLocked(root, requested)
+}
+
+// adoptOpenSpecLocked adopts requested while the caller holds root.lock. It is
+// shared with cross-store legacy resolution so the binding decision and both
+// backend adoptions can use one local serialization boundary without nesting
+// the same directory lock.
+func adoptOpenSpecLocked(root *changeRoot, requested Binding) (Binding, bool, error) {
+	doc, state, exists, err := readStateDocument(root)
 	if err != nil {
 		return Binding{}, false, err
 	}
