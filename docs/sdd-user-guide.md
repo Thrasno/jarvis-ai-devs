@@ -37,6 +37,16 @@ This policy exists to prevent accidental implementation, unclear artifact storag
 
 Jarvis SDD artifacts belong to the Jarvis product workflow. Do not confuse them with assistant memory systems used by an external agent during development. In this repository, Hive is the default SDD artifact store unless a workflow explicitly chooses an OpenSpec/file-based mode.
 
+## Store binding and diagnostics
+
+Each `project/change` has at most one immutable persisted binding: `hive`, `openspec`, or `hybrid`. `none` is inline-only and never persists. A persisted binding takes precedence over `JARVIS_SDD_STORE_MODE`; the environment variable only selects an unbound change, including when a later value is invalid.
+
+Hive owns bindings in SQLite. OpenSpec owns them in `openspec/changes/<change>/state.yaml`. Hybrid requires matching copies and equivalent protected progress; unavailable, malformed, unsupported, blank, noncanonical, or divergent state blocks rather than selecting one side. Planning artifacts never select authority, and legacy adoption is permitted only through protected canonical `apply-progress`.
+
+Use `jarvis sdd status <change>` to show the binding and provenance in `jarvis sdd status`. Status may adopt an unbound change before it selects a backend, so it is not purely read-only recovery. For a problem report, provide the exact project and change, inspect both copies for hybrid, and distinguish absence from unavailable. `jarvis doctor` cannot determine an effective per-change binding because it does not receive those coordinates.
+
+Progress and archive resolve/adopt the binding first. Hybrid recovery preserves its existing receipt, request ID, payload, identity, and authority. A partial recovery may replay or revalidate the exact request against both backends through their idempotent contracts before accepting acknowledgements. A complete receipt returns without replay. Never change the payload, identity, or authority, and never rewrite confirmed progress. Archive requires a complete executor-written `archive-report`; hybrid requires it to be byte-identical and non-blank on both sides, then revalidates it and protected progress under a local lock. This is not distributed atomicity: Hive writes after the final fetch are outside that lock. There is no typed closure API, closure state, or archive receipt.
+
 ## Existing install regeneration
 
 Existing installations created by older Jarvis versions must regenerate generated agent artifacts before Hive or hybrid SDD subagents can rely on Hive MCP tools. Run `jarvis init` or the supported reconfiguration flow for your installed provider.

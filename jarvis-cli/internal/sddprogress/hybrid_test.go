@@ -60,12 +60,15 @@ type checkpointHiveBackend struct {
 
 type legacyRetryBackend struct {
 	retryBackend
-	authority LegacyAuthority
-	request   AdvanceRequest
+	authority      LegacyAuthority
+	authorityCalls int
+	authorityErr   error
+	request        AdvanceRequest
 }
 
 func (b *legacyRetryBackend) LegacyAuthority(AdvanceRequest) (LegacyAuthority, error) {
-	return b.authority, nil
+	b.authorityCalls++
+	return b.authority, b.authorityErr
 }
 
 func (b *legacyRetryBackend) Advance(request AdvanceRequest) (AdvanceResult, error) {
@@ -237,9 +240,71 @@ func TestHybridLegacyUpgradeRestoresSourceAfterHiveFailure(t *testing.T) {
 		t.Fatalf("migrated OpenSpec current = %#v, %v; want durable partial migration", current, currentErr)
 	}
 	hive.err = nil
-	result, upgraded, err := h.UpgradeLegacy(r)
+	recovery := legacyRequest(t, "hybrid-legacy")
+	result, upgraded, err := h.UpgradeLegacy(recovery)
 	if err != nil || !upgraded || result.Generation != 1 || hive.calls != 2 {
 		t.Fatalf("retry=%#v upgraded=%t err=%v calls=%d", result, upgraded, err, hive.calls)
+	}
+	if got, want := hive.request.LegacySourceSHA256, applyprogress.LegacySourceSHA256(legacy); got != want {
+		t.Fatalf("derived recovery source binding = %q, want %q", got, want)
+	}
+}
+
+func TestHybridUpgradeLegacyClassifiesExactPartialV2ReceiptAsOrdinary(t *testing.T) {
+	root := newOpenSpecTestRoot(t)
+	request := request(t, "hybrid-v2-recovery", "apb-00000000000000000000000000000001", 1, 1, "")
+	hive := &legacyRetryBackend{retryBackend: retryBackend{err: errInterrupted}}
+	h := Hybrid{Root: root, OpenSpec: OpenSpec{Root: root}, Hive: hive}
+
+	if _, err := h.Advance(request); !errors.Is(err, errInterrupted) {
+		t.Fatalf("initial advance error = %v, want interruption", err)
+	}
+	hive.err = nil
+	if _, upgraded, err := h.UpgradeLegacy(request); err != nil || upgraded {
+		t.Fatalf("UpgradeLegacy() upgraded=%t err=%v, want ordinary v2 classification", upgraded, err)
+	}
+	if hive.authorityCalls != 0 {
+		t.Fatalf("LegacyAuthority calls = %d, want no legacy authority lookup", hive.authorityCalls)
+	}
+	if _, err := h.Advance(request); err != nil {
+		t.Fatalf("ordinary receipt recovery error = %v", err)
+	}
+	payload, err := payloadDigestFor(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, found, err := h.receipt(request.RequestID)
+	if err != nil || !found || !receiptComplete(receipt, request, payload) {
+		t.Fatalf("recovered receipt found=%t receipt=%#v err=%v, want both acknowledgements", found, receipt, err)
+	}
+}
+
+func TestHybridUpgradeLegacyRejectsDistinctV2ReceiptPayload(t *testing.T) {
+	root := newOpenSpecTestRoot(t)
+	original := request(t, "hybrid-v2-conflict", "apb-00000000000000000000000000000001", 1, 1, "")
+	tasks, err := os.ReadFile(filepath.Join(root, "tasks.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := []byte("status: complete\n")
+	hive := &legacyRetryBackend{
+		retryBackend: retryBackend{err: errInterrupted},
+		authority:    LegacyAuthority{Tasks: tasks, Progress: legacy, Found: true},
+	}
+	h := Hybrid{Root: root, OpenSpec: OpenSpec{Root: root}, Hive: hive}
+	if _, err := h.Advance(original); !errors.Is(err, errInterrupted) {
+		t.Fatalf("initial advance error = %v, want interruption", err)
+	}
+
+	changed := request(t, original.RequestID, "apb-00000000000000000000000000000002", 1, 1, "")
+	if _, upgraded, err := h.UpgradeLegacy(changed); upgraded || !errors.Is(err, ErrRequestConflict) {
+		t.Fatalf("UpgradeLegacy() upgraded=%t err=%v, want request conflict", upgraded, err)
+	}
+	if hive.authorityCalls != 1 {
+		t.Fatalf("LegacyAuthority calls = %d, want one protected legacy recovery lookup", hive.authorityCalls)
+	}
+	if hive.calls != 1 {
+		t.Fatalf("Hive Advance calls = %d, want no reclassified ordinary recovery", hive.calls)
 	}
 }
 
