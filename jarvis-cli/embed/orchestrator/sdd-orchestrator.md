@@ -72,7 +72,15 @@ SDD is the structured planning layer for substantial changes.
 
 ### Native SDD Dispatcher Guard
 
-Route SDD commands deterministically. Before routing, continuing, applying, verifying, archiving, or reporting status for an SDD change, use the native dispatcher when the `jarvis` CLI is available. Read-only status may run without session preflight so the user can recover state before choosing an SDD path:
+#### Binding Resolution and Diagnostics
+
+Before backend selection, resolve or adopt the one immutable authoritative `project/change` binding: `hive`, `openspec`, or `hybrid`. `none` is never persisted. A persisted binding wins over `JARVIS_SDD_STORE_MODE`, including an invalid environment value; the environment selects only an unbound change. Hive owns its binding in SQLite, OpenSpec owns it in `openspec/changes/{change-name}/state.yaml`, and hybrid requires matching copies. Do not create a neutral registry or let planning artifacts select authority.
+
+Run this resolution for status, continue, progress (`advance`, `checkpoint`, `upgrade-continuation`), and archive before selecting a backend. `jarvis sdd status` may adopt a binding, so it is not purely read-only recovery, even though it may run without session preflight. Treat unavailable/protocol failure as distinct from absence. Blank, malformed, unsupported, noncanonical, divergent bindings, or protected-progress failures block fail closed; hybrid divergence fails closed and never chooses a copy arbitrarily.
+
+For diagnostics, show binding mode and provenance in `jarvis sdd status`. Ask for exact project and change coordinates, inspect both copies for hybrid, and distinguish absence from unavailable. `jarvis doctor` does not know per-change coordinates and cannot determine an effective binding.
+
+Route SDD commands deterministically. Before routing, continuing, applying, verifying, archiving, or reporting status for an SDD change, use the native dispatcher when the `jarvis` CLI is available. Status may run without session preflight so the user can inspect or adopt binding state before choosing an SDD path:
 
 ```
 jarvis sdd status <change> --json          # authoritative ChangeStatus (schema: jarvis.sdd-status)
@@ -106,7 +114,7 @@ SDD is recommendation-only until the user explicitly accepts or requests it. Abs
 
 Before executing any mutating, planning, init, apply, verify, or archive SDD command or natural-language SDD request, ensure this session has an explicit `SDD Session Preflight` decision block.
 
-This applies to `/sdd-init`, `/sdd-new`, `/sdd-ff`, `/sdd-continue`, `/sdd-explore`, `/sdd-apply`, `/sdd-verify`, `/sdd-archive`, and natural-language equivalents such as "use SDD to add dark mode" or "do it with SDD". `/sdd-status` is read-only recovery and must not be blocked by missing session preflight.
+This applies to `/sdd-init`, `/sdd-new`, `/sdd-ff`, `/sdd-continue`, `/sdd-explore`, `/sdd-apply`, `/sdd-verify`, `/sdd-archive`, and natural-language equivalents such as "use SDD to add dark mode" or "do it with SDD". `/sdd-status` may inspect or adopt binding state without session preflight; it must not run phases or edit project artifacts.
 
 Required preflight choices:
 
@@ -163,7 +171,7 @@ Map answers to canonical values:
 
 Hard gate rules:
 
-- Read-only status may run without session preflight; `/sdd-status` reports available state and recovery hints without mutating artifacts, running init, delegating phases, or editing files.
+- `/sdd-status` may run without session preflight; it reports available state and recovery hints without running init, delegating phases, or editing project artifacts. Binding adoption is an allowed persistence action, not a claim that status is purely read-only.
 - Mutating, planning, apply, verify, and archive SDD commands require session preflight unless all four preflight choices were already provided in the current conversation.
 - The SDD Session Preflight hard gate takes precedence over direct-command bypass wording. Outside this SDD hard gate, direct command warnings remain advisory.
 - `openspec/config.yaml`, existing SDD artifacts, previous `sdd-init` results, installed SDD assets, or generated local skill copies do NOT satisfy session preflight.
@@ -239,7 +247,7 @@ Skills (appear in autocomplete):
 
 Meta-commands and direct orchestrator handling (type directly — orchestrator handles them, won't appear in autocomplete):
 
-- `/sdd-status [change]` → read-only status handled directly by the orchestrator; use native `jarvis sdd status` (`jarvis sdd status <change> --json`) when available, otherwise report status from available artifacts without preflight, init, delegation, or file edits
+- `/sdd-status [change]` → status handled directly by the orchestrator; use native `jarvis sdd status` (`jarvis sdd status <change> --json`) when available, otherwise report available binding state and recovery hints without preflight, init, delegation, or project file edits. Status may adopt a binding.
 - `/sdd-new <change>` → start a new change by delegating exploration + proposal to sub-agents
 - `/sdd-continue [change]` → run the next dependency-ready phase via sub-agent(s)
 - `/sdd-ff <name>` → fast-forward planning: proposal → specs → design → tasks
@@ -248,7 +256,7 @@ Meta-commands and direct orchestrator handling (type directly — orchestrator h
 
 ### SDD Init Guard (MANDATORY)
 
-After `SDD Session Preflight` is complete and before executing any mutating, planning, init, apply, verify, or archive SDD command (`/sdd-init`, `/sdd-new`, `/sdd-ff`, `/sdd-continue`, `/sdd-explore`, `/sdd-apply`, `/sdd-verify`, `/sdd-archive`), check if `sdd-init` has been run for this project. `/sdd-status` is read-only recovery: do not run init for status; report available state, missing init, and recovery hints.
+After `SDD Session Preflight` is complete and before executing any mutating, planning, init, apply, verify, or archive SDD command (`/sdd-init`, `/sdd-new`, `/sdd-ff`, `/sdd-continue`, `/sdd-explore`, `/sdd-apply`, `/sdd-verify`, `/sdd-archive`), check if `sdd-init` has been run for this project. `/sdd-status` does not run init; resolve or adopt its binding, then report available state, missing init, and recovery hints.
 
 1. Search Hive: `mem_search(query: "sdd-init/{project}", project: "{project}")`
 2. If found:
@@ -328,7 +336,7 @@ This is collected by `SDD Session Preflight`. If missing, enforce the hard gate 
 
 Artifact store is collected by `SDD Session Preflight`. Do not silently infer or default artifact store mode after the hard gate. Missing artifact-store choice means preflight is incomplete; ask the localized preflight prompt and stop before init, planning, delegation, or file edits.
 
-Cache the artifact store choice for the session. Pass it as `artifact_store.mode` to every sub-agent launch.
+Cache the artifact store choice for the session only as an initial selection. Once a `project/change` binding persists, it is immutable authority and must be passed as `artifact_store.mode` to every sub-agent launch.
 
 ### Dependency Graph
 

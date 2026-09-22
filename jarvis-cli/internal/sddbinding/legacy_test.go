@@ -17,6 +17,107 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
 )
 
+func TestLegacyBindingCanceledContextAvoidsReadsAndAdoptions(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	hive := &fakeHiveBindingStore{}
+	local := &fakeOpenSpecBindingStore{}
+	hiveSource := &fakeLegacySource{}
+	openSpecSource := &fakeLegacySource{}
+	resolver := LegacyResolver{
+		HiveBindings:      hive,
+		OpenSpecBindings:  local,
+		HiveSource:        hiveSource,
+		OpenSpecSource:    openSpecSource,
+		OpenSpecChangeDir: "change-dir",
+	}
+
+	_, err := resolver.ResolveAndAdopt(ctx, "project", "change", InitialSelection{Mode: sddruntime.StoreModeHive, Provenance: "initial"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ResolveAndAdopt() error = %v, want context.Canceled", err)
+	}
+	if hive.gets != 0 || local.reads != 0 || len(hive.adopted) != 0 || len(local.adopted) != 0 || hiveSource.calls != 0 || openSpecSource.calls != 0 {
+		t.Fatalf("canceled resolution performed effects: Hive gets=%d adopts=%d, OpenSpec reads=%d adopts=%d, sources=%d/%d", hive.gets, len(hive.adopted), local.reads, len(local.adopted), hiveSource.calls, openSpecSource.calls)
+	}
+}
+
+func TestLegacyBindingCancellationWhileResolutionLockContendedHasNoLateEffects(t *testing.T) {
+	resolutionDir := t.TempDir()
+	changeDir := filepath.Join(resolutionDir, "openspec", "changes", "change")
+	if err := os.MkdirAll(changeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := openChangeRoot(resolutionDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := holder.Close(); err != nil {
+			t.Errorf("close resolution lock holder: %v", err)
+		}
+	})
+
+	holderAcquired := make(chan struct{})
+	holderErr := make(chan error, 1)
+	releaseHolder := make(chan struct{})
+	holderReleased := make(chan struct{})
+	go func() {
+		unlock, err := holder.lock()
+		if err != nil {
+			holderErr <- err
+			return
+		}
+		close(holderAcquired)
+		<-releaseHolder
+		unlock()
+		close(holderReleased)
+	}()
+	select {
+	case <-holderAcquired:
+	case err := <-holderErr:
+		t.Fatal(err)
+	}
+	var releaseOnce sync.Once
+	releaseAndWait := func() {
+		releaseOnce.Do(func() {
+			close(releaseHolder)
+			<-holderReleased
+		})
+	}
+	t.Cleanup(releaseAndWait)
+
+	hive := &fakeHiveBindingStore{}
+	hiveSource := observationSource(sddstatus.LegacyProgressObservation{})
+	openSpecSource := observationSource(sddstatus.LegacyProgressObservation{})
+	resolver := LegacyResolver{
+		HiveBindings:      hive,
+		HiveSource:        hiveSource,
+		OpenSpecSource:    openSpecSource,
+		OpenSpecChangeDir: changeDir,
+		ResolutionLockDir: resolutionDir,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	_, err = resolver.ResolveAndAdopt(ctx, "project", "change", InitialSelection{Mode: sddruntime.StoreModeOpenSpec, Provenance: "initial"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ResolveAndAdopt() error = %v, want context.DeadlineExceeded", err)
+	}
+	assertNoContentionEffects(t, hive, hiveSource, openSpecSource, changeDir)
+
+	releaseAndWait()
+	assertNoContentionEffects(t, hive, hiveSource, openSpecSource, changeDir)
+}
+
+func assertNoContentionEffects(t *testing.T, hive *fakeHiveBindingStore, hiveSource, openSpecSource *fakeLegacySource, changeDir string) {
+	t.Helper()
+	if hive.gets != 0 || len(hive.adopted) != 0 || hiveSource.calls != 0 || openSpecSource.calls != 0 {
+		t.Fatalf("deadline resolution performed effects: Hive gets=%d adopts=%d, sources=%d/%d", hive.gets, len(hive.adopted), hiveSource.calls, openSpecSource.calls)
+	}
+	if _, err := os.Stat(filepath.Join(changeDir, stateFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("deadline resolution wrote state.yaml: %v", err)
+	}
+}
+
 func TestLegacyBindingUsesValidPersistedCopiesWithoutInspection(t *testing.T) {
 	for _, tt := range []struct {
 		name       string
@@ -402,8 +503,15 @@ func newConcurrentOpenSpecBindingStore() *concurrentOpenSpecBindingStore {
 	return &concurrentOpenSpecBindingStore{bothRead: make(chan struct{})}
 }
 
-func (f *concurrentOpenSpecBindingStore) LockOpenSpec(string) (func(), error) {
+func (f *concurrentOpenSpecBindingStore) LockOpenSpec(ctx context.Context, _ string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	f.resolution.Lock()
+	if err := ctx.Err(); err != nil {
+		f.resolution.Unlock()
+		return nil, err
+	}
 	f.locked.Store(true)
 	return func() {
 		f.locked.Store(false)
@@ -450,6 +558,7 @@ func (emptyLegacySource) ListChanges(context.Context) ([]string, error) { return
 
 type fakeHiveBindingStore struct {
 	binding       *hiveclient.SDDStoreBinding
+	gets          int
 	found         bool
 	getErr        error
 	adoptErr      error
@@ -459,6 +568,7 @@ type fakeHiveBindingStore struct {
 }
 
 func (f *fakeHiveBindingStore) GetSDDStoreBinding(context.Context, string, string) (hiveclient.SDDStoreBinding, bool, error) {
+	f.gets++
 	if f.getErr != nil {
 		return hiveclient.SDDStoreBinding{}, false, f.getErr
 	}
@@ -487,18 +597,27 @@ func (f *fakeHiveBindingStore) AdoptSDDStoreBinding(_ context.Context, project, 
 type fakeOpenSpecBindingStore struct {
 	resolution sync.Mutex
 	binding    *Binding
+	reads      int
 	readErr    error
 	adoptErr   error
 	adopted    []Binding
 	order      *[]string
 }
 
-func (f *fakeOpenSpecBindingStore) LockOpenSpec(string) (func(), error) {
+func (f *fakeOpenSpecBindingStore) LockOpenSpec(ctx context.Context, _ string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	f.resolution.Lock()
+	if err := ctx.Err(); err != nil {
+		f.resolution.Unlock()
+		return nil, err
+	}
 	return f.resolution.Unlock, nil
 }
 
 func (f *fakeOpenSpecBindingStore) ReadOpenSpec(string) (*Binding, error) {
+	f.reads++
 	return f.binding, f.readErr
 }
 

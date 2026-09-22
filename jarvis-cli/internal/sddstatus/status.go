@@ -172,12 +172,21 @@ type PhaseRelationship struct {
 	Requires       []string `json:"requires,omitempty"`
 }
 
+// StoreBindingStatus reports the authoritative artifact-store selection separately
+// from the effective ArtifactStore compatibility field.
+type StoreBindingStatus struct {
+	Mode       string `json:"mode"`
+	Provenance string `json:"provenance"`
+	Persisted  bool   `json:"persisted"`
+}
+
 // ChangeStatus is the stable JSON contract for SDD phase routing.
 // Schema: "jarvis.sdd-status".
 type ChangeStatus struct {
 	Schema            string                     `json:"schema"`
 	ChangeName        string                     `json:"changeName"`
 	ArtifactStore     string                     `json:"artifactStore"`
+	StoreBinding      *StoreBindingStatus        `json:"storeBinding,omitempty"`
 	PlanningHome      string                     `json:"planningHome"`
 	ChangeRoot        string                     `json:"changeRoot"`
 	ArtifactPaths     map[string]string          `json:"artifactPaths"`
@@ -217,6 +226,8 @@ type Input struct {
 	// PhaseInstructions maps phases to the slash command used to invoke them.
 	// Defaults to /{phase} {changeName}.
 	PhaseInstructions map[string]string
+	// StoreBinding reports the binding used to choose ArtifactStore.
+	StoreBinding *StoreBindingStatus
 }
 
 // ComputeStatus derives a ChangeStatus from the observed artifact states and contents.
@@ -268,6 +279,7 @@ func ComputeStatus(changeName, artifactStore string, in Input) *ChangeStatus {
 		Schema:            StatusSchema,
 		ChangeName:        changeName,
 		ArtifactStore:     artifactStore,
+		StoreBinding:      copyStoreBindingStatus(in.StoreBinding),
 		PlanningHome:      planningHome,
 		ChangeRoot:        changeRoot,
 		ArtifactPaths:     artifactPaths,
@@ -323,6 +335,14 @@ func defaultString(value, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func copyStoreBindingStatus(in *StoreBindingStatus) *StoreBindingStatus {
+	if in == nil {
+		return nil
+	}
+	copy := *in
+	return &copy
 }
 
 func copyStringMap(in map[string]string) map[string]string {
