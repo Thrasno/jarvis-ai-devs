@@ -67,6 +67,7 @@ Route: delegated writer. Trigger: multi-file write across canonical assets and t
 - Parent spot check: `cd jarvis-cli && go test ./internal/agent` — PASS (cached).
 - Native assessment: unavailable/schema incompatible; treated as high risk and independently verified.
 - Work-unit commit: `162e837a5f961200d566cd4039d5442e157bbf90` (`fix(hive): prevent unsolicited report files`).
+- Native RDD: approved and acknowledged; lineage `review-a52cf389bf13e4ff`.
 
 ## Next step
-Prepare the single-PR delivery after final branch status/readback.
+Prepare the approved single-PR delivery when the user authorizes publication.
