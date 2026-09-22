@@ -62,7 +62,7 @@ Route: delegated writer. Trigger: multi-file write and broad P0 view migration.
 - [x] Apply the shared height contract to remaining P0/P1 screens.
 - [x] Prove text input and guarded operations retain key ownership and semantics.
 - [x] Run focused tests, complete module tests, and vet.
-- [ ] Record the work-unit commit and native assessment/review outcome.
+- [x] Record the work-unit commit and native assessment/review outcome.
 
 Route: delegated writer. Trigger: multi-file write across complex workflows and regression suites.
 
@@ -112,6 +112,8 @@ Route: delegated writer. Trigger: multi-file write across complex workflows and 
 - WU-03 writer: `git diff --check` — PASS.
 - WU-03 parent spot check: `cd jarvis-cli && go test ./internal/hiveui ./internal/terminalui` — PASS (cached).
 - WU-03 work-unit commit: `32d75dce1dd0d2e7e6e909b65f61ec9fd2c98664` (`fix(hiveui): bound complex viewport workflows`).
+- WU-03 evidence commit: `04d52ca130097289e51b1d4208ec858c59372505` (`chore(odd): record complex viewport evidence`).
+- Native RDD 720-03: approved and acknowledged; lineage `review-e744027c44601583`. Informational advisory `R3-001` opened no correction and remains separate later work.
 
 ## Next step
-Record the WU-03 commit evidence, run native RDD for its committed range, then prepare the Feature Branch Chain delivery.
+Prepare the approved Feature Branch Chain for delivery when the user authorizes publication.
