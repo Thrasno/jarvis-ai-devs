@@ -38,7 +38,7 @@ Unsolicited files mutate the repository, duplicate Hive persistence, and blur th
 - [x] Add failing contract/rendering tests covering inline findings, Hive-default persistence, explicit file requests, established artifacts, all four SDD store modes, and no filesystem fallback.
 - [x] Add the canonical protocol boundary and align the Hive skill.
 - [x] Run focused tests and applicable module verification.
-- [ ] Record the work-unit commit and native assessment/review outcome.
+- [x] Record the work-unit commit and native assessment/review outcome.
 
 Route: delegated writer. Trigger: multi-file write across canonical assets and tests.
 
@@ -66,6 +66,7 @@ Route: delegated writer. Trigger: multi-file write across canonical assets and t
 - Independent verifier: all four commands PASS; no blocking findings.
 - Parent spot check: `cd jarvis-cli && go test ./internal/agent` — PASS (cached).
 - Native assessment: unavailable/schema incompatible; treated as high risk and independently verified.
+- Work-unit commit: `162e837a5f961200d566cd4039d5442e157bbf90` (`fix(hive): prevent unsolicited report files`).
 
 ## Next step
-Create the work-unit commit, record its hash, and prepare the single-PR delivery.
+Prepare the single-PR delivery after final branch status/readback.
