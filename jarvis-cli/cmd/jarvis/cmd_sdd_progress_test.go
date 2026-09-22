@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,51 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress/filelock"
 )
+
+func TestBoundSddProgressCommandsResolveRequestAwareStoreBeforeWriter(t *testing.T) {
+	resolverErr := errors.New("binding unavailable")
+	var calls []struct{ project, change string }
+	command := newBoundSddProgressCommand(func(_ context.Context, _ string, project, change string) (progressAdvancer, error) {
+		calls = append(calls, struct{ project, change string }{project, change})
+		return nil, resolverErr
+	})
+	root := t.TempDir()
+
+	for _, tt := range []struct {
+		name    string
+		command string
+		request any
+	}{
+		{name: "advance", command: "advance", request: sddprogress.AdvanceRequest{Snapshot: applyprogress.Snapshot{Project: "jarvis-dev", Change: "issue-723"}}},
+		{name: "checkpoint", command: "checkpoint", request: checkpointInput{Project: "jarvis-dev", Change: "issue-723"}},
+		{name: "upgrade", command: "upgrade-continuation", request: checkpointInput{Project: "jarvis-dev", Change: "issue-723"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(tt.request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(root, tt.name+".json")
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			command.SetOut(&bytes.Buffer{})
+			command.SetErr(&bytes.Buffer{})
+			command.SetArgs([]string{tt.command, "--request", path})
+			if err := command.Execute(); !errors.Is(err, resolverErr) {
+				t.Fatalf("command error = %v, want binding resolution error", err)
+			}
+		})
+	}
+	if len(calls) != 3 {
+		t.Fatalf("resolver calls = %d, want 3", len(calls))
+	}
+	for _, call := range calls {
+		if call.project != "jarvis-dev" || call.change != "issue-723" {
+			t.Fatalf("resolver coordinates = %#v, want request coordinates", call)
+		}
+	}
+}
 
 func TestSddProgressAdvanceReportsConflictCurrentState(t *testing.T) {
 	root := newProgressTestRoot(t)
