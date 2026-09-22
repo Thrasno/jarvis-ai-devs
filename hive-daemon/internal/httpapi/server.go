@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -87,6 +88,8 @@ type SDDService interface {
 	GetApplyProgressEvidence(context.Context, string, string, string, string) (applyprogress.Batch, error)
 	GetApplyProgressReceipt(context.Context, string, string, string) (governance.ApplyProgressReceipt, error)
 	AdvanceApplyProgress(context.Context, governance.ApplyProgressAdvanceRequest) (governance.ApplyProgressAdvanceResult, error)
+	GetSDDStoreBinding(context.Context, string, string) (governance.SDDStoreBinding, bool, error)
+	AdoptSDDStoreBinding(context.Context, string, string, governance.SDDStoreBindingRequest) (governance.SDDStoreBinding, bool, error)
 }
 
 // Server handles HTTP requests for the Hive prompt-capture endpoint.
@@ -205,6 +208,10 @@ func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, 
 	s.mux.HandleFunc("POST /sessions", s.handleSessionsCreate)
 	s.mux.HandleFunc("POST /sessions/{id}/end", s.handleSessionsEnd)
 	s.mux.HandleFunc("POST /observations/passive", s.handleObservationsPassive)
+	if s.sdd != nil {
+		s.mux.HandleFunc("GET /sdd/changes/{change}/store-binding", s.handleSDDStoreBindingGet)
+		s.mux.HandleFunc("POST /sdd/changes/{change}/store-binding/adopt", s.handleSDDStoreBindingAdopt)
+	}
 	if governance != nil {
 		s.mux.HandleFunc("GET /sdd/changes", s.handleSDDChanges)
 		s.mux.HandleFunc("GET /sdd/changes/{change}/artifacts", s.handleSDDArtifacts)
@@ -237,6 +244,186 @@ func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, 
 		s.mux.HandleFunc("GET /governance/health/summary", s.handleHealthSummary)
 	}
 	return s
+}
+
+const maxSDDStoreBindingRequestBytes = 64 << 10
+
+type sddStoreBindingProjection struct {
+	Project       string `json:"project"`
+	Change        string `json:"change"`
+	SchemaVersion string `json:"schema_version"`
+	Mode          string `json:"mode"`
+	Provenance    string `json:"provenance"`
+	CreatedAt     string `json:"created_at"`
+}
+
+type sddStoreBindingResponse struct {
+	Binding sddStoreBindingProjection `json:"binding"`
+	Created *bool                     `json:"created,omitempty"`
+}
+
+type sddStoreBindingAdoptRequest struct {
+	Project    string `json:"project"`
+	Mode       string `json:"mode"`
+	Provenance string `json:"provenance"`
+}
+
+type sddStoreBindingRequestedProjection struct {
+	Project       string `json:"project"`
+	Change        string `json:"change"`
+	SchemaVersion string `json:"schema_version"`
+	Mode          string `json:"mode"`
+	Provenance    string `json:"provenance"`
+}
+
+func projectSDDStoreBinding(binding governance.SDDStoreBinding) sddStoreBindingProjection {
+	return sddStoreBindingProjection{
+		Project:       binding.Project,
+		Change:        binding.Change,
+		SchemaVersion: binding.SchemaVersion,
+		Mode:          string(binding.Mode),
+		Provenance:    binding.Provenance,
+		CreatedAt:     binding.CreatedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+func projectSDDStoreBindingRequest(binding governance.SDDStoreBinding) sddStoreBindingRequestedProjection {
+	return sddStoreBindingRequestedProjection{
+		Project:       binding.Project,
+		Change:        binding.Change,
+		SchemaVersion: binding.SchemaVersion,
+		Mode:          string(binding.Mode),
+		Provenance:    binding.Provenance,
+	}
+}
+
+func (s *Server) handleSDDStoreBindingGet(w http.ResponseWriter, r *http.Request) {
+	if s.sdd == nil {
+		writeSDDStoreBindingError(w, "get SDD store binding", errors.New("SDD store is not configured"))
+		return
+	}
+	projects := r.URL.Query()["project"]
+	if len(projects) != 1 {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"code": "validation"})
+		return
+	}
+	binding, found, err := s.sdd.GetSDDStoreBinding(r.Context(), projects[0], r.PathValue("change"))
+	if err != nil {
+		writeSDDStoreBindingError(w, "get SDD store binding", err)
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "not_found"})
+		return
+	}
+	if binding.CreatedAt.IsZero() {
+		writeSDDStoreBindingError(w, "get SDD store binding", errors.New("invalid binding timestamp"))
+		return
+	}
+	writeJSON(w, http.StatusOK, sddStoreBindingResponse{Binding: projectSDDStoreBinding(binding)})
+}
+
+func (s *Server) handleSDDStoreBindingAdopt(w http.ResponseWriter, r *http.Request) {
+	if s.sdd == nil {
+		writeSDDStoreBindingError(w, "adopt SDD store binding", errors.New("SDD store is not configured"))
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxSDDStoreBindingRequestBytes)
+	request, err := decodeSDDStoreBindingAdoptRequest(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"code": "validation"})
+		return
+	}
+	binding, created, err := s.sdd.AdoptSDDStoreBinding(r.Context(), request.Project, r.PathValue("change"), governance.SDDStoreBindingRequest{
+		Mode:       db.SDDStoreMode(request.Mode),
+		Provenance: request.Provenance,
+	})
+	if err != nil {
+		writeSDDStoreBindingError(w, "adopt SDD store binding", err)
+		return
+	}
+	if binding.CreatedAt.IsZero() {
+		writeSDDStoreBindingError(w, "adopt SDD store binding", errors.New("invalid binding timestamp"))
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, sddStoreBindingResponse{Binding: projectSDDStoreBinding(binding), Created: &created})
+}
+
+func decodeSDDStoreBindingAdoptRequest(reader io.Reader) (sddStoreBindingAdoptRequest, error) {
+	decoder := json.NewDecoder(reader)
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('{') {
+		return sddStoreBindingAdoptRequest{}, errors.New("binding request must be an object")
+	}
+	var request sddStoreBindingAdoptRequest
+	seen := make(map[string]bool, 3)
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return sddStoreBindingAdoptRequest{}, err
+		}
+		key, ok := token.(string)
+		if !ok || seen[key] {
+			return sddStoreBindingAdoptRequest{}, errors.New("duplicate binding request field")
+		}
+		seen[key] = true
+		if key != "project" && key != "mode" && key != "provenance" {
+			return sddStoreBindingAdoptRequest{}, errors.New("unknown binding request field")
+		}
+		value, err := decoder.Token()
+		if err != nil {
+			return sddStoreBindingAdoptRequest{}, err
+		}
+		text, ok := value.(string)
+		if !ok {
+			return sddStoreBindingAdoptRequest{}, errors.New("binding request values must be strings")
+		}
+		switch key {
+		case "project":
+			request.Project = text
+		case "mode":
+			request.Mode = text
+		case "provenance":
+			request.Provenance = text
+		}
+	}
+	closing, err := decoder.Token()
+	if err != nil || closing != json.Delim('}') {
+		return sddStoreBindingAdoptRequest{}, errors.New("binding request object is incomplete")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return sddStoreBindingAdoptRequest{}, errors.New("binding request has trailing JSON")
+	}
+	return request, nil
+}
+
+func writeSDDStoreBindingError(w http.ResponseWriter, source string, err error) {
+	var conflict *governance.SDDStoreBindingConflictError
+	switch {
+	case errors.As(err, &conflict):
+		if conflict.Existing.CreatedAt.IsZero() {
+			logger.Log.Printf("%s: unavailable", source)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "unavailable"})
+			return
+		}
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"code":      "binding_conflict",
+			"existing":  projectSDDStoreBinding(conflict.Existing),
+			"requested": projectSDDStoreBindingRequest(conflict.Requested),
+		})
+	case errors.Is(err, governance.ErrProjectRequired),
+		errors.Is(err, governance.ErrSDDChangeRequired),
+		errors.Is(err, governance.ErrSDDChangeInvalid),
+		errors.Is(err, db.ErrSDDStoreBindingInvalid):
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"code": "validation"})
+	default:
+		logger.Log.Printf("%s: unavailable", source)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "unavailable"})
+	}
 }
 
 func (s *Server) handleSDDArtifacts(w http.ResponseWriter, r *http.Request) {

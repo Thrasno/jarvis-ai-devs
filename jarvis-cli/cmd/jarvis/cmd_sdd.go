@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -15,7 +16,7 @@ import (
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
-	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddbinding"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
 )
@@ -70,7 +71,7 @@ func init() {
 	sddStatusCmd.Flags().String("project", "", "hive project name (overrides origin repository or working-directory basename derivation)")
 	sddContinueCmd.Flags().Bool("json", false, "emit JSON output")
 	sddContinueCmd.Flags().String("project", "", "hive project name (overrides origin repository or working-directory basename derivation)")
-	sddCmd.AddCommand(sddStatusCmd, sddContinueCmd, newSddArchiveCommand(func(root string) sddArchiver { return sddprogress.OpenSpec{Root: root} }, archiveStatus))
+	sddCmd.AddCommand(sddStatusCmd, sddContinueCmd, newBoundSddArchiveCommand())
 }
 
 type sddArchiver interface {
@@ -78,6 +79,21 @@ type sddArchiver interface {
 	ArchiveWithLifecycleValidation(string, func() error) error
 }
 type archiveStatusResolver func(root, project string) (*sddstatus.ChangeStatus, error)
+
+// newBoundSddArchiveCommand is the production binding-aware archive router.
+// The historical newSddArchiveCommand seam remains available for focused
+// OpenSpec lifecycle tests.
+func newBoundSddArchiveCommand() *cobra.Command {
+	var root, destination, project, change string
+	command := &cobra.Command{Use: "archive", Short: "Archive a bound SDD change", Long: "Archive a bound SDD change. Hive closes logically with a persisted archive report and needs --change. OpenSpec and hybrid require --root and --destination; --root must be an absolute canonical path without aliases, and --change, when supplied with --root, must match the canonical root coordinate.", Args: cobra.NoArgs, SilenceUsage: true, SilenceErrors: true, RunE: func(cmd *cobra.Command, _ []string) error {
+		return runBoundSddArchive(cmd.Context(), root, destination, project, change)
+	}}
+	command.Flags().StringVar(&root, "root", "", "absolute canonical OpenSpec change root")
+	command.Flags().StringVar(&destination, "destination", "", "OpenSpec archive destination")
+	command.Flags().StringVar(&project, "project", "", "canonical hive project name")
+	command.Flags().StringVar(&change, "change", "", "canonical SDD change name (required without --root)")
+	return command
+}
 
 func newSddArchiveCommand(open func(string) sddArchiver, statusFor archiveStatusResolver) *cobra.Command {
 	var root, destination, project string
@@ -236,26 +252,85 @@ func resolveSourceAt(projectName, workingDir string) (sddstatus.ArtifactSource, 
 	}
 }
 
-type noneArtifactSource struct{}
+func resolveBoundStatusSourceAt(ctx context.Context, projectName, given, workingDir string) (string, sddstatus.ArtifactSource, sddbinding.Resolution, error) {
+	hc, err := hiveclient.NewFromEnv()
+	if err != nil {
+		return "", nil, sddbinding.Resolution{}, fmt.Errorf("connect to hive-daemon: %w", err)
+	}
+	hiveSource := sddstatus.NewHiveSource(hc, projectName)
+	openSpecSource := sddstatus.NewOpenSpecSource(workingDir)
+	changeName, explicit, err := normalizeExplicitChangeName(given)
+	if err != nil {
+		return "", nil, sddbinding.Resolution{}, err
+	}
+	if !explicit {
+		changeName, err = resolveChangeNameAcrossStores(ctx, "", hiveSource, openSpecSource)
+		if err != nil {
+			return "", nil, sddbinding.Resolution{}, err
+		}
+	}
 
-func (noneArtifactSource) FetchArtifacts(context.Context, string) (map[string]sddstatus.ArtifactState, map[string]string, error) {
-	return map[string]sddstatus.ArtifactState{}, map[string]string{}, nil
+	binding, err := resolveSddStoreBindingAt(ctx, hc, projectName, changeName, workingDir)
+	if err != nil {
+		return "", nil, sddbinding.Resolution{}, fmt.Errorf("resolve SDD store binding: %w", err)
+	}
+
+	var source sddstatus.ArtifactSource
+	switch binding.Mode {
+	case sddruntime.StoreModeOpenSpec:
+		source = openSpecSource
+	case sddruntime.StoreModeHybrid:
+		source = sddstatus.NewHybridSource(hiveSource, openSpecSource)
+	case sddruntime.StoreModeNone:
+		source = noneArtifactSource{}
+	default:
+		source = hiveSource
+	}
+	return changeName, source, binding, nil
 }
 
-func (noneArtifactSource) ListChanges(context.Context) ([]string, error) {
-	return nil, nil
+func initialStoreSelection() sddbinding.InitialSelection {
+	mode := strings.TrimSpace(os.Getenv("JARVIS_SDD_STORE_MODE"))
+	if mode == "" {
+		return sddbinding.InitialSelection{Mode: sddruntime.StoreModeHive, Provenance: "initial:default:hive"}
+	}
+	return sddbinding.InitialSelection{Mode: sddruntime.StoreMode(mode), Provenance: "initial:environment:JARVIS_SDD_STORE_MODE"}
 }
 
-// resolveChangeName infers the change name when not provided explicitly.
-// It fails if multiple active changes exist (requires explicit selection).
-func resolveChangeName(ctx context.Context, src sddstatus.ArtifactSource, given string) (string, error) {
+// normalizeExplicitChangeName canonicalizes a user-supplied coordinate before
+// it reaches any artifact path, binding request, or source read.
+func normalizeExplicitChangeName(given string) (changeName string, explicit bool, err error) {
+	if given == "" {
+		return "", false, nil
+	}
+	changeName = strings.TrimSpace(given)
+	if changeName == "" {
+		return "", true, errors.New("SDD change name cannot be empty")
+	}
+	return changeName, true, nil
+}
+
+func resolveChangeNameAcrossStores(ctx context.Context, given string, hiveSource, openSpecSource sddstatus.ArtifactSource) (string, error) {
 	if given != "" {
 		return given, nil
 	}
-	changes, err := src.ListChanges(ctx)
+	hiveChanges, err := hiveSource.ListChanges(ctx)
 	if err != nil {
-		return "", fmt.Errorf("list changes: %w", err)
+		return "", fmt.Errorf("list Hive changes: %w", err)
 	}
+	openSpecChanges, err := openSpecSource.ListChanges(ctx)
+	if err != nil {
+		return "", fmt.Errorf("list OpenSpec changes: %w", err)
+	}
+	unique := make(map[string]struct{}, len(hiveChanges)+len(openSpecChanges))
+	for _, change := range append(hiveChanges, openSpecChanges...) {
+		unique[change] = struct{}{}
+	}
+	changes := make([]string, 0, len(unique))
+	for change := range unique {
+		changes = append(changes, change)
+	}
+	sort.Strings(changes)
 	switch len(changes) {
 	case 0:
 		return "", errors.New("no SDD changes found — run sdd-explore or sdd-propose first")
@@ -266,7 +341,25 @@ func resolveChangeName(ctx context.Context, src sddstatus.ArtifactSource, given 
 	}
 }
 
+func bindingStatus(binding sddbinding.Resolution) *sddstatus.StoreBindingStatus {
+	return &sddstatus.StoreBindingStatus{Mode: string(binding.Mode), Provenance: binding.Provenance, Persisted: binding.Persisted}
+}
+
+type noneArtifactSource struct{}
+
+func (noneArtifactSource) FetchArtifacts(context.Context, string) (map[string]sddstatus.ArtifactState, map[string]string, error) {
+	return map[string]sddstatus.ArtifactState{}, map[string]string{}, nil
+}
+
+func (noneArtifactSource) ListChanges(context.Context) ([]string, error) {
+	return nil, nil
+}
+
 func buildStatus(changeName string, src sddstatus.ArtifactSource, storeMode string, allowedEditRoots []string) (*sddstatus.ChangeStatus, error) {
+	return buildStatusWithBinding(changeName, src, storeMode, allowedEditRoots, nil)
+}
+
+func buildStatusWithBinding(changeName string, src sddstatus.ArtifactSource, storeMode string, allowedEditRoots []string, binding *sddstatus.StoreBindingStatus) (*sddstatus.ChangeStatus, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -279,6 +372,7 @@ func buildStatus(changeName string, src sddstatus.ArtifactSource, storeMode stri
 		Artifacts:        arts,
 		Contents:         contents,
 		AllowedEditRoots: allowedEditRoots,
+		StoreBinding:     binding,
 	}
 
 	return sddstatus.ComputeStatus(changeName, storeMode, input), nil
@@ -298,19 +392,14 @@ func runSddStatus(given, projectFlag, workingDir string, asJSON, withInstruction
 		return err
 	}
 
-	src, storeMode, err := resolveSourceAt(project, workingDir)
-	if err != nil {
-		return err
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	changeName, err := resolveChangeName(ctx, src, given)
+	changeName, src, binding, err := resolveBoundStatusSourceAt(ctx, project, given, workingDir)
 	cancel()
 	if err != nil {
 		return err
 	}
 
-	status, err := buildStatus(changeName, src, storeMode, validatedEditRootsForProject(project, workingDir))
+	status, err := buildStatusWithBinding(changeName, src, string(binding.Mode), validatedEditRootsForProject(project, workingDir), bindingStatus(binding))
 	if err != nil {
 		return err
 	}
@@ -328,19 +417,14 @@ func runSddContinue(given, projectFlag, workingDir string, asJSON bool) error {
 		return err
 	}
 
-	src, storeMode, err := resolveSourceAt(project, workingDir)
-	if err != nil {
-		return err
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	changeName, err := resolveChangeName(ctx, src, given)
+	changeName, src, binding, err := resolveBoundStatusSourceAt(ctx, project, given, workingDir)
 	cancel()
 	if err != nil {
 		return err
 	}
 
-	status, err := buildStatus(changeName, src, storeMode, validatedEditRootsForProject(project, workingDir))
+	status, err := buildStatusWithBinding(changeName, src, string(binding.Mode), validatedEditRootsForProject(project, workingDir), bindingStatus(binding))
 	if err != nil {
 		return err
 	}
@@ -372,7 +456,11 @@ func printJSON(v any) error {
 }
 
 func printStatusHuman(w io.Writer, s *sddstatus.ChangeStatus, withInstructions bool) {
-	fmt.Fprintf(w, "SDD Status: %s  [store: %s]\n\n", s.ChangeName, s.ArtifactStore)
+	fmt.Fprintf(w, "SDD Status: %s  [store: %s]\n", s.ChangeName, s.ArtifactStore)
+	if s.StoreBinding != nil {
+		fmt.Fprintf(w, "  Store binding: %s  [provenance: %s, persisted: %t]\n", s.StoreBinding.Mode, s.StoreBinding.Provenance, s.StoreBinding.Persisted)
+	}
+	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "  Artifacts:")
 	for _, phase := range sddstatus.PhaseOrder {
