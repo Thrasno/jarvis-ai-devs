@@ -123,18 +123,19 @@ type Snapshot struct {
 type Model struct {
 	// width and height hold the last known terminal dimensions from tea.WindowSizeMsg.
 	// viewport.bounded distinguishes pre-resize rendering from exhausted content space.
-	width        int
-	height       int
-	viewport     verticalViewport
-	snapshot     Snapshot
-	screen       Screen
-	cursor       int
-	projectIndex int
-	memoryIndex  int
-	warningIndex int
-	backupIndex  int
-	detailReturn Screen
-	message      string
+	width                   int
+	height                  int
+	viewport                verticalViewport
+	viewportSelectionAnchor bool
+	snapshot                Snapshot
+	screen                  Screen
+	cursor                  int
+	projectIndex            int
+	memoryIndex             int
+	warningIndex            int
+	backupIndex             int
+	detailReturn            Screen
+	message                 string
 
 	guardExecutor     GuardExecutor
 	guardOperation    string
@@ -449,6 +450,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.bounded = true
 		m.viewport.height = terminalui.AvailableContentHeight(m.height, 1, 1)
 		m.viewport = m.viewport.clamp(m.viewportItemCount())
+		if m.hasSelectableViewportItems() {
+			m = m.followViewportSelection()
+		}
 		return m, nil
 	}
 	key, ok := msg.(tea.KeyMsg)
@@ -514,9 +518,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case m.screen == ScreenProjectMemories && runeKey(key, 'x'):
 		m.screen = ScreenDeletedMemories
 		m.memoryIndex = 0
+		m.viewport.offset = 0
 	case m.screen == ScreenDeletedMemories && runeKey(key, 'x'):
 		m.screen = ScreenProjectMemories
 		m.memoryIndex = 0
+		m.viewport.offset = 0
 	case m.screen == ScreenProjects && runeKey(key, 'a') && m.projectArchiveExecutor != nil:
 		m = m.startProjectArchive()
 	case m.screen == ScreenProjects && runeKey(key, 'm') && m.projectMergeBatchExecutor != nil:
@@ -527,19 +533,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.startProjectPurge()
 	case runeKey(key, 't'):
 		m.screen = ScreenTimeline
+		m = m.followViewportSelection()
 	case runeKey(key, 'w'):
 		m.screen = ScreenWarnings
+		m = m.followViewportSelection()
 	case runeKey(key, 'b'):
 		m.screen = ScreenBackups
+		m = m.followViewportSelection()
 	case runeKey(key, 'g'):
 		m.screen = ScreenAPIHealth
+		m.viewport.offset = 0
 	case runeKey(key, 'c'):
 		m.screen = ScreenAPIConfig
 		return m.startConfigLoad()
 	case key.Type == tea.KeyDown || runeKey(key, 'j'):
-		m = m.move(1)
+		m = m.navigateViewport(1)
 	case key.Type == tea.KeyUp || runeKey(key, 'k'):
-		m = m.move(-1)
+		m = m.navigateViewport(-1)
+	case key.Type == tea.KeyPgDown:
+		m = m.pageViewport(1)
+	case key.Type == tea.KeyPgUp:
+		m = m.pageViewport(-1)
+	case key.Type == tea.KeyHome:
+		m = m.boundaryViewport(false)
+	case key.Type == tea.KeyEnd:
+		m = m.boundaryViewport(true)
 	case key.Type == tea.KeyEnter:
 		m = m.open()
 		if m.screen == ScreenMemoryDetail && m.memoryLoader != nil {
@@ -692,6 +710,44 @@ func (m Model) View() string {
 // consume the shared viewport foundation. Other screens have no list offset.
 func (m Model) viewportItemCount() int {
 	switch m.screen {
+	case ScreenProjects, ScreenProjectMemories, ScreenDeletedMemories, ScreenTimeline, ScreenWarnings, ScreenBackups:
+		return len(m.primaryViewportContentLines())
+	case ScreenMemoryDetail, ScreenAPIHealth:
+		return m.viewportContentLineCount()
+	case ScreenAPIConfig:
+		return configFieldCount
+	case ScreenDashboard:
+		return len(m.dashboardActionRows())
+	default:
+		return 0
+	}
+}
+
+func (m Model) primaryViewportContentLines() []string {
+	var full string
+	switch m.screen {
+	case ScreenProjects:
+		full = m.projectsFullView()
+	case ScreenProjectMemories, ScreenDeletedMemories:
+		full = m.projectMemoriesFullView()
+	case ScreenTimeline:
+		full = m.timelineFullView()
+	case ScreenWarnings:
+		full = m.warningsFullView()
+	case ScreenBackups:
+		full = m.backupsFullView()
+	default:
+		return nil
+	}
+	lines := strings.Split(full, "\n")
+	if len(lines) < 2 {
+		return nil
+	}
+	return terminalui.PhysicalLines(strings.Join(lines[1:len(lines)-1], "\n"), m.frameWidth())
+}
+
+func (m Model) selectableItemCount() int {
+	switch m.screen {
 	case ScreenProjects:
 		return len(m.snapshot.Projects)
 	case ScreenProjectMemories, ScreenDeletedMemories, ScreenTimeline:
@@ -700,12 +756,8 @@ func (m Model) viewportItemCount() int {
 		return len(m.snapshot.Warnings)
 	case ScreenBackups:
 		return len(m.snapshot.Backups)
-	case ScreenAPIConfig:
-		return configFieldCount
-	case ScreenDashboard:
-		return len(m.dashboardActionRows())
 	default:
-		return 0
+		return len(m.dashboardActionRows())
 	}
 }
 
@@ -722,7 +774,237 @@ func (m Model) move(delta int) Model {
 	default:
 		m.cursor = wrapIndex(m.cursor+delta, len(m.dashboardActionRows()))
 	}
+	return m.followViewportSelection()
+}
+
+func (m Model) navigateViewport(delta int) Model {
+	if m.hasScrollableViewportContent() {
+		return m.scrollViewport(delta)
+	}
+	return m.move(delta)
+}
+
+func (m Model) pageViewport(direction int) Model {
+	step := max(1, effectiveViewport(m.viewport, m.viewportItemCount()).height)
+	if m.hasScrollableViewportContent() {
+		return m.scrollViewport(direction * step)
+	}
+	return m.moveSelectionBy(direction * step)
+}
+
+func (m Model) boundaryViewport(last bool) Model {
+	if m.hasScrollableViewportContent() {
+		total := m.viewportItemCount()
+		if last {
+			return m.scrollViewport(total)
+		}
+		return m.scrollViewport(-total)
+	}
+	return m.moveSelectionToBoundary(last)
+}
+
+func (m Model) scrollViewport(delta int) Model {
+	viewport := scrollViewport(effectiveViewport(m.viewport, m.viewportItemCount()), delta, m.viewportItemCount())
+	m.viewport.offset = viewport.offset
 	return m
+}
+
+func (m Model) moveSelectionBy(delta int) Model {
+	switch m.screen {
+	case ScreenProjects:
+		m.projectIndex = max(0, min(len(m.snapshot.Projects)-1, m.projectIndex+delta))
+	case ScreenProjectMemories, ScreenDeletedMemories, ScreenTimeline:
+		m.memoryIndex = max(0, min(len(m.screenMemories())-1, m.memoryIndex+delta))
+	case ScreenWarnings:
+		m.warningIndex = max(0, min(len(m.snapshot.Warnings)-1, m.warningIndex+delta))
+	case ScreenBackups:
+		m.backupIndex = max(0, min(len(m.snapshot.Backups)-1, m.backupIndex+delta))
+	default:
+		m.cursor = max(0, min(len(m.dashboardActionRows())-1, m.cursor+delta))
+	}
+	return m.followViewportSelection()
+}
+
+func (m Model) moveSelectionToBoundary(last bool) Model {
+	total := m.selectableItemCount()
+	if total == 0 {
+		return m
+	}
+	index := 0
+	if last {
+		index = total - 1
+	}
+	switch m.screen {
+	case ScreenProjects:
+		m.projectIndex = index
+	case ScreenProjectMemories, ScreenDeletedMemories, ScreenTimeline:
+		m.memoryIndex = index
+	case ScreenWarnings:
+		m.warningIndex = index
+	case ScreenBackups:
+		m.backupIndex = index
+	default:
+		m.cursor = index
+	}
+	return m.followViewportSelection()
+}
+
+func (m Model) followViewportSelection() Model {
+	viewport := followViewport(effectiveViewport(m.viewport, m.viewportItemCount()), m.viewportSelectionIndex(), m.viewportItemCount())
+	m.viewport.offset = viewport.offset
+	return m
+}
+
+const viewportSelectionAnchor = "\x00hiveui-selected-row\x00"
+
+func (m Model) viewportSelectionIndex() int {
+	if m.hasSelectableViewportItems() {
+		anchored := m
+		anchored.viewportSelectionAnchor = true
+		for i, line := range anchored.primaryViewportContentLines() {
+			if strings.Contains(line, viewportSelectionAnchor) {
+				return i
+			}
+		}
+		return 0
+	}
+	return m.cursor
+}
+
+func (m Model) viewportCursor() string {
+	if m.viewportSelectionAnchor {
+		return viewportSelectionAnchor
+	}
+	return cursorStyle.Render("▌")
+}
+
+// followViewport shifts the bounded range just enough to keep a selected row
+// visible. Unknown terminal height stays unbounded for pre-resize compatibility.
+func followViewport(viewport verticalViewport, index, total int) verticalViewport {
+	viewport = viewport.clamp(total)
+	if !viewport.bounded || viewport.height == 0 || total <= 0 {
+		return viewport
+	}
+	index = wrapIndex(index, total)
+	if index < viewport.offset {
+		viewport.offset = index
+	} else if index >= viewport.offset+viewport.height {
+		viewport.offset = index - viewport.height + 1
+	}
+	return viewport.clamp(total)
+}
+
+// scrollViewport moves non-selectable content by a bounded number of rows.
+func scrollViewport(viewport verticalViewport, delta, total int) verticalViewport {
+	viewport = viewport.clamp(total)
+	if !viewport.bounded || viewport.height == 0 || total <= 0 {
+		return viewport
+	}
+	viewport.offset += delta
+	return viewport.clamp(total)
+}
+
+func (m Model) hasScrollableViewportContent() bool {
+	return m.screen == ScreenMemoryDetail || m.screen == ScreenAPIHealth
+}
+
+func (m Model) hasSelectableViewportItems() bool {
+	switch m.screen {
+	case ScreenProjects, ScreenProjectMemories, ScreenDeletedMemories, ScreenTimeline, ScreenWarnings, ScreenBackups:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m Model) viewportContentLineCount() int {
+	return len(terminalui.PhysicalLines(m.viewportContent(), m.frameWidth()))
+}
+
+// frameWidth uses the actual known terminal width. Before the first resize,
+// the original 80-column layout remains the deterministic fallback.
+func (m Model) frameWidth() int {
+	if m.width > 0 {
+		return m.width
+	}
+	return 80
+}
+
+func (m Model) viewportContent() string {
+	switch m.screen {
+	case ScreenMemoryDetail:
+		return m.memoryDetailContent(terminalui.ContentWidth(m.frameWidth()))
+	case ScreenAPIHealth:
+		return m.apiHealthContent(terminalui.ContentWidth(m.frameWidth()))
+	default:
+		return ""
+	}
+}
+
+func (m Model) viewportFrame(header, content, footer string) string {
+	if !m.viewport.bounded {
+		return header + "\n" + content + "\n" + footer
+	}
+	return m.boundedViewportFrame(header, strings.Split(content, "\n"), footer)
+}
+
+// boundedViewportFrame reserves a physical row for overflow feedback, then
+// crops actual rendered rows between the fixed header and footer.
+const minimumViewportChromeWidth = 14
+
+func (m Model) viewportTooNarrow() bool {
+	return m.width > 0 && m.width < minimumViewportChromeWidth
+}
+
+func (m Model) terminalTooSmallFrame() string {
+	const message = "Terminal too small"
+	if m.width > 0 && m.width < lipgloss.Width(message) {
+		return "!"
+	}
+	return message
+}
+
+func (m Model) boundedViewportFrame(header string, content []string, footer string) string {
+	if m.viewportTooNarrow() {
+		return m.terminalTooSmallFrame()
+	}
+	width := m.frameWidth()
+	headerLines := terminalui.PhysicalLines(header, width)
+	footerLines := terminalui.PhysicalLines(footer, width)
+	content = terminalui.PhysicalLines(strings.Join(content, "\n"), width)
+	fixedLines := len(headerLines) + len(footerLines)
+	if m.height <= 1 {
+		return m.terminalTooSmallFrame()
+	}
+	if m.height < fixedLines {
+		return m.terminalTooSmallFrame()
+	}
+	if m.height == fixedLines {
+		return strings.Join(append(headerLines, footerLines...), "\n")
+	}
+	if m.height == fixedLines+1 {
+		return strings.Join(append(append(headerLines, m.terminalTooSmallFrame()), footerLines...), "\n")
+	}
+	viewport := m.viewport
+	viewport.height = m.height - fixedLines
+	viewport = effectiveViewport(viewport, len(content))
+	r := viewport.rangeFor(len(content))
+	visible := content[r.Start:r.End]
+	if r.End < r.Total || r.Start > 0 {
+		visible = append(visible, dimTextStyle.Render(r.Feedback()))
+	}
+	frame := append(headerLines, visible...)
+	frame = append(frame, footerLines...)
+	return strings.Join(frame, "\n")
+}
+
+// effectiveViewport reserves one physical row for feedback when content
+// overflows, ensuring the whole rendered frame fits the terminal height.
+func effectiveViewport(viewport verticalViewport, total int) verticalViewport {
+	if viewport.bounded && viewport.height > 0 && total > viewport.height {
+		viewport.height--
+	}
+	return viewport
 }
 
 func (m Model) open() Model {
@@ -733,6 +1015,7 @@ func (m Model) open() Model {
 		}
 		m.screen = ScreenProjectMemories
 		m.memoryIndex = 0
+		m.viewport.offset = 0
 		return m
 	}
 	if m.screen == ScreenProjectMemories || m.screen == ScreenDeletedMemories || m.screen == ScreenTimeline {
@@ -742,6 +1025,7 @@ func (m Model) open() Model {
 		}
 		m.detailReturn = m.screen
 		m.screen = ScreenMemoryDetail
+		m.viewport.offset = 0
 		return m
 	}
 	if m.screen == ScreenBackups {
@@ -776,6 +1060,7 @@ func (m Model) open() Model {
 		m.screen = ScreenAPIConfig
 	case "Hive API health":
 		m.screen = ScreenAPIHealth
+		m.viewport.offset = 0
 	case "Memory warnings":
 		m.screen = ScreenWarnings
 	case "Backup snapshots":
@@ -790,6 +1075,9 @@ func (m Model) open() Model {
 		m.screen = ScreenProjectNormalization
 	default:
 		m.message = action.label + " is not available in this navigation sub-slice. No local Hive state was changed."
+	}
+	if m.hasSelectableViewportItems() {
+		m = m.followViewportSelection()
 	}
 	return m
 }
@@ -862,12 +1150,41 @@ func (m Model) back() Model {
 	case ScreenProjects:
 		m.screen = ScreenDashboard
 	}
+	if m.hasSelectableViewportItems() {
+		m = m.followViewportSelection()
+	}
 	return m
 }
 
-func (m Model) projectsView() string {
-	w := max(m.width, 80)
-	panelW := terminalui.PanelWidth(w)
+func (m Model) projectsView() string { return m.primaryViewportFrame(m.projectsFullView()) }
+
+func (m Model) projectMemoriesView() string {
+	return m.primaryViewportFrame(m.projectMemoriesFullView())
+}
+
+func (m Model) timelineView() string { return m.primaryViewportFrame(m.timelineFullView()) }
+
+func (m Model) warningsView() string { return m.primaryViewportFrame(m.warningsFullView()) }
+
+func (m Model) backupsView() string { return m.primaryViewportFrame(m.backupsFullView()) }
+
+func (m Model) primaryViewportFrame(full string) string {
+	if !m.viewport.bounded {
+		return full
+	}
+	if m.viewportTooNarrow() {
+		return m.terminalTooSmallFrame()
+	}
+	lines := strings.Split(full, "\n")
+	if len(lines) < 2 {
+		return full
+	}
+	return m.boundedViewportFrame(lines[0], lines[1:len(lines)-1], lines[len(lines)-1])
+}
+
+func (m Model) projectsFullView() string {
+	w := m.frameWidth()
+	panelW := terminalui.ContentWidth(w)
 
 	crumb := breadcrumbStyle.Render("dashboard / ") + breadcrumbCurrent.Render("projects")
 	countBadge := dimTextStyle.Render(fmt.Sprintf("%d projects", len(m.snapshot.Projects)))
@@ -881,7 +1198,7 @@ func (m Model) projectsView() string {
 	for i, project := range m.snapshot.Projects {
 		cursor := "  "
 		if i == m.projectIndex {
-			cursor = cursorStyle.Render("▌") + " "
+			cursor = m.viewportCursor() + " "
 		}
 		rowText := fmt.Sprintf("%s  %d  %d  %d  %s",
 			project.Name,
@@ -917,11 +1234,11 @@ func (m Model) projectsView() string {
 	return sb.String()
 }
 
-func (m Model) projectMemoriesView() string {
+func (m Model) projectMemoriesFullView() string {
 	memories := m.screenMemories()
 	project := m.selectedProject().Name
-	w := max(m.width, 80)
-	panelW := terminalui.PanelWidth(w)
+	w := m.frameWidth()
+	panelW := terminalui.ContentWidth(w)
 
 	section := "active memories"
 	if m.screen == ScreenDeletedMemories {
@@ -941,7 +1258,7 @@ func (m Model) projectMemoriesView() string {
 	for i, memory := range memories {
 		cursor := "  "
 		if i == m.memoryIndex {
-			cursor = cursorStyle.Render("▌") + " "
+			cursor = m.viewportCursor() + " "
 		}
 		deleted := ""
 		if memory.Deleted {
@@ -968,16 +1285,15 @@ func (m Model) projectMemoriesView() string {
 
 func (m Model) memoryDetailView() string {
 	memory := m.selectedMemory()
-	w := max(m.width, 80)
-	panelW := terminalui.PanelWidth(w)
-
+	w := m.frameWidth()
 	crumb := breadcrumbStyle.Render("… / "+memory.Project+" / ") + breadcrumbCurrent.Render(memoryKey(memory))
+	header := terminalui.HeaderRow(crumb, terminalui.TypeBadge(emptyDash(memory.Category)), w)
+	footer := helpBar([]KeyHint{{"j/k", "scroll"}, {"pgup/dn", "page"}, {"home/end", "bounds"}, {"esc", "back"}, {"q", "quit"}}, "normal", w)
+	return m.viewportFrame(header, m.memoryDetailContent(terminalui.ContentWidth(w)), footer)
+}
 
-	var sb strings.Builder
-	sb.WriteString(terminalui.HeaderRow(crumb, terminalui.TypeBadge(emptyDash(memory.Category)), w))
-	sb.WriteString("\n")
-
-	// METADATA panel
+func (m Model) memoryDetailContent(panelW int) string {
+	memory := m.selectedMemory()
 	metaContent := fmt.Sprintf("%s %s  %s %s\n%s %s  %s %s\n%s %s  %s %s",
 		dimTextStyle.Render("id"), memoryKey(memory),
 		dimTextStyle.Render("created"), formatDateTime(memory.CreatedAt),
@@ -989,10 +1305,7 @@ func (m Model) memoryDetailView() string {
 	if memory.Deleted {
 		metaContent += "\n" + dimTextStyle.Render("status") + " deleted"
 	}
-	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("METADATA", panelW)+metaContent, panelW))
-	sb.WriteString("\n")
 
-	// CONTENT panel
 	var contentBody string
 	switch {
 	case m.memoryLoader == nil:
@@ -1006,21 +1319,20 @@ func (m Model) memoryDetailView() string {
 	default:
 		contentBody = m.memoryContent
 	}
-	sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("CONTENT", panelW)+contentBody, panelW))
 
+	content := terminalui.BorderedPanel(terminalui.SectionHeader("METADATA", panelW)+metaContent, panelW) + "\n" +
+		terminalui.BorderedPanel(terminalui.SectionHeader("CONTENT", panelW)+contentBody, panelW)
 	if m.hasGuardedWorkflow() && !m.guardEnabled {
-		sb.WriteString("\nDelete and restore are unavailable: hive-daemon does not advertise the complete safety contract.\n")
+		content += "\nDelete and restore are unavailable: hive-daemon does not advertise the complete safety contract.\n"
 	} else if m.guardExecutor != nil && memory.ID != 0 && memory.Deleted {
-		sb.WriteString("\nr restore guarded by backup ID and exact confirmation\n")
+		content += "\nr restore guarded by backup ID and exact confirmation\n"
 	} else if m.guardExecutor != nil && memory.ID != 0 {
-		sb.WriteString("\nd delete guarded by backup ID, delete reason, and exact confirmation\n")
+		content += "\nd delete guarded by backup ID, delete reason, and exact confirmation\n"
 	}
 	if m.message != "" {
-		fmt.Fprintf(&sb, "%s\n", m.message)
+		content += m.message + "\n"
 	}
-	sb.WriteString("\n")
-	sb.WriteString(helpBar([]KeyHint{{"esc", "back"}, {"q", "quit"}}, "normal", w))
-	return sb.String()
+	return content
 }
 
 func (m Model) startMemoryGuard(operation string) Model {
@@ -2485,7 +2797,7 @@ func trimLastRune(value string) string {
 	return string(runes[:len(runes)-1])
 }
 
-func (m Model) timelineView() string {
+func (m Model) timelineFullView() string {
 	// Use screenMemories() directly so the cursor index (m.memoryIndex) and the
 	// rendered rows are always aligned. The daemon already filters to timeline
 	// categories before populating TimelineMemories; a client-side re-filter
@@ -2493,8 +2805,8 @@ func (m Model) timelineView() string {
 	memories := m.screenMemories()
 
 	project := m.selectedProject().Name
-	w := max(m.width, 80)
-	panelW := terminalui.PanelWidth(w)
+	w := m.frameWidth()
+	panelW := terminalui.ContentWidth(w)
 
 	crumb := breadcrumbStyle.Render("timeline / ") + breadcrumbCurrent.Render(project)
 	countBadge := dimTextStyle.Render(fmt.Sprintf("%d entries", len(memories)))
@@ -2516,7 +2828,7 @@ func (m Model) timelineView() string {
 		}
 		cursor := "  "
 		if i == m.memoryIndex {
-			cursor = cursorStyle.Render("▌") + " "
+			cursor = m.viewportCursor() + " "
 		}
 		deleted := ""
 		if memory.Deleted {
@@ -2544,9 +2856,9 @@ func (m Model) timelineView() string {
 	return sb.String()
 }
 
-func (m Model) warningsView() string {
-	w := max(m.width, 80)
-	panelW := terminalui.PanelWidth(w)
+func (m Model) warningsFullView() string {
+	w := m.frameWidth()
+	panelW := terminalui.ContentWidth(w)
 
 	activeCount := activeWarnings(m.snapshot.Warnings)
 	crumb := breadcrumbCurrent.Render("memory warnings")
@@ -2571,7 +2883,7 @@ func (m Model) warningsView() string {
 	for i, warning := range m.snapshot.Warnings {
 		cursor := "  "
 		if i == m.warningIndex {
-			cursor = cursorStyle.Render("▌") + " "
+			cursor = m.viewportCursor() + " "
 		}
 		rowText := warningRowText(warning)
 		if i == m.warningIndex {
@@ -2617,9 +2929,9 @@ func warningStateBadge(state string) lipgloss.Style {
 	}
 }
 
-func (m Model) backupsView() string {
-	w := max(m.width, 80)
-	panelW := terminalui.PanelWidth(w)
+func (m Model) backupsFullView() string {
+	w := m.frameWidth()
+	panelW := terminalui.ContentWidth(w)
 
 	crumb := breadcrumbCurrent.Render("backup snapshots")
 	pathBadge := dimTextStyle.Render("read-only")
@@ -2636,7 +2948,7 @@ func (m Model) backupsView() string {
 	for i, backup := range m.snapshot.Backups {
 		cursor := "  "
 		if i == m.backupIndex {
-			cursor = cursorStyle.Render("▌") + " "
+			cursor = m.viewportCursor() + " "
 		}
 		valid := backupMetadataStatus(backup)
 		rowText := fmt.Sprintf("%s  %s  %s  %s",
@@ -2692,16 +3004,14 @@ func (m Model) backupDetailView() string {
 }
 
 func (m Model) apiHealthView() string {
-	w := max(m.width, 80)
-	panelW := terminalui.PanelWidth(w)
+	w := m.frameWidth()
+	header := terminalui.HeaderRow(breadcrumbCurrent.Render("hive api health"), terminalui.ModeBadge("normal"), w)
+	footer := helpBar([]KeyHint{{"j/k", "scroll"}, {"pgup/dn", "page"}, {"home/end", "bounds"}, {"w", "warnings"}, {"c", "config"}, {"esc", "back"}, {"q", "quit"}}, "normal", w)
+	return m.viewportFrame(header, m.apiHealthContent(terminalui.ContentWidth(w)), footer)
+}
 
-	crumb := breadcrumbCurrent.Render("hive api health")
-
+func (m Model) apiHealthContent(panelW int) string {
 	var sb strings.Builder
-	sb.WriteString(terminalui.HeaderRow(crumb, terminalui.ModeBadge("normal"), w))
-	sb.WriteString("\n")
-
-	// SUMMARY panel — prepended before per-project panels.
 	if m.snapshot.SyncSummary == nil {
 		emptyContent := dimTextStyle.Render("Sync summary is not available in the current snapshot.")
 		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("SUMMARY", panelW)+emptyContent, panelW))
@@ -2709,54 +3019,38 @@ func (m Model) apiHealthView() string {
 		s := m.snapshot.SyncSummary
 		state := summaryHealthState(*s)
 		badge := healthStateBadge(state)
-
-		unsyncedLine := fmt.Sprintf("%dm / %dp / %ds",
-			s.UnsyncedMemories,
-			s.UnsyncedPrompts,
-			s.UnsyncedSessions,
-		)
+		unsyncedLine := fmt.Sprintf("%dm / %dp / %ds", s.UnsyncedMemories, s.UnsyncedPrompts, s.UnsyncedSessions)
 		summaryContent := fmt.Sprintf("%s  %s\n%s  %s\n%s  %s\n%s  %s",
 			badge.Render(state), "",
 			dimTextStyle.Render("unsynced"), unsyncedLine,
 			dimTextStyle.Render("last sync"), relativeTime(s.LastSuccessAt),
 			dimTextStyle.Render("last error"), emptyDash(s.LastError),
 		)
-		action := summaryActionLine(state)
-		if action != "" {
+		if action := summaryActionLine(state); action != "" {
 			summaryContent += "\n" + action
 		}
 		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("SUMMARY", panelW)+summaryContent, panelW))
 		sb.WriteString("\n")
 	}
 
-	// Per-project CONNECTIVITY and HISTORY panels.
 	if len(m.snapshot.Health) == 0 {
 		emptyContent := dimTextStyle.Render("Health details are not available in the current read-only snapshot.")
 		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("CONNECTIVITY", panelW)+emptyContent, panelW))
-	} else {
-		for _, health := range m.snapshot.Health {
-			state := healthState(health)
-			badge := healthStateBadge(state)
-
-			connectContent := fmt.Sprintf("%s  %s\n%s %s\n%s %d\n%s %s",
-				emptyDash(health.Project), badge.Render(state),
-				dimTextStyle.Render("last error"), emptyDash(health.LastError),
-				dimTextStyle.Render("consecutive failures"), health.ConsecutiveFailures,
-				dimTextStyle.Render("backoff"), formatDateTime(health.BackoffUntil),
-			)
-			sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("CONNECTIVITY", panelW)+connectContent, panelW))
-			sb.WriteString("\n")
-
-			historyContent := fmt.Sprintf("last success %s  last failure %s",
-				formatDateTime(health.LastSuccessAt),
-				formatDateTime(health.LastFailureAt),
-			)
-			sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("HISTORY", panelW)+historyContent, panelW))
-		}
+		return sb.String()
 	}
-
-	sb.WriteString("\n")
-	sb.WriteString(helpBar([]KeyHint{{"w", "warnings"}, {"c", "config"}, {"esc", "back"}, {"q", "quit"}}, "normal", w))
+	for _, health := range m.snapshot.Health {
+		state := healthState(health)
+		connectContent := fmt.Sprintf("%s  %s\n%s %s\n%s %d\n%s %s",
+			emptyDash(health.Project), healthStateBadge(state).Render(state),
+			dimTextStyle.Render("last error"), emptyDash(health.LastError),
+			dimTextStyle.Render("consecutive failures"), health.ConsecutiveFailures,
+			dimTextStyle.Render("backoff"), formatDateTime(health.BackoffUntil),
+		)
+		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("CONNECTIVITY", panelW)+connectContent, panelW))
+		sb.WriteString("\n")
+		historyContent := fmt.Sprintf("last success %s  last failure %s", formatDateTime(health.LastSuccessAt), formatDateTime(health.LastFailureAt))
+		sb.WriteString(terminalui.BorderedPanel(terminalui.SectionHeader("HISTORY", panelW)+historyContent, panelW))
+	}
 	return sb.String()
 }
 

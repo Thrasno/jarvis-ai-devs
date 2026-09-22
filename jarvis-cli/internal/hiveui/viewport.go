@@ -1,6 +1,9 @@
 package hiveui
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // verticalViewport tracks the visible central-content window. bounded marks
 // that a terminal sizing message was received, distinguishing unknown height
@@ -79,6 +82,18 @@ func (r verticalRange) MoreAbove() string {
 		return ""
 	}
 	return fmt.Sprintf("↑ %d more", r.Start)
+}
+
+// Feedback joins the visible range and any overflow into one stable line.
+func (r verticalRange) Feedback() string {
+	parts := []string{r.Label()}
+	if above := r.MoreAbove(); above != "" {
+		parts = append(parts, above)
+	}
+	if below := r.MoreBelow(); below != "" {
+		parts = append(parts, below)
+	}
+	return strings.Join(parts, " · ")
 }
 
 // MoreBelow returns the deterministic overflow indicator below this range.

@@ -48,11 +48,11 @@ Projects, memories, timeline, warnings, backups, API health, purge, batch merge,
 Route: delegated writer. Trigger: multi-file write across Hive TUI/layout implementation and tests.
 
 ### 720-02 — Migrate primary P0 views
-- [ ] Add behavior tests for long Projects, project memories, memory detail, Timeline, Warnings, Backups, and API health views.
-- [ ] Keep selected rows visible under line, wraparound, page, and boundary navigation.
-- [ ] Render deterministic visible-range and overflow feedback.
-- [ ] Preserve empty states, shortcuts, and back navigation.
-- [ ] Run focused tests and applicable module verification.
+- [x] Add behavior tests for long Projects, project memories, memory detail, Timeline, Warnings, Backups, and API health views.
+- [x] Keep selected rows visible under line, wraparound, page, and boundary navigation.
+- [x] Render deterministic visible-range and overflow feedback.
+- [x] Preserve empty states, shortcuts, and back navigation.
+- [x] Run focused tests and applicable module verification.
 - [ ] Record the work-unit commit and native assessment/review outcome.
 
 Route: delegated writer. Trigger: multi-file write and broad P0 view migration.
@@ -93,6 +93,14 @@ Route: delegated writer. Trigger: multi-file write across complex workflows and 
 - Parent spot check: `cd jarvis-cli && go test ./internal/hiveui ./internal/terminalui` — PASS (cached).
 - Native assessment: unavailable/empty output; treated as high risk and independently verified.
 - Work-unit commit: `1fb12fb892c8d502c7d71074bee505671ec44ef4` (`fix(hiveui): add vertical viewport foundation`).
+- Native RDD 720-01: approved and acknowledged; lineage `review-7bccad296e77376e`.
+- Work unit 720-02 migrated all primary P0 views and added cursor-follow, page/boundary navigation, visible-range feedback, physical display-cell wrapping, and narrow-terminal fallback coverage.
+- WU-02 independent verification found narrow-width frame overflow and inconsistent HelpBar/chrome budgets; the bounded correction uses actual known width, one-row width-safe chrome, and shared navigation/rendering budgets.
+- WU-02 writer after correction: `cd jarvis-cli && go test ./internal/hiveui ./internal/terminalui` — PASS.
+- WU-02 writer after correction: `cd jarvis-cli && go test ./...` — PASS.
+- WU-02 writer after correction: `cd jarvis-cli && go vet ./...` — PASS.
+- WU-02 writer after correction: `git diff --check` — PASS.
+- WU-02 parent spot check: `cd jarvis-cli && go test ./internal/hiveui ./internal/terminalui` — PASS (cached).
 
 ## Next step
-Branch 720-02 from the completed foundation and migrate the primary P0 views.
+Commit work unit 720-02, run native RDD for its committed range, then branch 720-03 from the approved boundary.

@@ -1,6 +1,7 @@
 package terminalui
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -40,6 +41,16 @@ func PanelWidth(termWidth int) int {
 		w = 80
 	}
 	return w - 4
+}
+
+// ContentWidth returns the panel content width for a known terminal width.
+// It retains the pre-resize 80-column fallback only when width is unknown.
+func ContentWidth(termWidth int) int {
+	w := termWidth
+	if w <= 0 {
+		w = 80
+	}
+	return max(1, w-4)
 }
 
 // SectionHeader renders "▸ LABEL ──────" filling to the given display width.
@@ -125,41 +136,77 @@ func StatusDot(state string) string {
 }
 
 // HeaderRow renders a breadcrumb on the left and a badge right-aligned on the
-// same line, padded to termWidth. Width is floored at 80.
+// same physical line. Long breadcrumbs are truncated to the terminal width.
 func HeaderRow(breadcrumb string, badge string, termWidth int) string {
 	w := termWidth
-	if w < 80 {
+	if w < 14 {
 		w = 80
 	}
-	// Compute remaining space after the breadcrumb for right-aligning the badge.
-	leftWidth := lipgloss.Width(breadcrumb)
-	remaining := w - leftWidth
-	if remaining < lipgloss.Width(badge) {
-		remaining = lipgloss.Width(badge)
-	}
-	rightPart := lipgloss.PlaceHorizontal(remaining, lipgloss.Right, badge)
-	return breadcrumb + rightPart
+	badge = truncateDisplay(badge, w)
+	breadcrumb = truncateDisplay(breadcrumb, max(0, w-lipgloss.Width(badge)))
+	remaining := w - lipgloss.Width(breadcrumb)
+	return breadcrumb + lipgloss.PlaceHorizontal(remaining, lipgloss.Right, badge)
 }
 
 // HelpBar renders the footer help bar with key hints left-aligned and the mode
-// badge right-aligned, all within termWidth. Width is floored at 80.
+// badge right-aligned on one display-width-safe physical line.
 func HelpBar(hints []KeyHint, mode string, termWidth int) string {
 	w := termWidth
-	if w < 80 {
+	if w <= 0 {
 		w = 80
 	}
 	var parts []string
 	for _, h := range hints {
 		parts = append(parts, HelpKeyStyle.Render(h.Key)+" "+HelpDescStyle.Render(h.Desc))
 	}
-	hintStr := strings.Join(parts, HelpDescStyle.Render("  ·  "))
 	badge := ModeBadge(mode)
-	hintWidth := lipgloss.Width(hintStr)
-	remaining := w - hintWidth
-	if remaining < lipgloss.Width(badge) {
-		remaining = lipgloss.Width(badge)
+	hintStr := strings.Join(parts, HelpDescStyle.Render("  ·  "))
+	badge = truncateDisplay(badge, w)
+	available := max(0, w-lipgloss.Width(badge))
+	if lipgloss.Width(hintStr) > available {
+		hintStr = strings.Join(parts, HelpDescStyle.Render(" · "))
 	}
+	if lipgloss.Width(hintStr) > available {
+		hintStr = strings.Join(parts, HelpDescStyle.Render("·"))
+	}
+	hintStr = truncateDisplay(hintStr, available)
+	remaining := w - lipgloss.Width(hintStr)
 	return hintStr + lipgloss.PlaceHorizontal(remaining, lipgloss.Right, badge)
+}
+
+var ansiEscape = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
+
+func truncateDisplay(value string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(value) <= width {
+		return value
+	}
+	value = ansiEscape.ReplaceAllString(value, "")
+	var result strings.Builder
+	used := 0
+	for _, r := range value {
+		runeWidth := lipgloss.Width(string(r))
+		if used+runeWidth > width {
+			break
+		}
+		result.WriteRune(r)
+		used += runeWidth
+	}
+	return result.String()
+}
+
+// PhysicalLines wraps text by display-cell width and returns the rows a
+// terminal will occupy. It is ANSI-aware through Lip Gloss width handling.
+func PhysicalLines(content string, width int) []string {
+	if width < 1 {
+		width = 1
+	}
+	if content == "" {
+		return []string{""}
+	}
+	return strings.Split(lipgloss.NewStyle().Width(width).Render(content), "\n")
 }
 
 // SelectedRow renders content with the selection highlight (mauve bg, base fg),

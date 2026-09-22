@@ -2175,9 +2175,10 @@ func TestWindowSizeMsgClampsViewportOffsetOnResize(t *testing.T) {
 	if got.viewport.height != 3 {
 		t.Fatalf("viewport height after resize = %d, want 3", got.viewport.height)
 	}
-	if got.viewport.offset != 7 {
-		t.Fatalf("viewport offset after resize = %d, want 7", got.viewport.offset)
+	if got.viewport.offset != 4 {
+		t.Fatalf("viewport offset after resize = %d, want selected project row to remain visible at 4", got.viewport.offset)
 	}
+	assertContains(t, got.View(), "▌   0  0  0")
 
 	updated, _ = got.Update(tea.WindowSizeMsg{Width: 80, Height: 1})
 	got = updated.(Model)
