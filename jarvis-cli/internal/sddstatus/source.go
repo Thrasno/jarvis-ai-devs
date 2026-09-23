@@ -324,7 +324,7 @@ func (h *HiveSource) InspectSealablePredecessor(ctx context.Context, changeName 
 		return applyprogress.Snapshot{}, err
 	}
 	snapshot := result.State.Snapshot
-	if result.Outcome != "current" || snapshot.Schema != applyprogress.SnapshotSchema || snapshot.Status != applyprogress.StatusPartial || snapshot.Project != h.project || snapshot.Change != changeName {
+	if result.Outcome != "committed" || result.Code != "ok" || snapshot.Schema != applyprogress.SnapshotSchema || snapshot.Status != applyprogress.StatusPartial || snapshot.Project != h.project || snapshot.Change != changeName {
 		return applyprogress.Snapshot{}, fmt.Errorf("sealable predecessor: incompatible guarded head")
 	}
 	if err := applyprogress.VerifySnapshot(snapshot); err != nil {

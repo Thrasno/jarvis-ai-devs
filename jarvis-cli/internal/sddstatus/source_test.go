@@ -39,6 +39,7 @@ func TestHiveInspectSealablePredecessor(t *testing.T) {
 		missing      bool
 		retry        bool
 		outcome      string
+		code         string
 		foreignBatch bool
 		wantError    bool
 	}{
@@ -47,7 +48,10 @@ func TestHiveInspectSealablePredecessor(t *testing.T) {
 		{name: "matching outer coordinates accepted", matching: true},
 		{name: "duplicate batch refs", mutate: func(s *applyprogress.Snapshot) { s.Batches = append(s.Batches, s.Batches[0]) }, wantError: true},
 		{name: "foreign batch identity", foreignBatch: true, wantError: true},
+		{name: "legacy fake wire outcome", outcome: "current", wantError: true},
+		{name: "rejected head outcome", outcome: "rejected", wantError: true},
 		{name: "alternate head outcome", outcome: "superseded", wantError: true},
+		{name: "non-ok head code", code: "conflict", wantError: true},
 		{name: "corrupt ref", mutate: func(s *applyprogress.Snapshot) { s.Batches[0].SHA256 = strings.Repeat("a", 64) }, wantError: true},
 		{name: "foreign identity", mutate: func(s *applyprogress.Snapshot) { s.Change = "foreign" }, wantError: true},
 		{name: "wrong outer coordinates", outer: true, wantError: true},
@@ -94,15 +98,19 @@ func TestHiveInspectSealablePredecessor(t *testing.T) {
 					} else if tc.matching {
 						outer = fmt.Sprintf(`,"generation":%d,"revision":%d,"digest":%q`, s.Generation, s.Revision, s.Digest)
 					}
-					outcome := "current"
+					outcome := "committed"
 					if tc.outcome != "" {
 						outcome = tc.outcome
+					}
+					code := "ok"
+					if tc.code != "" {
+						code = tc.code
 					}
 					batches := ""
 					if tc.embedded {
 						batches = `,"batches":[` + string(batchData) + `]`
 					}
-					_, _ = fmt.Fprintf(w, `{"outcome":%q,"state":{"snapshot":%s%s%s}}`, outcome, data, outer, batches)
+					_, _ = fmt.Fprintf(w, `{"outcome":%q,"code":%q,"state":{"snapshot":%s%s%s}}`, outcome, code, data, outer, batches)
 				case "/sdd/changes/change/apply-evidence/" + batch.BatchID:
 					if r.URL.Query().Get("expected_head_digest") != s.Digest {
 						t.Errorf("unbound evidence request: %s", r.URL.RawQuery)
