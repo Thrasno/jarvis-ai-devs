@@ -40,7 +40,8 @@ The task manifest is stream identity. A mismatch currently blocks progress but o
 - [x] **ODD-724-04B2 — Hive successor authority.** Provide server-side guarded source-seal check and atomic target genesis/receipt under existing DB transaction, rejecting an occupied target and mismatched frozen intent. Commit with tests.
 - [x] **ODD-724-04B3A1 — Hive successor governance and HTTP.** Expose guarded DB operation via governance and POST of predecessor with project only. Strict JSON, no caller-supplied successor authority, real SQLite HTTP success/replay/blocked tests. Commit with tests.
 - [x] **ODD-724-04B3A2 — CLI Hive successor client.** Add typed request/response API for predecessor publication, preserving exact replay/error envelope. Commit with tests.
-- [ ] **ODD-724-04B3B — Hybrid and CLI successor routing.** Coordinate OpenSpec and Hive separate successor publications with exact retry and fail-closed divergence; never use CLI binding adoption for a new successor. Commit with tests.
+- [x] **ODD-724-04B3B1 — Hybrid successor orchestration.** Verify exact authenticated predecessor seal on both sides before publishing OpenSpec first, then Hive; verify both 1/1 genesis results and exact retry after partial publication. No adoption of foreign target. Commit with tests.
+- [ ] **ODD-724-04B3B2 — CLI successor routing.** Resolve existing predecessor binding only, route to Hybrid and reject an unbound/new target adoption. Consent decision remains in 05. Commit with tests.
 - [ ] **ODD-724-04C — Cross-change status and continue routing.** Verify both seal and pointer, derive pending successor/mismatch/invalid states and exact recovery routing. Test interruption between seal and creation and same-project identity. Commit with tests.
 - [ ] **ODD-724-05 — Consent, archive and guidance.** Zero/nonzero credited task UX, decline without mutation, old archive rejection, source-of-truth embedded guidance and user docs, command/status integration regressions across stores and historical snapshots. Complete relevant module test/vet checks, record failures/skips, work-unit commit and review boundaries; do not publish PRs without user authorization.
 
@@ -65,7 +66,9 @@ The bilingual approved issue body is normative. In particular: old immutable evi
 
 - [x] ODD-724-04B3A1: guarded daemon governance and POST `/sdd/changes/{change}/apply-progress/publish-successor` with project-only strict JSON; real SQLite-backed HTTP test covers committed genesis, blocked-project exact replay 200 and new work 423; existing advance blocked error mapping is aligned. Independent verifier PASS; RED/GREEN transcript not captured by parent. Commit `706b995edae29eb5189300906452c8df4750e42c` (224 authored diff lines), native review `review-39d4ddc37b93baec` approved/acknowledged with informational R3-001 at `server.go:536-537`.
 
-- [x] ODD-724-04B3A2: typed Hive client POST sends only project to predecessor path and preserves committed result/receipt or typed 423/422 error. Independent focused verifier PASS; cross-process client+daemon integration not claimed. Commit/native review pending.
+- [x] ODD-724-04B3A2: typed Hive client POST sends only project to predecessor path and preserves committed result/receipt or typed 423/422 error. Independent focused verifier PASS; cross-process client+daemon integration not claimed. Commit `727b5ab55db08b48ca9230984dbb2840e0d19861` (75 authored diff lines), native review `review-723aae7ebbbb5a79` approved/acknowledged.
+
+- [x] ODD-724-04B3B1: Hybrid validates matching authenticated predecessor seals on both stores, publishes OpenSpec first, verifies its result against stored genesis before mutating Hive, then validates Hive returned genesis against signed pair. Exact replay after interrupted second publication, forged result and occupied target tests. The real Hive adapter intentionally belongs to 04B3B2; this unit alone is not callable from CLI. Independent verifier PASS. Commit/native review next.
 
 ## Verification evidence and work-unit commits
 
@@ -84,8 +87,10 @@ WU-04B2: `cd hive-daemon && go test -count=1 ./internal/db` PASS; `cd hive-daemo
 
 WU-04B3A1: `cd hive-daemon && go test -count=1 ./internal/governance ./internal/httpapi` PASS; `cd hive-daemon && go vet ./internal/governance ./internal/httpapi` PASS; `git diff --check` PASS; independent verifier PASS after adding real SQLite transport tests. Commit `706b995edae29eb5189300906452c8df4750e42c` (220 additions, 4 deletions), native review `review-39d4ddc37b93baec` approved/acknowledged with nonblocking R3-001.
 
-WU-04B3A2: `cd jarvis-cli && go test -count=1 ./internal/hiveclient` PASS; `cd jarvis-cli && go vet ./internal/hiveclient` PASS; `git diff --check` PASS; independent verifier PASS. No integrated daemon+client test. Commit/native review pending.
+WU-04B3A2: `cd jarvis-cli && go test -count=1 ./internal/hiveclient` PASS; `cd jarvis-cli && go vet ./internal/hiveclient` PASS; `git diff --check` PASS; independent verifier PASS. No integrated daemon+client test. Commit `727b5ab55db08b48ca9230984dbb2840e0d19861` (71 additions, 4 deletions), native review `review-723aae7ebbbb5a79` approved/acknowledged.
+
+WU-04B3B1: `cd jarvis-cli && go test -count=1 ./internal/sddprogress` PASS; `cd jarvis-cli && go vet ./internal/sddprogress` PASS; `git diff --check` PASS; independent verifier PASS after adding OpenSpec returned-result validation. Real adapter pending 04B3B2. Commit/native review pending.
 
 ## Next step
 
-Close 04B3A2 client commit/review, then implement 04B3B Hybrid+CLI routing. 04B3A1 committed/reviewed as `706b995e`. Keep 04B2's signed-terminal authority, read-only receipt replay and new-work reconciliation intact. Preserve the reviewed OpenSpec commits; R3-001 remains informational. Do not describe a digest-only claim as a finished successor; 04C status must report it pending. Keep ODD-724-06 blocked until an explicit cross-module test mechanism is approved; do not describe seam+HTTP evidence as combined Hybrid E2E. Reconcile local task file, full Engram mirror and visible todo before next source write.
+Close 04B3B1 pure Hybrid unit, then 04B3B2 CLI routing from canonical predecessor seal. 04B3A2 client committed/reviewed as `727b5ab5`. 04B3A1 committed/reviewed as `706b995e`. Keep 04B2's signed-terminal authority, read-only receipt replay and new-work reconciliation intact. Preserve the reviewed OpenSpec commits; R3-001 remains informational. Do not describe a digest-only claim as a finished successor; 04C status must report it pending. Keep ODD-724-06 blocked until an explicit cross-module test mechanism is approved; do not describe seam+HTTP evidence as combined Hybrid E2E. Reconcile local task file, full Engram mirror and visible todo before next source write.

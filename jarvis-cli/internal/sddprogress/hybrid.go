@@ -107,10 +107,78 @@ type hybridReceipt struct {
 
 // Hybrid uses a durable receipt to repair only the side that did not commit.
 type Hybrid struct {
-	Root      string
-	OpenSpec  advanceBackend
-	Hive      advanceBackend
-	HiveFirst bool // Test seam for either interrupted publication direction.
+	Root                     string
+	OpenSpec                 advanceBackend
+	Hive                     advanceBackend
+	HiveFirst                bool                                            // Test seam for either interrupted publication direction.
+	publishOpenSpecSuccessor func(OpenSpec, OpenSpec) (AdvanceResult, error) // Test-only returned-result seam.
+}
+
+// successorPublisher is supplied by the Hive adapter in the follow-up CLI wiring.
+// It owns remote target reservation and exact idempotent publication; no target
+// coordinates are accepted from a caller.
+type successorPublisher interface {
+	PublishSuccessorGenesis(applyprogress.Snapshot) (applyprogress.Snapshot, error)
+}
+
+// PublishSuccessorGenesis derives the target solely from the two authenticated
+// predecessor heads. A retry replays both immutable publications, never adopting
+// an unrelated successor already occupying either target.
+func (h Hybrid) PublishSuccessorGenesis() (applyprogress.Snapshot, error) {
+	open, ok := h.OpenSpec.(OpenSpec)
+	if !ok {
+		return applyprogress.Snapshot{}, ErrBackendDiverged
+	}
+	hive, ok := h.Hive.(interface {
+		snapshotBackend
+		successorPublisher
+	})
+	if !ok {
+		return applyprogress.Snapshot{}, ErrBackendDiverged
+	}
+	unlock, err := h.lock()
+	if err != nil {
+		return applyprogress.Snapshot{}, err
+	}
+	defer unlock()
+	left, leftErr := open.InspectPublication()
+	if leftErr != nil || left == nil || applyprogress.VerifySnapshot(*left) != nil || filepath.Clean(h.Root) != filepath.Clean(open.Root) {
+		return applyprogress.Snapshot{}, ErrBackendDiverged
+	}
+	// The existing CLI adapter resolves CurrentSnapshot using these coordinates.
+	// They come from the authenticated predecessor, not a caller-supplied target.
+	right, rightErr := hive.CurrentSnapshot(AdvanceRequest{Snapshot: applyprogress.Snapshot{Project: left.Project, Change: left.Change}})
+	if rightErr != nil || right == nil || applyprogress.VerifySnapshot(*right) != nil ||
+		!sameSnapshot(*left, *right) || left.Status != applyprogress.StatusSuperseded || left.SealIntent == nil ||
+		left.SealIntent.SuccessorProject != left.Project || !applyprogress.ValidID(left.SealIntent.SuccessorChange) {
+		return applyprogress.Snapshot{}, ErrBackendDiverged
+	}
+	// OpenSpec validates the occupied target and the sealed task manifest before
+	// publishing. Hive validates its own target against the same sealed identity.
+	target := OpenSpec{Root: filepath.Join(filepath.Dir(open.Root), left.SealIntent.SuccessorChange)}
+	publish := h.publishOpenSpecSuccessor
+	if publish == nil {
+		publish = OpenSpec.PublishSuccessorGenesis
+	}
+	result, err := publish(open, target)
+	if err != nil {
+		return applyprogress.Snapshot{}, err
+	}
+	// A backend's success claim is not authority. Authenticate the published
+	// target and its pair with the agreed predecessor before mutating Hive.
+	published, err := target.InspectPublication()
+	if err != nil || published == nil || applyprogress.ValidateSuccessorGenesisPair(*left, *published) != nil ||
+		result.Generation != published.Generation || result.Revision != published.Revision || result.Digest != published.Digest {
+		return applyprogress.Snapshot{}, ErrBackendDiverged
+	}
+	genesis, err := hive.PublishSuccessorGenesis(*left)
+	if err != nil {
+		return applyprogress.Snapshot{}, err
+	}
+	if applyprogress.ValidateSuccessorGenesisPair(*right, genesis) != nil || !sameSnapshot(*published, genesis) {
+		return applyprogress.Snapshot{}, ErrBackendDiverged
+	}
+	return *published, nil
 }
 
 // Current accepts only independently validated matching snapshots.
