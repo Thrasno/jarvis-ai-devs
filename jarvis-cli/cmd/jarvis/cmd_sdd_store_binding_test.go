@@ -21,7 +21,50 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddbinding"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
 )
+
+func TestArchiveValidatorsRejectSupersededProgress(t *testing.T) {
+	root := t.TempDir()
+	destination := filepath.Join(root, "archive")
+	ready := func(mode string) *sddstatus.ChangeStatus {
+		return &sddstatus.ChangeStatus{
+			ArtifactStore: mode, ChangeRoot: root,
+			Artifacts: map[string]sddstatus.ArtifactState{
+				sddstatus.ArtifactApplyProgress: sddstatus.ArtifactDone,
+				sddstatus.ArtifactVerifyReport:  sddstatus.ArtifactDone,
+				sddstatus.ArtifactArchiveReport: sddstatus.ArtifactDone,
+			},
+			Dependencies:  map[string]sddstatus.DependencyState{sddstatus.PhaseArchive: sddstatus.DepReady},
+			ActionContext: sddstatus.ActionContext{AllowedEditRoots: []string{root}},
+		}
+	}
+	contents := map[string]string{sddstatus.ArtifactArchiveReport: "# Archive report", sddstatus.ArtifactVerifyReport: "# Verify report"}
+	for _, mode := range []string{"hive", "openspec", "hybrid"} {
+		t.Run(mode, func(t *testing.T) {
+			status := ready(mode)
+			validate := func() error {
+				switch mode {
+				case "hive":
+					return validateHiveArchiveStatus(status, contents)
+				case "openspec":
+					return validateSddArchiveStatus(status, destination)
+				default:
+					view := boundArchiveView{status: status, contents: contents}
+					local := ready("openspec")
+					return validateHybridArchiveViews(view, boundArchiveView{status: local, contents: contents}, destination)
+				}
+			}
+			if err := validate(); err != nil {
+				t.Fatalf("complete historical progress blocked: %v", err)
+			}
+			status.Artifacts[sddstatus.ArtifactApplyProgress] = sddstatus.ArtifactSuperseded
+			if err := validate(); err == nil {
+				t.Fatal("superseded progress accepted for archive")
+			}
+		})
+	}
+}
 
 func canonicalSddTestWorkspace(t *testing.T) string {
 	t.Helper()

@@ -16,7 +16,9 @@ A partial continuation binds `stream_sha256`, `next_entry_index`, and `next_entr
 
 ## Archive Validation
 
-Archive validates the canonical v2 `apply-progress.md` snapshot with exactly its referenced immutable evidence batches before moving the topology. It validates batch hashes, ordered references, task coverage, and any atomic continuation group. Archive never repairs or recomputes evidence.
+Archive validates the canonical v2 `apply-progress.md` snapshot with exactly its referenced immutable evidence batches before moving the topology. It validates batch hashes, ordered references, task coverage, and any atomic continuation group. Archive never repairs or recomputes evidence. A superseded predecessor is not archive-ready, even when its old tasks were complete: Hive, OpenSpec, and hybrid require `done` progress. Revalidate that requirement under the archive lock before any move. Historical completed v2 changes remain archiveable.
+
+The current supersession gate is local only; there is no public successor command yet. After all predecessor and successor prechecks, nonzero credited tasks require typing the exact successor name; zero credited tasks skip the prompt. Seal the predecessor against its original task manifest. A fresh successor starts at generation 1/revision 1 with no transferred credit. Never use archive to close the superseded predecessor.
 
 ## Strict Verification
 
