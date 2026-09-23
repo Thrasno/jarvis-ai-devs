@@ -368,6 +368,164 @@ func (d *DB) GetApplyProgressReceipt(project, change, requestID string) (ApplyPr
 	return receipt, nil
 }
 
+// PublishApplyProgressSuccessor publishes a new stream only after its predecessor
+// has been durably sealed. It never modifies predecessor authority.
+func (d *DB) PublishApplyProgressSuccessor(project, predecessorChange string) (ApplyProgressAdvanceResult, error) {
+	project, predecessorChange = canonicalProjectKey(project), strings.TrimSpace(predecessorChange)
+	if project == "" || predecessorChange == "" {
+		return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
+	}
+	tx, err := d.sqlDB.Begin()
+	if err != nil {
+		return ApplyProgressAdvanceResult{}, fmt.Errorf("begin successor publication: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	// Resolve the signed terminal lineage without writing: exact receipt replay
+	// must remain read-only even if the local head is stale or absent.
+	predecessor, err := d.deriveApplyProgressState(tx, project, predecessorChange)
+	if err != nil {
+		return ApplyProgressAdvanceResult{}, err
+	}
+	seal := predecessor.Snapshot
+	intent := seal.SealIntent
+	if seal.Schema != applyprogress.SupersessionSnapshotSchema || seal.Status != applyprogress.StatusSuperseded || intent == nil || intent.SuccessorProject != project || intent.SuccessorChange == predecessorChange || !applyprogress.ValidID(intent.OperationID) || !applyprogress.ValidID(intent.SuccessorChange) {
+		return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
+	}
+	change := intent.SuccessorChange
+	content, found, err := authoritativeApplyProgressTasksContent(tx, project, predecessorChange)
+	if err != nil {
+		return ApplyProgressAdvanceResult{}, err
+	}
+	if !found {
+		return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
+	}
+	parsed, err := applyprogress.ParseTasksMarkdown(content)
+	if err != nil || len(parsed.Tasks) == 0 {
+		return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
+	}
+	_, manifest, err := applyprogress.TaskManifest(parsed.Tasks)
+	if err != nil || manifest != intent.SuccessorManifestSHA256 {
+		return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
+	}
+	pointer := &applyprogress.SupersedesPointer{Project: project, Change: predecessorChange, SealDigest: seal.Digest, OriginalManifestSHA256: seal.TaskManifestSHA256, Actor: intent.Actor, Reason: intent.Reason, Timestamp: intent.Timestamp, OperationID: intent.OperationID}
+	genesis, genesisBytes, err := applyprogress.SealSnapshot(applyprogress.Snapshot{Schema: applyprogress.SupersessionSnapshotSchema, Project: project, Change: change, Generation: 1, Revision: 1, TaskManifestSHA256: manifest, Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}, Supersedes: pointer})
+	if err != nil || applyprogress.ValidateSuccessorGenesisPair(seal, genesis) != nil {
+		return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
+	}
+	requestHash := sha256.Sum256([]byte("successor-genesis/v1\x00" + intent.OperationID + "\x00" + seal.Digest))
+	requestID := "successor-" + hex.EncodeToString(requestHash[:])
+	payloadHash := sha256.Sum256(genesisBytes)
+	payloadDigest := hex.EncodeToString(payloadHash[:])
+	var storedProject, storedChange, storedDigest, storedResponse string
+	err = tx.QueryRow(`SELECT project, change_name, payload_sha256, response_json FROM sdd_apply_receipts WHERE request_id = ?`, requestID).Scan(&storedProject, &storedChange, &storedDigest, &storedResponse)
+	if err == nil {
+		stored, decodeErr := decodeApplyProgressReceiptResult([]byte(storedResponse))
+		if decodeErr != nil || storedProject != project || storedChange != change || storedDigest != payloadDigest || stored.Outcome != "committed" || stored.Digest != genesis.Digest || stored.Generation != 1 || stored.Revision != 1 {
+			return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
+		}
+		lineage, resolveErr := newApplyProgressLineageResolver(d, tx).resolve(project, change)
+		if resolveErr != nil {
+			return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
+		}
+		// Resolve the signed historical genesis, not the mutable current head.
+		candidates, loadErr := newApplyProgressLineageResolver(d, tx).loadCandidates(project, change)
+		if loadErr != nil {
+			return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
+		}
+		original, present := candidates[genesis.Digest]
+		if !present || !bytes.Equal(original.content, genesisBytes) || lineage.terminal.snapshot.Digest == "" {
+			return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
+		}
+		return ApplyProgressAdvanceResult{Outcome: "committed", State: applyProgressStateFromSnapshot(original.snapshot, original.batches), Receipt: ApplyProgressReceipt{RequestID: requestID, PayloadSHA256: payloadDigest}}, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return ApplyProgressAdvanceResult{}, fmt.Errorf("read successor receipt: %w", err)
+	}
+	if _, err := registerProjectIdentity(context.Background(), tx, project); err != nil {
+		return ApplyProgressAdvanceResult{}, err
+	}
+	if err := ensureProjectWritableInTx(tx, project); err != nil {
+		return ApplyProgressAdvanceResult{}, err
+	}
+	// Only a new writable publication may reconcile the persisted local head.
+	reconciled, err := d.reconcileApplyProgressHeadTx(tx, project, predecessorChange)
+	if err != nil {
+		return ApplyProgressAdvanceResult{}, err
+	}
+	if reconciled.Digest != seal.Digest || reconciled.Generation != seal.Generation || reconciled.Revision != seal.Revision {
+		return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
+	}
+	// SQLite trim does not implement Go's Unicode whitespace semantics. Include
+	// tombstones and historical title-only artifacts in the same name reservation.
+	rows, err := tx.Query(`SELECT topic_key, title FROM memories WHERE project = ?`, project)
+	if err != nil {
+		return ApplyProgressAdvanceResult{}, fmt.Errorf("scan successor occupancy: %w", err)
+	}
+	prefix := "sdd/" + change
+	occupiedMemory := false
+	for rows.Next() {
+		var topic sql.NullString
+		var title string
+		if err = rows.Scan(&topic, &title); err != nil {
+			break
+		}
+		logical := strings.TrimSpace(topic.String)
+		if !topic.Valid || logical == "" {
+			logical = strings.TrimSpace(title)
+		}
+		if logical == prefix || strings.HasPrefix(logical, prefix+"/") {
+			occupiedMemory = true
+			break
+		}
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	_ = rows.Close()
+	if err != nil {
+		return ApplyProgressAdvanceResult{}, fmt.Errorf("scan successor occupancy: %w", err)
+	}
+	if occupiedMemory {
+		return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
+	}
+	var occupied int
+	for _, query := range []struct {
+		sql  string
+		args []any
+	}{
+		{`SELECT COUNT(*) FROM sdd_apply_heads WHERE project = ? AND change_name = ?`, []any{project, change}},
+		{`SELECT COUNT(*) FROM sdd_apply_receipts WHERE project = ? AND change_name = ?`, []any{project, change}},
+	} {
+		if err := tx.QueryRow(query.sql, query.args...).Scan(&occupied); err != nil {
+			return ApplyProgressAdvanceResult{}, fmt.Errorf("check successor occupancy: %w", err)
+		}
+		if occupied != 0 {
+			return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
+		}
+	}
+	if _, err := d.insertApplyProgressMemory(tx, project, change, "tasks", "Implementation tasks", []byte(content)); err != nil {
+		return ApplyProgressAdvanceResult{}, err
+	}
+	id, err := d.insertApplyProgressMemory(tx, project, change, "apply-progress/v2", "Apply progress snapshot", genesisBytes)
+	if err != nil {
+		return ApplyProgressAdvanceResult{}, err
+	}
+	if _, err := tx.Exec(`INSERT INTO sdd_apply_heads (project, change_name, snapshot_memory_id, generation, revision, digest) VALUES (?, ?, ?, 1, 1, ?)`, project, change, id, genesis.Digest); err != nil {
+		return ApplyProgressAdvanceResult{}, fmt.Errorf("insert successor head: %w", err)
+	}
+	response, err := json.Marshal(applyProgressReceiptResult{Outcome: "committed", Generation: 1, Revision: 1, Digest: genesis.Digest})
+	if err != nil {
+		return ApplyProgressAdvanceResult{}, err
+	}
+	if _, err := tx.Exec(`INSERT INTO sdd_apply_receipts (request_id, project, change_name, payload_sha256, response_json) VALUES (?, ?, ?, ?, ?)`, requestID, project, change, payloadDigest, response); err != nil {
+		return ApplyProgressAdvanceResult{}, fmt.Errorf("insert successor receipt: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return ApplyProgressAdvanceResult{}, fmt.Errorf("commit successor publication: %w", err)
+	}
+	return ApplyProgressAdvanceResult{Outcome: "committed", State: applyProgressStateFromSnapshot(genesis, map[string]applyprogress.Batch{}), Receipt: ApplyProgressReceipt{RequestID: requestID, PayloadSHA256: payloadDigest}}, nil
+}
+
 // AdvanceApplyProgress atomically enforces batch immutability, snapshot CAS, and
 // request-id idempotency. It never calls SaveMemory or changes general memory writes.
 func (d *DB) AdvanceApplyProgress(request ApplyProgressAdvance) (ApplyProgressAdvanceResult, error) {
@@ -387,6 +545,11 @@ func (d *DB) AdvanceApplyProgress(request ApplyProgressAdvance) (ApplyProgressAd
 		validRequestedGeneration = request.Snapshot.Generation == 0 || request.Snapshot.Generation == 1
 	}
 	if !validRequestedGeneration || request.Snapshot.Revision != request.ExpectedRevision+1 || request.Snapshot.PreviousDigest != request.ExpectedDigest {
+		return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
+	}
+	// Cross-change genesis is reserved for PublishApplyProgressSuccessor, which
+	// authenticates the predecessor seal and atomically reserves the target.
+	if request.Snapshot.Supersedes != nil && request.ExpectedRevision == 0 {
 		return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
 	}
 	snapshot, snapshotBytes, err := applyprogress.SealSnapshot(request.Snapshot)
