@@ -73,7 +73,7 @@ func init() {
 	sddStatusCmd.Flags().String("project", "", "hive project name (overrides origin repository or working-directory basename derivation)")
 	sddContinueCmd.Flags().Bool("json", false, "emit JSON output")
 	sddContinueCmd.Flags().String("project", "", "hive project name (overrides origin repository or working-directory basename derivation)")
-	sddCmd.AddCommand(sddStatusCmd, sddContinueCmd, newBoundSddArchiveCommand())
+	sddCmd.AddCommand(sddStatusCmd, sddContinueCmd, newBoundSddArchiveCommand(), newSddSupersedeCommand())
 }
 
 // requireSupersessionConsent is only a local interaction gate. Its caller must

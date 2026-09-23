@@ -19,7 +19,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// This command remains unregistered pending route audit.
 func newSddSupersedeCommand() *cobra.Command {
 	var predecessor, successor, root, project, actor, reason string
 	command := &cobra.Command{

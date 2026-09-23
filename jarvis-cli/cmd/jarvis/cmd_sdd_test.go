@@ -21,6 +21,19 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
 )
 
+func TestSddSupersedePublicRoute(t *testing.T) {
+	command, args, err := sddCmd.Find([]string{"supersede"})
+	if err != nil || command == nil || command.Name() != "supersede" || len(args) != 0 {
+		t.Fatalf("supersede route: command=%v args=%v err=%v", command, args, err)
+	}
+	if len(command.Aliases) != 0 {
+		t.Fatalf("unexpected aliases: %v", command.Aliases)
+	}
+	if err := command.Args(command, []string{"unexpected"}); err == nil {
+		t.Fatal("supersede accepted positional argument")
+	}
+}
+
 func TestSupersessionConsent(t *testing.T) {
 	base := applyprogress.Snapshot{Schema: applyprogress.SnapshotSchema, Project: "project", Change: "old", Generation: 1, Revision: 1, TaskManifestSHA256: strings.Repeat("a", 64), Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}}
 	seal := func(snapshot applyprogress.Snapshot) applyprogress.Snapshot {
