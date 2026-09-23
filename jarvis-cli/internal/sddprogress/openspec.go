@@ -180,7 +180,25 @@ func (s OpenSpec) reserveSuccessor(target OpenSpec) error {
 		return err
 	}
 	for _, entry := range entries {
-		if entry.Name() != ".apply-progress-successor-seal-digest" && entry.Name() != "tasks.md" {
+		switch entry.Name() {
+		case ".apply-progress-successor-seal-digest", "tasks.md", "apply-progress.md", ".apply-progress-successor-complete":
+		case ".apply-progress-receipts":
+			if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+				return ErrConflict
+			}
+			receipts, err := os.ReadDir(filepath.Join(destination, entry.Name()))
+			if err != nil {
+				return err
+			}
+			for _, receipt := range receipts {
+				if receipt.Name() != head.SealIntent.OperationID+".json" && !strings.HasPrefix(receipt.Name(), ".apply-progress-stage-") {
+					return ErrConflict
+				}
+			}
+		default:
+			if strings.HasPrefix(entry.Name(), ".apply-progress-stage-") {
+				continue // The publication path validates exact staged bytes.
+			}
 			return fmt.Errorf("%w: successor target occupied by unknown artifact", ErrConflict)
 		}
 	}
@@ -203,6 +221,93 @@ func (s OpenSpec) reserveSuccessor(target OpenSpec) error {
 		return err
 	}
 	return s.syncDir(filepath.Dir(destination))
+}
+
+// PublishSuccessorGenesis publishes a sealed predecessor's authenticated successor.
+// Reservation is only a preparation step; all authority is rechecked under both locks.
+func (s OpenSpec) PublishSuccessorGenesis(target OpenSpec) (AdvanceResult, error) {
+	if err := s.reserveSuccessor(target); err != nil {
+		return AdvanceResult{}, err
+	}
+	source, err := filepath.Abs(s.Root)
+	if err != nil {
+		return AdvanceResult{}, err
+	}
+	destination, err := filepath.Abs(target.Root)
+	if err != nil {
+		return AdvanceResult{}, err
+	}
+	locks := []string{(OpenSpec{Root: source}).lockPath(), (OpenSpec{Root: destination}).lockPath()}
+	sort.Strings(locks)
+	first, err := filelock.Acquire(locks[0])
+	if err != nil {
+		return AdvanceResult{}, err
+	}
+	defer first()
+	second, err := filelock.Acquire(locks[1])
+	if err != nil {
+		return AdvanceResult{}, err
+	}
+	defer second()
+	seal, err := s.InspectPublication()
+	if err != nil {
+		return AdvanceResult{}, err
+	}
+	if seal == nil || seal.Status != applyprogress.StatusSuperseded || seal.SealIntent == nil || seal.SealIntent.SuccessorProject != seal.Project || seal.SealIntent.SuccessorChange != filepath.Base(destination) {
+		return AdvanceResult{}, ErrConflict
+	}
+	tasks, err := readRegularFile(filepath.Join(source, "tasks.md"))
+	if err != nil {
+		return AdvanceResult{}, err
+	}
+	if err := target.syncExistingSuccessorFile(filepath.Join(destination, ".apply-progress-successor-seal-digest"), []byte(seal.Digest)); err != nil {
+		return AdvanceResult{}, ErrConflict
+	}
+	if err := target.syncExistingSuccessorFile(filepath.Join(destination, "tasks.md"), tasks); err != nil {
+		return AdvanceResult{}, ErrConflict
+	}
+	manifest, err := target.authoritativeTaskManifest()
+	if err != nil || manifest != seal.SealIntent.SuccessorManifestSHA256 {
+		return AdvanceResult{}, ErrConflict
+	}
+	pointer := &applyprogress.SupersedesPointer{Project: seal.Project, Change: seal.Change, SealDigest: seal.Digest, OriginalManifestSHA256: seal.TaskManifestSHA256, Actor: seal.SealIntent.Actor, Reason: seal.SealIntent.Reason, Timestamp: seal.SealIntent.Timestamp, OperationID: seal.SealIntent.OperationID}
+	genesis, _, err := applyprogress.SealSnapshot(applyprogress.Snapshot{Schema: applyprogress.SupersessionSnapshotSchema, Project: seal.SealIntent.SuccessorProject, Change: seal.SealIntent.SuccessorChange, Generation: 1, Revision: 1, TaskManifestSHA256: manifest, Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}, Supersedes: pointer})
+	if err != nil {
+		return AdvanceResult{}, err
+	}
+	if err := applyprogress.ValidateSuccessorGenesisPair(*seal, genesis); err != nil {
+		return AdvanceResult{}, err
+	}
+	request := AdvanceRequest{RequestID: seal.SealIntent.OperationID, Snapshot: genesis}
+	marker := filepath.Join(destination, ".apply-progress-successor-complete")
+	if _, err := os.Lstat(marker); err == nil {
+		if err := target.syncExistingSuccessorFile(marker, []byte(genesis.Digest)); err != nil {
+			return AdvanceResult{}, ErrConflict
+		}
+		head, err := target.InspectPublication()
+		if err != nil || head == nil || head.Digest != genesis.Digest {
+			return AdvanceResult{}, ErrConflict
+		}
+		return target.advanceLocked(request, nil)
+	} else if !os.IsNotExist(err) {
+		return AdvanceResult{}, err
+	}
+	if head, _, err := target.current(); err != nil {
+		return AdvanceResult{}, err
+	} else if head != nil && head.Digest != genesis.Digest {
+		return AdvanceResult{}, ErrConflict
+	}
+	result, err := target.advanceLocked(request, nil)
+	if err != nil {
+		return AdvanceResult{}, err
+	}
+	if err := createSuccessorFile(marker, []byte(result.Digest), target.syncDir); err != nil {
+		if os.IsExist(err) {
+			return AdvanceResult{}, ErrConflict
+		}
+		return AdvanceResult{}, err
+	}
+	return result, nil
 }
 
 // syncExistingSuccessorFile revalidates exact bytes and syncs the opened regular
@@ -252,18 +357,24 @@ func createSuccessorFile(path string, data []byte, syncDir func(string) error) e
 }
 
 func (s OpenSpec) advance(request AdvanceRequest, legacy []byte) (AdvanceResult, error) {
-	if !applyprogress.ValidID(request.RequestID) {
-		return AdvanceResult{}, fmt.Errorf("%w: request_id", applyprogress.ErrInvalidID)
-	}
-	if err := s.ValidateRequestManifest(request); err != nil {
-		return AdvanceResult{}, err
+	if request.Snapshot.Supersedes != nil && request.Snapshot.Generation == 1 && request.Snapshot.Revision == 1 {
+		return AdvanceResult{}, ErrConflict
 	}
 	unlock, err := s.lock()
 	if err != nil {
 		return AdvanceResult{}, err
 	}
 	defer unlock()
+	return s.advanceLocked(request, legacy)
+}
 
+func (s OpenSpec) advanceLocked(request AdvanceRequest, legacy []byte) (AdvanceResult, error) {
+	if !applyprogress.ValidID(request.RequestID) {
+		return AdvanceResult{}, fmt.Errorf("%w: request_id", applyprogress.ErrInvalidID)
+	}
+	if err := s.ValidateRequestManifest(request); err != nil {
+		return AdvanceResult{}, err
+	}
 	current, raw, currentErr := s.current()
 	snapshot, snapshotData, err := applyprogress.SealSnapshot(request.Snapshot)
 	if err != nil {

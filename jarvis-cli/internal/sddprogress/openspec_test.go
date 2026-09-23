@@ -15,6 +15,141 @@ import (
 
 var errInterrupted = errors.New("interrupted before rename")
 
+func TestPublishSuccessorGenesis(t *testing.T) {
+	parent := t.TempDir()
+	source := OpenSpec{Root: filepath.Join(parent, "source")}
+	if err := os.Mkdir(source.Root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	tasks := filepath.Join(source.Root, "tasks.md")
+	if err := os.WriteFile(tasks, []byte("- [ ] 1.1 task\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	first := request(t, "old-request", "apb-00000000000000000000000000000001", 1, 1, "")
+	prepareContinuationSuccessor(t, &first, "apb-00000000000000000000000000000002")
+	if _, err := source.Advance(first); err != nil {
+		t.Fatal(err)
+	}
+	revised := []byte("- [ ] 1.1 changed\n")
+	if err := os.WriteFile(tasks, revised, 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, manifest, err := applyprogress.TaskManifest([]applyprogress.Task{{ID: "1.1", Text: "changed"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seal := first
+	seal.RequestID = "seal-request"
+	seal.ExpectedGeneration, seal.ExpectedRevision, seal.ExpectedDigest = first.Snapshot.Generation, first.Snapshot.Revision, first.Snapshot.Digest
+	seal.Batches = nil
+	seal.Snapshot.Schema = applyprogress.SupersessionSnapshotSchema
+	seal.Snapshot.Revision++
+	seal.Snapshot.PreviousDigest = first.Snapshot.Digest
+	seal.Snapshot.Status = applyprogress.StatusSuperseded
+	seal.Snapshot.StreamSHA256, seal.Snapshot.NextEntryIndex, seal.Snapshot.NextEntryID = "", 0, ""
+	seal.Snapshot.SealIntent = &applyprogress.SealIntent{SuccessorProject: "jarvis-dev", SuccessorChange: "successor", SuccessorManifestSHA256: manifest, Actor: "agent", Reason: "replanned", Timestamp: "2026-01-01T00:00:00Z", OperationID: "seal-request"}
+	seal.Snapshot, _, err = applyprogress.SealSnapshot(seal.Snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Advance(seal); err != nil {
+		t.Fatal(err)
+	}
+	target := OpenSpec{Root: filepath.Join(parent, "successor")}
+	if err := source.reserveSuccessor(target); err != nil {
+		t.Fatal(err)
+	}
+	pointer := &applyprogress.SupersedesPointer{Project: seal.Snapshot.Project, Change: seal.Snapshot.Change, SealDigest: seal.Snapshot.Digest, OriginalManifestSHA256: seal.Snapshot.TaskManifestSHA256, Actor: seal.Snapshot.SealIntent.Actor, Reason: seal.Snapshot.SealIntent.Reason, Timestamp: seal.Snapshot.SealIntent.Timestamp, OperationID: seal.Snapshot.SealIntent.OperationID}
+	direct, _, err := applyprogress.SealSnapshot(applyprogress.Snapshot{Schema: applyprogress.SupersessionSnapshotSchema, Project: "jarvis-dev", Change: "successor", Generation: 1, Revision: 1, TaskManifestSHA256: manifest, Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}, Supersedes: pointer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := target.Advance(AdvanceRequest{RequestID: "seal-request", Snapshot: direct}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("direct genesis accepted: %v", err)
+	}
+	if _, err := target.AdvanceLegacy(AdvanceRequest{RequestID: "seal-request", Snapshot: direct}, []byte("legacy")); !errors.Is(err, ErrConflict) {
+		t.Fatalf("legacy genesis accepted: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(target.Root, "apply-evidence"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target.Root, "apply-evidence", "foreign.json"), []byte("foreign"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.PublishSuccessorGenesis(target); err == nil {
+		t.Fatal("adopted foreign evidence")
+	}
+	if err := os.Remove(filepath.Join(target.Root, "apply-evidence", "foreign.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(target.Root, "apply-evidence")); err != nil {
+		t.Fatal(err)
+	}
+	receiptDir := filepath.Join(target.Root, ".apply-progress-receipts")
+	if err := os.Mkdir(receiptDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	foreignReceipt := filepath.Join(receiptDir, "foreign.json")
+	if err := os.WriteFile(foreignReceipt, []byte("foreign"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.PublishSuccessorGenesis(target); err == nil {
+		t.Fatal("adopted foreign receipt")
+	}
+	if err := os.Remove(foreignReceipt); err != nil {
+		t.Fatal(err)
+	}
+	interrupted := target
+	interrupted.BeforeRename = func() error { return errInterrupted }
+	if _, err := source.PublishSuccessorGenesis(interrupted); !errors.Is(err, errInterrupted) {
+		t.Fatalf("staging interruption: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(target.Root, ".apply-progress-successor-complete")); !os.IsNotExist(err) {
+		t.Fatalf("completion before publication: %v", err)
+	}
+	result, err := source.PublishSuccessorGenesis(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := target.Current()
+	if err != nil || head == nil || head.Digest != result.Digest || head.Supersedes == nil || head.Supersedes.SealDigest != seal.Snapshot.Digest {
+		t.Fatalf("head: %+v, %v", head, err)
+	}
+	marker, err := os.ReadFile(filepath.Join(target.Root, ".apply-progress-successor-complete"))
+	if err != nil || string(marker) != head.Digest {
+		t.Fatalf("marker: %q, %v", marker, err)
+	}
+	if _, err := source.PublishSuccessorGenesis(target); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if err := os.Remove(filepath.Join(target.Root, ".apply-progress-successor-complete")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.PublishSuccessorGenesis(target); err != nil {
+		t.Fatalf("head without marker retry: %v", err)
+	}
+	receiptPath := filepath.Join(target.Root, ".apply-progress-receipts", "seal-request.json")
+	receiptBytes, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(receiptPath, []byte("foreign"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.PublishSuccessorGenesis(target); err == nil {
+		t.Fatal("accepted malformed receipt")
+	}
+	if err := os.WriteFile(receiptPath, receiptBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target.Root, ".apply-progress-successor-complete"), []byte(strings.Repeat("0", 64)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.PublishSuccessorGenesis(target); err == nil {
+		t.Fatal("accepted foreign marker")
+	}
+}
+
 func TestReserveSuccessor(t *testing.T) {
 	parent := t.TempDir()
 	source := filepath.Join(parent, "source")
