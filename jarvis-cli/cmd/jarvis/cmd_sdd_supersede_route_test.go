@@ -758,7 +758,10 @@ func TestSupersedeRouteHybridNewAndPartialSealReplay(t *testing.T) {
 							bindings[change] = binding
 							if tc.mirrorInterrupted {
 								target := filepath.Join(workspace, "openspec", "changes", "next")
-								if err := os.Chmod(target, 0500); err != nil {
+								// Directory permissions do not block writes reliably on Windows.
+								if err := os.Rename(target, target+".interrupted"); err != nil {
+									t.Error(err)
+								} else if err := os.WriteFile(target, []byte("blocked"), 0600); err != nil {
 									t.Error(err)
 								}
 							}
@@ -881,8 +884,15 @@ func TestSupersedeRouteHybridNewAndPartialSealReplay(t *testing.T) {
 						t.Fatal("Hive mirror missing after partial adoption")
 					}
 					target := filepath.Join(workspace, "openspec", "changes", "next")
-					if err := os.Chmod(target, 0700); err != nil {
+					if err := os.Remove(target); err != nil {
 						t.Fatal(err)
+					}
+					if err := os.Rename(target+".interrupted", target); err != nil {
+						t.Fatal(err)
+					}
+					localBinding, err := sddbinding.ReadOpenSpec(target)
+					if err != nil || localBinding != nil {
+						t.Fatalf("local binding before repair: %v, %v", localBinding, err)
 					}
 				}
 				retry := newSddSupersedeCommand()
