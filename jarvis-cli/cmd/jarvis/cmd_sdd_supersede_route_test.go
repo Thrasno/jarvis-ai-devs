@@ -52,7 +52,7 @@ func TestSupersedeRouteOpenSpecConsentAndZeroCredit(t *testing.T) {
 					t.Fatal(err)
 				}
 				// A fresh isolated store is required: do not overwrite a signed credited head.
-				workspace = t.TempDir()
+				workspace = canonicalSddTestPath(t, t.TempDir())
 				root = filepath.Join(workspace, "openspec", "changes", "issue-653")
 				if err := os.MkdirAll(root, 0700); err != nil {
 					t.Fatal(err)
@@ -255,7 +255,7 @@ func TestSupersedeRouteOpenSpecTasksChangeDuringConsent(t *testing.T) {
 }
 
 func TestSupersedeRouteHiveWithoutLocalChangeFailsClosedBeforePrompt(t *testing.T) {
-	workspace := t.TempDir()
+	workspace := canonicalSddTestPath(t, t.TempDir())
 	old, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -322,7 +322,7 @@ func TestSupersedeRouteHiveNewAndRetry(t *testing.T) {
 		{name: "missing-attribution", answer: "next\n", credited: true, missingAttribution: true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
-			workspace := t.TempDir()
+			workspace := canonicalSddTestPath(t, t.TempDir())
 			oldDir, err := os.Getwd()
 			if err != nil {
 				t.Fatal(err)
@@ -653,7 +653,7 @@ func TestSupersedeRouteHybridNewAndPartialSealReplay(t *testing.T) {
 			workspace, root, original, batch := preflightOpenSpec(t, sddruntime.StoreModeHybrid)
 			tasks := preflightNewTasks
 			if tc.zero {
-				workspace = t.TempDir()
+				workspace = canonicalSddTestPath(t, t.TempDir())
 				root = filepath.Join(workspace, "openspec", "changes", "issue-653")
 				if err := os.MkdirAll(root, 0700); err != nil {
 					t.Fatal(err)
