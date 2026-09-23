@@ -1,9 +1,11 @@
 package main
 
 import (
+	"flag"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -15,6 +17,7 @@ import (
 
 // jarvisBin is the path to the compiled binary built by TestMain.
 var jarvisBin string
+var supersedeLiveDaemonBin string
 
 // TestMain compiles the binary once for all integration tests in this package.
 func TestMain(m *testing.M) {
@@ -47,11 +50,51 @@ func TestMain(m *testing.M) {
 		cmd2.Stdout = os.Stdout
 		cmd2.Stderr = os.Stderr
 		if err2 := cmd2.Run(); err2 != nil {
-			_, _ = os.Stderr.WriteString("SKIP: could not build jarvis binary: " + err2.Error() + "\n")
-			os.Exit(0) // Skip (not fail) if binary can't be built in this environment.
+			_, _ = os.Stderr.WriteString("FAIL: could not build jarvis binary: " + err2.Error() + "\n")
+			os.Exit(1)
 		}
 	}
 
+	if !flag.Parsed() {
+		flag.Parse()
+	}
+	// Compile only if the test runner will select the live test. Empty -test.run
+	// selects the entire package; -test.skip must take precedence over it.
+	const liveName = "TestSupersedeRouteHybridLiveDaemonPartialPublicationRetry"
+	run := flag.Lookup("test.run").Value.String()
+	skip := flag.Lookup("test.skip").Value.String()
+	selected := run == ""
+	if run != "" {
+		selected, err = regexp.MatchString(strings.Split(run, "/")[0], liveName)
+		if err != nil {
+			_, _ = os.Stderr.WriteString("FAIL: invalid -test.run: " + err.Error() + "\n")
+			os.Exit(1)
+		}
+	}
+	if skip != "" {
+		excluded, matchErr := regexp.MatchString(strings.Split(skip, "/")[0], liveName)
+		if matchErr != nil {
+			_, _ = os.Stderr.WriteString("FAIL: invalid -test.skip: " + matchErr.Error() + "\n")
+			os.Exit(1)
+		}
+		selected = selected && !excluded
+	}
+	if !testing.Short() && selected {
+		module := filepath.Join("..", "..", "..", "hive-daemon")
+		if _, err := os.Stat(filepath.Join(module, "go.mod")); err == nil {
+			supersedeLiveDaemonBin = filepath.Join(binDir, "hive-daemon")
+			if runtime.GOOS == "windows" {
+				supersedeLiveDaemonBin += ".exe"
+			}
+			build := exec.Command("go", "build", "-o", supersedeLiveDaemonBin, "./cmd/hive-daemon")
+			build.Dir = module
+			if output, err := build.CombinedOutput(); err != nil {
+				_, _ = os.Stderr.WriteString("FAIL: build live daemon: " + err.Error() + ": " + string(output) + "\n")
+				_ = os.RemoveAll(binDir)
+				os.Exit(1)
+			}
+		}
+	}
 	code := m.Run()
 	_ = os.RemoveAll(binDir)
 	os.Exit(code)

@@ -126,7 +126,7 @@ func crossCommandHybridReceiptPayload(t *testing.T, root, requestID string) stri
 	return receipt.Payload
 }
 
-func crossCommandCommittedHiveResult(t *testing.T, root string, request sddprogress.AdvanceRequest) hiveclient.ApplyProgressResult {
+func crossCommandCommittedHiveResult(t *testing.T, _ string, request sddprogress.AdvanceRequest) hiveclient.ApplyProgressResult {
 	t.Helper()
 	return hiveclient.ApplyProgressResult{
 		Outcome: "committed",
@@ -137,10 +137,7 @@ func crossCommandCommittedHiveResult(t *testing.T, root string, request sddprogr
 			Snapshot:   request.Snapshot,
 			Batches:    request.Batches,
 		},
-		Receipt: hiveclient.ApplyProgressReceipt{
-			RequestID:     request.RequestID,
-			PayloadSHA256: crossCommandHybridReceiptPayload(t, root, request.RequestID),
-		},
+		Receipt: daemonFormatReceipt(t, hiveclient.ApplyProgressAdvanceRequest{Project: request.Snapshot.Project, Change: request.Snapshot.Change, RequestID: request.RequestID, ExpectedGeneration: request.ExpectedGeneration, ExpectedRevision: request.ExpectedRevision, ExpectedDigest: request.ExpectedDigest, LegacySourceSHA256: request.LegacySourceSHA256, Snapshot: request.Snapshot, Batches: request.Batches}),
 	}
 }
 
@@ -249,7 +246,9 @@ func TestCrossCommandBoundSddProgressSurvivesEnvironmentRestart(t *testing.T) {
 						}
 						return
 					}
-					_, _ = fmt.Fprint(w, `{"outcome":"committed"}`)
+					if err := json.NewEncoder(w).Encode(crossCommandCommittedHiveResult(t, root, request)); err != nil {
+						t.Fatal(err)
+					}
 				default:
 					t.Fatalf("unexpected request: %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
 				}

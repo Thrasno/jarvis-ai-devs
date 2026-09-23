@@ -346,12 +346,8 @@ func (s OpenSpec) PublishSuccessorGenesis(target OpenSpec) (AdvanceResult, error
 	if err != nil || manifest != seal.SealIntent.SuccessorManifestSHA256 {
 		return AdvanceResult{}, ErrConflict
 	}
-	pointer := &applyprogress.SupersedesPointer{Project: seal.Project, Change: seal.Change, SealDigest: seal.Digest, OriginalManifestSHA256: seal.TaskManifestSHA256, Actor: seal.SealIntent.Actor, Reason: seal.SealIntent.Reason, Timestamp: seal.SealIntent.Timestamp, OperationID: seal.SealIntent.OperationID}
-	genesis, _, err := applyprogress.SealSnapshot(applyprogress.Snapshot{Schema: applyprogress.SupersessionSnapshotSchema, Project: seal.SealIntent.SuccessorProject, Change: seal.SealIntent.SuccessorChange, Generation: 1, Revision: 1, TaskManifestSHA256: manifest, Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}, Supersedes: pointer})
+	genesis, _, err := applyprogress.BuildSuccessorGenesis(*seal)
 	if err != nil {
-		return AdvanceResult{}, err
-	}
-	if err := applyprogress.ValidateSuccessorGenesisPair(*seal, genesis); err != nil {
 		return AdvanceResult{}, err
 	}
 	request := AdvanceRequest{RequestID: seal.SealIntent.OperationID, Snapshot: genesis}

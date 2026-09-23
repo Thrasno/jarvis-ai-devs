@@ -482,9 +482,8 @@ func (d *DB) PublishApplyProgressSuccessor(project, predecessorChange string) (A
 	if err != nil || manifest != intent.SuccessorManifestSHA256 {
 		return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
 	}
-	pointer := &applyprogress.SupersedesPointer{Project: project, Change: predecessorChange, SealDigest: seal.Digest, OriginalManifestSHA256: seal.TaskManifestSHA256, Actor: intent.Actor, Reason: intent.Reason, Timestamp: intent.Timestamp, OperationID: intent.OperationID}
-	genesis, genesisBytes, err := applyprogress.SealSnapshot(applyprogress.Snapshot{Schema: applyprogress.SupersessionSnapshotSchema, Project: project, Change: change, Generation: 1, Revision: 1, TaskManifestSHA256: manifest, Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}, Supersedes: pointer})
-	if err != nil || applyprogress.ValidateSuccessorGenesisPair(seal, genesis) != nil {
+	genesis, genesisBytes, err := applyprogress.BuildSuccessorGenesis(seal)
+	if err != nil {
 		return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
 	}
 	requestHash := sha256.Sum256([]byte("successor-genesis/v1\x00" + intent.OperationID + "\x00" + seal.Digest))
@@ -1212,17 +1211,5 @@ func legacyMigrationValidation(detail string) error {
 }
 
 func applyProgressPayloadDigest(request ApplyProgressAdvance, snapshot []byte, batches [][]byte) string {
-	payload, _ := json.Marshal(struct {
-		Project            string   `json:"project"`
-		Change             string   `json:"change"`
-		RequestID          string   `json:"request_id"`
-		Generation         uint64   `json:"expected_generation"`
-		Revision           uint64   `json:"expected_revision"`
-		Digest             string   `json:"expected_digest"`
-		LegacySourceSHA256 string   `json:"legacy_source_sha256,omitempty"`
-		Snapshot           []byte   `json:"snapshot"`
-		Batches            [][]byte `json:"batches"`
-	}{request.Project, request.Change, request.RequestID, request.ExpectedGeneration, request.ExpectedRevision, request.ExpectedDigest, request.LegacySourceSHA256, snapshot, batches})
-	sum := sha256.Sum256(payload)
-	return hex.EncodeToString(sum[:])
+	return applyprogress.AdvanceReceiptDigest(request.Project, request.Change, request.RequestID, request.ExpectedGeneration, request.ExpectedRevision, request.ExpectedDigest, request.LegacySourceSHA256, snapshot, batches)
 }

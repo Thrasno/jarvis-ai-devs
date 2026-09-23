@@ -133,9 +133,8 @@ func (o *OpenSpecSource) ResolveSupersession(ctx context.Context, change string,
 		return SupersessionProjection{}, errors.New("successor completion marker without valid genesis")
 	}
 	// The final marker names the immutable 1/1 genesis, never a later head.
-	pointer := &applyprogress.SupersedesPointer{Project: seal.Project, Change: seal.Change, SealDigest: seal.Digest, OriginalManifestSHA256: seal.TaskManifestSHA256, Actor: seal.SealIntent.Actor, Reason: seal.SealIntent.Reason, Timestamp: seal.SealIntent.Timestamp, OperationID: seal.SealIntent.OperationID}
-	genesis, _, err := applyprogress.SealSnapshot(applyprogress.Snapshot{Schema: applyprogress.SupersessionSnapshotSchema, Project: seal.SealIntent.SuccessorProject, Change: seal.SealIntent.SuccessorChange, Generation: 1, Revision: 1, TaskManifestSHA256: seal.SealIntent.SuccessorManifestSHA256, Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}, Supersedes: pointer})
-	if err != nil || applyprogress.ValidateSuccessorGenesisPair(seal, genesis) != nil || string(marker) != genesis.Digest {
+	genesis, _, err := applyprogress.BuildSuccessorGenesis(seal)
+	if err != nil || string(marker) != genesis.Digest {
 		return SupersessionProjection{}, errors.New("successor completion marker does not match genesis")
 	}
 	data, err := readOpenSpecRegular(filepath.Join(dir, ".apply-progress-receipts", seal.SealIntent.OperationID+".json"))
@@ -155,9 +154,8 @@ func (o *OpenSpecSource) ResolveSupersession(ctx context.Context, change string,
 
 // A reservation without genesis is not authority to adopt arbitrary target files.
 func validatePendingSuccessorTopology(dir string, seal applyprogress.Snapshot) error {
-	pointer := &applyprogress.SupersedesPointer{Project: seal.Project, Change: seal.Change, SealDigest: seal.Digest, OriginalManifestSHA256: seal.TaskManifestSHA256, Actor: seal.SealIntent.Actor, Reason: seal.SealIntent.Reason, Timestamp: seal.SealIntent.Timestamp, OperationID: seal.SealIntent.OperationID}
-	genesis, snapshotData, err := applyprogress.SealSnapshot(applyprogress.Snapshot{Schema: applyprogress.SupersessionSnapshotSchema, Project: seal.SealIntent.SuccessorProject, Change: seal.SealIntent.SuccessorChange, Generation: 1, Revision: 1, TaskManifestSHA256: seal.SealIntent.SuccessorManifestSHA256, Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}, Supersedes: pointer})
-	if err != nil || applyprogress.ValidateSuccessorGenesisPair(seal, genesis) != nil {
+	genesis, snapshotData, err := applyprogress.BuildSuccessorGenesis(seal)
+	if err != nil {
 		return errors.New("invalid sealed successor genesis")
 	}
 	payload := sha256.Sum256(append([]byte("0:0::"), snapshotData...))
