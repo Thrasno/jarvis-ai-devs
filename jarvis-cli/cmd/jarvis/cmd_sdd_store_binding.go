@@ -46,7 +46,7 @@ func resolveSddStoreBindingAt(ctx context.Context, hc *hiveclient.Client, projec
 		return sddbinding.Resolution{}, errors.New("Hive binding client is required")
 	}
 	hiveSource := sddstatus.NewHiveSource(hc, project)
-	openSpecSource := sddstatus.NewOpenSpecSource(workspace)
+	openSpecSource := sddstatus.NewOpenSpecSourceForProject(workspace, project)
 	resolver := sddbinding.LegacyResolver{
 		HiveBindings:      hc,
 		HiveSource:        hiveSource,
@@ -157,7 +157,7 @@ func runBoundSddArchive(ctx context.Context, root, destination, projectFlag, cha
 	}
 
 	hiveSource := sddstatus.NewHiveSource(hc, coordinates.project)
-	openSpecSource := sddstatus.NewOpenSpecSource(coordinates.workspace)
+	openSpecSource := sddstatus.NewOpenSpecSourceForProject(coordinates.workspace, coordinates.project)
 	switch binding.Mode {
 	case sddruntime.StoreModeHive:
 		status, contents, err := boundArchiveStatus(ctx, hiveSource, coordinates, sddruntime.StoreModeHive)

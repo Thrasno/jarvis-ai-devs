@@ -229,7 +229,7 @@ func resolveSourceAt(projectName, workingDir string) (sddstatus.ArtifactSource, 
 
 	switch contract.Mode {
 	case sddruntime.StoreModeOpenSpec:
-		return sddstatus.NewOpenSpecSource(workingDir), string(contract.Mode), nil
+		return sddstatus.NewOpenSpecSourceForProject(workingDir, projectName), string(contract.Mode), nil
 
 	case sddruntime.StoreModeHybrid:
 		hc, err := hiveclient.NewFromEnv()
@@ -237,7 +237,7 @@ func resolveSourceAt(projectName, workingDir string) (sddstatus.ArtifactSource, 
 			return nil, "", fmt.Errorf("connect to hive-daemon: %w", err)
 		}
 		hiveS := sddstatus.NewHiveSource(hc, projectName)
-		osS := sddstatus.NewOpenSpecSource(workingDir)
+		osS := sddstatus.NewOpenSpecSourceForProject(workingDir, projectName)
 		return sddstatus.NewHybridSource(hiveS, osS), string(contract.Mode), nil
 
 	case sddruntime.StoreModeNone:
@@ -258,7 +258,7 @@ func resolveBoundStatusSourceAt(ctx context.Context, projectName, given, working
 		return "", nil, sddbinding.Resolution{}, fmt.Errorf("connect to hive-daemon: %w", err)
 	}
 	hiveSource := sddstatus.NewHiveSource(hc, projectName)
-	openSpecSource := sddstatus.NewOpenSpecSource(workingDir)
+	openSpecSource := sddstatus.NewOpenSpecSourceForProject(workingDir, projectName)
 	changeName, explicit, err := normalizeExplicitChangeName(given)
 	if err != nil {
 		return "", nil, sddbinding.Resolution{}, err

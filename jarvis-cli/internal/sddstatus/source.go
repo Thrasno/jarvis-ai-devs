@@ -108,7 +108,12 @@ func (h *HiveSource) FetchArtifacts(ctx context.Context, changeName string) (map
 	// projection exists. The old exact-topic row remains a compatibility fallback
 	// only when an older daemon cannot provide a typed head.
 	progress, progressErr := h.client.GetApplyProgress(ctx, h.project, changeName)
-	if progressErr == nil && progress.State.Snapshot.Schema == applyprogress.SnapshotSchema {
+	if progressErr == nil && isGuardedSchema(progress.State.Snapshot.Schema) {
+		if progress.State.Snapshot.Project != h.project || progress.State.Snapshot.Change != changeName {
+			artifacts[ArtifactApplyProgress] = ArtifactBlockedInvalid
+			delete(contents, ArtifactApplyProgress)
+			return artifacts, contents, nil
+		}
 		if len(progress.State.Batches) == 0 && len(progress.State.Snapshot.Batches) != 0 {
 			batches, err := h.fetchGuardedEvidence(ctx, changeName, progress.State.Snapshot)
 			if err != nil {
@@ -127,6 +132,11 @@ func (h *HiveSource) FetchArtifacts(ctx context.Context, changeName string) (map
 		return artifacts, contents, nil
 	}
 	if progressErr == nil {
+		if progress.State.Snapshot.Schema != "" {
+			artifacts[ArtifactApplyProgress] = ArtifactBlockedInvalid
+			delete(contents, ArtifactApplyProgress)
+			return artifacts, contents, nil
+		}
 		// A pre-v2 endpoint can return unrelated success JSON. It is not a head,
 		// so preserve only the exact-topic compatibility projection.
 		if content, ok := contents[ArtifactApplyProgress]; ok {
@@ -191,6 +201,31 @@ func guardedHiveProgressState(state hiveclient.ApplyProgressState, tasksContent 
 	if state.CoordinatesPresent && (state.Generation != snapshot.Generation || state.Revision != snapshot.Revision || state.Digest != snapshot.Digest) {
 		return ArtifactBlockedInvalid, nil
 	}
+	if snapshot.Schema == applyprogress.SupersessionSnapshotSchema && snapshot.Status == applyprogress.StatusSuperseded {
+		if applyprogress.VerifySnapshot(snapshot) != nil || snapshot.SealIntent == nil || len(snapshot.Batches) != len(state.Batches) {
+			return ArtifactBlockedInvalid, nil
+		}
+		batches := make(map[string]applyprogress.Batch, len(state.Batches))
+		for i, ref := range snapshot.Batches {
+			batch := state.Batches[i]
+			if batch.BatchID != ref.BatchID || batch.SHA256 != ref.SHA256 || batch.Project != snapshot.Project || batch.Change != snapshot.Change {
+				return ArtifactBlockedInvalid, nil
+			}
+			sealed, _, err := applyprogress.SealBatch(batch)
+			if err != nil || sealed.SHA256 != ref.SHA256 {
+				return ArtifactBlockedInvalid, nil
+			}
+			batches[ref.BatchID] = batch
+		}
+		if applyprogress.ValidateEvidenceCoverage(snapshot, batches) != nil {
+			return ArtifactBlockedInvalid, nil
+		}
+		data, err := json.Marshal(snapshot)
+		if err != nil {
+			return ArtifactBlockedInvalid, nil
+		}
+		return ArtifactSuperseded, data
+	}
 	strictTasks, strict := applyProgressTasks(tasksContent)
 	var normalized []applyprogress.Task
 	var ok bool
@@ -215,7 +250,7 @@ func guardedHiveProgressState(state hiveclient.ApplyProgressState, tasksContent 
 	batches := make(map[string][]byte, len(state.Batches))
 	for i, ref := range snapshot.Batches {
 		batch := state.Batches[i]
-		if batch.BatchID != ref.BatchID || batch.SHA256 != ref.SHA256 {
+		if batch.BatchID != ref.BatchID || batch.SHA256 != ref.SHA256 || batch.Project != snapshot.Project || batch.Change != snapshot.Change {
 			return ArtifactBlockedInvalid, nil
 		}
 		_, batchData, err := applyprogress.SealBatch(batch)
@@ -360,12 +395,18 @@ func (h *HiveSource) ListChanges(ctx context.Context) ([]string, error) {
 // OpenSpecSource reads SDD artifacts from an openspec directory layout:
 // openspec/changes/{change}/{artifact}.md
 type OpenSpecSource struct {
-	root string // project root; openspec/ is resolved relative to this
+	root    string // project root; openspec/ is resolved relative to this
+	project string // optional expected project identity
 }
 
 // NewOpenSpecSource returns an ArtifactSource backed by the openspec filesystem layout.
 func NewOpenSpecSource(projectRoot string) *OpenSpecSource {
 	return &OpenSpecSource{root: projectRoot}
+}
+
+// NewOpenSpecSourceForProject binds guarded progress to an expected project.
+func NewOpenSpecSourceForProject(projectRoot, project string) *OpenSpecSource {
+	return &OpenSpecSource{root: projectRoot, project: project}
 }
 
 func (o *OpenSpecSource) changeDir(changeName string) string {
@@ -449,15 +490,41 @@ func (o *OpenSpecSource) FetchArtifacts(_ context.Context, changeName string) (m
 		contents[ArtifactSpec] = deltaSpecs
 	}
 	var inspectionErr error
+	var inspected *applyprogress.Snapshot
 	if _, dirErr := readOpenSpecDir(dir); dirErr == nil {
-		_, inspectionErr = (sddprogress.OpenSpec{Root: dir}).InspectPublication()
+		inspected, inspectionErr = (sddprogress.OpenSpec{Root: dir}).InspectPublication()
 	} else if !os.IsNotExist(dirErr) {
 		return nil, nil, dirErr
 	}
+	if inspected != nil {
+		if inspected.Change != changeName || (o.project != "" && inspected.Project != o.project) {
+			artifacts[ArtifactApplyProgress] = ArtifactBlockedInvalid
+			delete(contents, ArtifactApplyProgress)
+			return artifacts, contents, nil
+		}
+		canonical, err := json.Marshal(inspected)
+		if err != nil {
+			artifacts[ArtifactApplyProgress] = ArtifactBlockedInvalid
+			delete(contents, ArtifactApplyProgress)
+			return artifacts, contents, nil
+		}
+		// Reject a changed head rather than comparing bytes from different reads.
+		readback, err := readOpenSpecRegular(filepath.Join(dir, "apply-progress.md"))
+		if err != nil || !bytes.Equal(readback, canonical) {
+			artifacts[ArtifactApplyProgress] = ArtifactBlockedInvalid
+			delete(contents, ArtifactApplyProgress)
+			return artifacts, contents, nil
+		}
+		contents[ArtifactApplyProgress] = string(canonical)
+		artifacts[ArtifactApplyProgress] = ArtifactDone
+	}
 	if state := inspectionErrorState(inspectionErr); state != "" {
 		artifacts[ArtifactApplyProgress] = state
+		delete(contents, ArtifactApplyProgress)
 	} else if data, ok := contents[ArtifactApplyProgress]; ok {
-		if isV2Progress(data) {
+		if inspected != nil && inspected.Schema == applyprogress.SupersessionSnapshotSchema && inspected.Status == applyprogress.StatusSuperseded && inspected.SealIntent != nil {
+			artifacts[ArtifactApplyProgress] = ArtifactSuperseded
+		} else if isV2Progress(data) {
 			artifacts[ArtifactApplyProgress] = openSpecV2ProgressState(dir, []byte(data), contents[ArtifactTasks])
 		} else {
 			artifacts[ArtifactApplyProgress] = applyProgressState(data, contents[ArtifactTasks])
@@ -533,6 +600,9 @@ func openSpecV2ProgressState(dir string, data []byte, tasksContent string) Artif
 	if err != nil {
 		return ArtifactBlockedInvalid
 	}
+	if snapshot.Status == applyprogress.StatusSuperseded {
+		return ArtifactBlockedInvalid
+	}
 	// A phase-style tasks.md has no strict v2 IDs. It remains readable only when
 	// the immutable snapshot proves the deterministic legacy manifest; ordinary
 	// v2 manifests still fail closed through authoritativeHiveSnapshotTasks.
@@ -563,6 +633,9 @@ func openSpecV2ProgressState(dir string, data []byte, tasksContent string) Artif
 // all-complete evidence. Unknown, malformed, and conflicting markers fail closed
 // as partial so incomplete work cannot enable verification.
 func applyProgressState(progressContent, tasksContent string) ArtifactState {
+	if isV2Progress(progressContent) {
+		return ArtifactBlockedInvalid
+	}
 	hasCompleteMarker := false
 	hasPartialMarker := false
 	for _, line := range strings.Split(progressContent, "\n") {
@@ -675,7 +748,9 @@ func (h *HybridSource) FetchArtifacts(ctx context.Context, changeName string) (m
 		} else if h.archivedHybridOpenSpec(changeName, osArtifacts, osContents, hiveArtifacts, hiveContents) {
 			merged[ArtifactApplyProgress] = hiveArtifacts[ArtifactApplyProgress]
 			merged[ArtifactArchiveReport] = ArtifactDone
-		} else if osErr != nil || hiveErr != nil || osArtifacts[ArtifactApplyProgress] == "" || hiveArtifacts[ArtifactApplyProgress] == "" || isBlockedApplyProgress(osArtifacts[ArtifactApplyProgress]) || isBlockedApplyProgress(hiveArtifacts[ArtifactApplyProgress]) || !sameV2Progress(osContents[ArtifactApplyProgress], hiveContents[ArtifactApplyProgress]) {
+		} else if osErr == nil && hiveErr == nil && osArtifacts[ArtifactApplyProgress] == ArtifactSuperseded && hiveArtifacts[ArtifactApplyProgress] == ArtifactSuperseded && sameV2Progress(osContents[ArtifactApplyProgress], hiveContents[ArtifactApplyProgress]) {
+			merged[ArtifactApplyProgress] = ArtifactSuperseded
+		} else if osErr != nil || hiveErr != nil || osArtifacts[ArtifactApplyProgress] == "" || hiveArtifacts[ArtifactApplyProgress] == "" || isBlockedApplyProgress(osArtifacts[ArtifactApplyProgress]) || isBlockedApplyProgress(hiveArtifacts[ArtifactApplyProgress]) || osArtifacts[ArtifactApplyProgress] == ArtifactSuperseded || hiveArtifacts[ArtifactApplyProgress] == ArtifactSuperseded || !sameV2Progress(osContents[ArtifactApplyProgress], hiveContents[ArtifactApplyProgress]) {
 			merged[ArtifactApplyProgress] = ArtifactBlockedBackendDiverged
 			delete(mergedContents, ArtifactApplyProgress)
 		}
@@ -880,8 +955,13 @@ func validArchivedDeltaSpecs(path string) bool {
 	return err == nil && found
 }
 
+func isGuardedSchema(schema string) bool {
+	return schema == applyprogress.SnapshotSchema || schema == applyprogress.SupersessionSnapshotSchema
+}
+
 func isV2Progress(data string) bool {
-	return strings.HasPrefix(data, `{"schema":"jarvis.sdd-apply-progress/v2"`)
+	trimmed := strings.TrimSpace(data)
+	return strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")
 }
 
 func sameV2Progress(left, right string) bool {

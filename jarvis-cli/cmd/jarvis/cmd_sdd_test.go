@@ -17,6 +17,43 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
 )
 
+func TestResolveSourceAtBindsOpenSpecProject(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "openspec", "changes", "change")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, manifest, err := applyprogress.TaskManifest([]applyprogress.Task{{ID: "1.1", Text: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, data, err := applyprogress.SealSnapshot(applyprogress.Snapshot{Schema: applyprogress.SnapshotSchema, Project: "foreign", Change: "change", Generation: 1, Revision: 1, TaskManifestSHA256: manifest, Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tasks.md"), []byte("- [ ] 1.1 task\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "apply-progress.md"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("JARVIS_SDD_STORE_MODE", "openspec")
+	src, mode, err := resolveSourceAt("jarvis-dev", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != "openspec" {
+		t.Fatalf("mode = %q", mode)
+	}
+	arts, _, err := src.FetchArtifacts(context.Background(), "change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if arts[sddstatus.ArtifactApplyProgress] != sddstatus.ArtifactBlockedInvalid {
+		t.Fatalf("foreign project = %q", arts[sddstatus.ArtifactApplyProgress])
+	}
+}
+
 type fakeSddArtifactSource struct {
 	artifacts map[string]sddstatus.ArtifactState
 	contents  map[string]string
@@ -550,7 +587,7 @@ func TestSddArchiveCommandRejectsNoncanonicalRootBeforeArchive(t *testing.T) {
 	command := newSddArchiveCommand(func(string) sddArchiver {
 		return archiveFunc(func(string) error { archived = true; return nil })
 	}, archiveStatus)
-	command.SetArgs([]string{"--root", noncanonicalRoot, "--destination", filepath.Join(workspace, "openspec", "archive", "other")})
+	command.SetArgs([]string{"--root", noncanonicalRoot, "--destination", filepath.Join(workspace, "openspec", "archive", "other"), "--project", "jarvis-dev"})
 
 	err = command.Execute()
 	if err == nil || !strings.Contains(err.Error(), "canonical OpenSpec change root") {
@@ -563,7 +600,7 @@ func TestSddArchiveCommandRejectsNoncanonicalRootBeforeArchive(t *testing.T) {
 	command = newSddArchiveCommand(func(string) sddArchiver {
 		return archiveFunc(func(string) error { archived = true; return nil })
 	}, archiveStatus)
-	command.SetArgs([]string{"--root", validatedRoot, "--destination", filepath.Join(workspace, "openspec", "archive", change)})
+	command.SetArgs([]string{"--root", validatedRoot, "--destination", filepath.Join(workspace, "openspec", "archive", change), "--project", "jarvis-dev"})
 	if err := command.Execute(); err != nil {
 		t.Fatalf("archive with canonical root: %v", err)
 	}
@@ -733,7 +770,7 @@ func TestSddArchiveRevalidatesLifecycleReadinessUnderLock(t *testing.T) {
 			return os.WriteFile(filepath.Join(root, "verify-report.md"), []byte("critical blocker\n"), 0o600)
 		}}
 	}, archiveStatus)
-	command.SetArgs([]string{"--root", root, "--destination", filepath.Join(workspace, "openspec", "archive", "issue-653")})
+	command.SetArgs([]string{"--root", root, "--destination", filepath.Join(workspace, "openspec", "archive", "issue-653"), "--project", "jarvis-dev"})
 
 	if err := command.Execute(); err == nil {
 		t.Fatal("archive succeeded after verify-report became invalid under the archive lock")

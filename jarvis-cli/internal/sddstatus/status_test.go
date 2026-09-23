@@ -313,6 +313,23 @@ func TestComputeStatus_BlocksLifecycleForTypedApplyProgressOutcomes(t *testing.T
 	}
 }
 
+func TestComputeStatus_SealedPredecessorBlocksRouting(t *testing.T) {
+	arts := allPlanningDone()
+	arts[sddstatus.ArtifactApplyProgress] = sddstatus.ArtifactSuperseded
+	status := sddstatus.ComputeStatus("old", "openspec", withWorkspaceEdit(sddstatus.Input{
+		Artifacts: arts,
+		Contents:  map[string]string{sddstatus.ArtifactTasks: "- [x] 1.1 finished\n"},
+	}))
+	for _, phase := range []string{sddstatus.PhaseApply, sddstatus.PhaseVerify} {
+		if status.Dependencies[phase] != sddstatus.DepBlocked {
+			t.Errorf("%s = %q, want blocked", phase, status.Dependencies[phase])
+		}
+	}
+	if status.NextRecommended == "none" || status.ApplyState == nil || status.ApplyState.Complete {
+		t.Fatalf("sealed predecessor presented as complete: %+v", status)
+	}
+}
+
 func TestComputeStatus_VerifyBlockedWithPartialApplyProgress(t *testing.T) {
 	arts := allPlanningDone()
 	arts[sddstatus.ArtifactApplyProgress] = "partial"
