@@ -16,6 +16,18 @@ import (
 type successorFileStore struct{}
 
 func (successorFileStore) ReadOpenSpec(path string) (*Binding, error) { return ReadOpenSpec(path) }
+
+// successorOptionalFileStore reads an existing predecessor copy without
+// requiring a local directory for a Hive-only predecessor.
+type successorOptionalFileStore struct{ successorFileStore }
+
+func (successorOptionalFileStore) ReadOpenSpec(path string) (*Binding, error) {
+	found, err := existingDirectoryPath(path)
+	if err != nil || !found {
+		return nil, err
+	}
+	return ReadOpenSpec(path)
+}
 func (successorFileStore) AdoptOpenSpec(path string, b Binding) (Binding, bool, error) {
 	return AdoptOpenSpec(path, b)
 }
@@ -40,6 +52,9 @@ func (r LegacyResolver) AdoptSuccessorGenesis(ctx context.Context, project, pred
 	}
 	prior := r
 	prior.OpenSpecChangeDir = filepath.Join(filepath.Dir(target), predecessor)
+	if prior.OpenSpecBindings == nil {
+		prior.OpenSpecBindings = successorOptionalFileStore{}
+	}
 	existing, err := prior.ResolveExisting(ctx, project, predecessor)
 	if err != nil {
 		return Resolution{}, err
@@ -89,14 +104,12 @@ func (r LegacyResolver) AdoptSuccessorGenesis(ctx context.Context, project, pred
 	default:
 		return Resolution{}, fmt.Errorf("%w: unsupported predecessor mode", ErrInvalidBinding)
 	}
-	if existing.Mode != sddruntime.StoreModeHive {
-		found, err := existingDirectoryPath(target)
-		if err != nil {
-			return Resolution{}, err
-		}
-		if !found {
-			return Resolution{}, fmt.Errorf("%w: successor directory missing", ErrUnsafePath)
-		}
+	targetExists, err := existingDirectoryPath(target)
+	if err != nil {
+		return Resolution{}, err
+	}
+	if !targetExists && existing.Mode != sddruntime.StoreModeHive {
+		return Resolution{}, fmt.Errorf("%w: successor directory missing", ErrUnsafePath)
 	}
 	digest := sha256.Sum256([]byte(existing.Provenance))
 	binding, err := New(existing.Mode, "supersession:"+seal.Digest+":"+hex.EncodeToString(digest[:]))
@@ -115,9 +128,12 @@ func (r LegacyResolver) AdoptSuccessorGenesis(ctx context.Context, project, pred
 	if found && (validateStoredHiveBinding(hive, project, genesis.Change) != nil || hive.Mode != hiveclient.SDDStoreMode(binding.Mode()) || hive.Provenance != binding.Provenance()) {
 		return Resolution{}, fmt.Errorf("%w: foreign successor Hive binding", ErrBindingCopiesDiverged)
 	}
-	copy, err := local.ReadOpenSpec(target)
-	if err != nil {
-		return Resolution{}, err
+	var copy *Binding
+	if targetExists {
+		copy, err = local.ReadOpenSpec(target)
+		if err != nil {
+			return Resolution{}, err
+		}
 	}
 	if copy != nil && *copy != binding {
 		return Resolution{}, fmt.Errorf("%w: foreign successor OpenSpec binding", ErrBindingCopiesDiverged)

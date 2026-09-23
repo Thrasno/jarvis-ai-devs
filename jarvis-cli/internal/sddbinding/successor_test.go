@@ -371,6 +371,28 @@ func TestAdoptSuccessorGenesisPartialHybridRepair(t *testing.T) {
 	}
 }
 
+func TestAdoptSuccessorGenesisHiveWithoutLocalDirectories(t *testing.T) {
+	seal, genesis := realOpenSpecSuccessor(t, t.TempDir())
+	workspace := t.TempDir()
+	target := filepath.Join(workspace, "openspec", "changes", "new")
+	hive := &successorHiveStore{entries: map[string]*fakeHiveBindingStore{}}
+	prior, err := New(sddruntime.StoreModeHive, "original")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := hive.AdoptSDDStoreBinding(context.Background(), "project", "old", hiveRequest(prior)); err != nil {
+		t.Fatal(err)
+	}
+	resolver := LegacyResolver{HiveBindings: hive, HiveSource: realHiveSuccessor(t, seal, genesis), OpenSpecChangeDir: target}
+	got, err := resolver.AdoptSuccessorGenesis(context.Background(), "project", "old", seal, genesis)
+	if err != nil || got.Mode != sddruntime.StoreModeHive || !got.Persisted {
+		t.Fatalf("Hive-only adoption = %+v, %v", got, err)
+	}
+	if _, err := os.Lstat(target); !os.IsNotExist(err) {
+		t.Fatalf("target directory was created: %v", err)
+	}
+}
+
 func TestAdoptSuccessorGenesis(t *testing.T) {
 	for _, mode := range []sddruntime.StoreMode{sddruntime.StoreModeHive, sddruntime.StoreModeOpenSpec, sddruntime.StoreModeHybrid} {
 		t.Run(string(mode), func(t *testing.T) {
