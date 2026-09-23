@@ -34,6 +34,7 @@ type sddStore interface {
 	FetchSDDArtifacts(project, change string, artifacts []string) ([]db.SDDArtifact, error)
 	ListSDDChanges(project string, artifacts []string, after string, limit int) ([]string, error)
 	GetApplyProgress(project, change string) (db.ApplyProgressState, error)
+	GetApplyProgressSuccessorOccupancy(project, change string) (db.ApplyProgressSuccessorOccupancy, error)
 	GetApplyProgressEvidence(project, change, batchID, expectedHeadDigest string) (applyprogress.Batch, error)
 	GetApplyProgressReceipt(project, change, requestID string) (db.ApplyProgressReceipt, error)
 	AdvanceApplyProgress(db.ApplyProgressAdvance) (db.ApplyProgressAdvanceResult, error)
@@ -44,6 +45,7 @@ type sddStore interface {
 
 type ApplyProgressAdvanceRequest = db.ApplyProgressAdvance
 type ApplyProgressState = db.ApplyProgressState
+type ApplyProgressSuccessorOccupancy = db.ApplyProgressSuccessorOccupancy
 type ApplyProgressReceipt = db.ApplyProgressReceipt
 type ApplyProgressAdvanceResult = db.ApplyProgressAdvanceResult
 type SDDStoreBinding = db.SDDStoreBinding
@@ -162,6 +164,26 @@ func (s *Service) GetApplyProgress(ctx context.Context, project, change string) 
 		return ApplyProgressState{}, errors.New("SDD store is not configured")
 	}
 	return s.sdd.GetApplyProgress(project, change)
+}
+
+// GetApplyProgressSuccessorOccupancy is advisory, not a reservation. The
+// publisher's transactional decision is authoritative; there is no POST dry-run.
+func (s *Service) GetApplyProgressSuccessorOccupancy(ctx context.Context, project, change string) (ApplyProgressSuccessorOccupancy, error) {
+	project = strings.TrimSpace(project)
+	if project == "" {
+		return ApplyProgressSuccessorOccupancy{}, ErrProjectRequired
+	}
+	change, err := validateSDDChange(change)
+	if err != nil {
+		return ApplyProgressSuccessorOccupancy{}, err
+	}
+	if _, err := s.store.GetGovernanceProject(ctx, project); err != nil {
+		return ApplyProgressSuccessorOccupancy{}, mapProjectError(err)
+	}
+	if s.sdd == nil {
+		return ApplyProgressSuccessorOccupancy{}, errors.New("SDD store is not configured")
+	}
+	return s.sdd.GetApplyProgressSuccessorOccupancy(project, change)
 }
 
 // GetApplyProgressEvidence returns one bounded canonical evidence document only

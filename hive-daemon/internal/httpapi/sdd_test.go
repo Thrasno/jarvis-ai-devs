@@ -653,6 +653,53 @@ func requireHTTPBody(t *testing.T, response *http.Response) []byte {
 	return data
 }
 
+func TestSuccessorOccupancyHTTPProjectionAndValidation(t *testing.T) {
+	store, server := newSDDHTTPServer(t)
+	saveSDDHTTPMemory(t, store, "project", "sdd/occupied/explore", "secret-content")
+	// Snapshot all durable occupancy sources and governance registration before
+	// each request: even an unsuccessful GET must not create a reservation.
+	rowCounts := func(t *testing.T) map[string]int {
+		t.Helper()
+		counts := make(map[string]int)
+		for _, table := range []string{"memories", "sdd_apply_heads", "sdd_apply_receipts", "sdd_store_bindings", "project_identities"} {
+			var count int
+			err := store.RawDB().QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count)
+			require.NoError(t, err, "count %s", table)
+			counts[table] = count
+		}
+		return counts
+	}
+	for _, tt := range []struct {
+		name, path string
+		status     int
+		occupied   bool
+		category   string
+	}{
+		{"free", "/sdd/changes/free/successor-occupancy?project=project", http.StatusOK, false, ""},
+		{"occupied", "/sdd/changes/occupied/successor-occupancy?project=project", http.StatusOK, true, "memory"},
+		{"missing project", "/sdd/changes/free/successor-occupancy", http.StatusUnprocessableEntity, false, ""},
+		{"unknown project", "/sdd/changes/free/successor-occupancy?project=unknown", http.StatusNotFound, false, ""},
+		{"invalid change", "/sdd/changes/%5C/successor-occupancy?project=project", http.StatusUnprocessableEntity, false, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			before := rowCounts(t)
+			response := httptest.NewRecorder()
+			server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, tt.path, nil))
+			assert.Equal(t, before, rowCounts(t), "GET must not mutate occupancy or project registration")
+			require.Equal(t, tt.status, response.Code, response.Body.String())
+			if tt.status != http.StatusOK {
+				return
+			}
+			var body map[string]any
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+			require.Len(t, body, 2)
+			assert.Equal(t, tt.occupied, body["occupied"])
+			assert.Equal(t, tt.category, body["category"])
+			assert.NotContains(t, response.Body.String(), "secret-content")
+		})
+	}
+}
+
 func newSDDHTTPServer(t *testing.T) (*db.DB, *httpapi.Server) {
 	t.Helper()
 	store, err := db.Open(filepath.Join(t.TempDir(), "hive.db"))

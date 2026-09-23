@@ -1139,6 +1139,39 @@ func (c *Client) AdvanceApplyProgress(ctx context.Context, request ApplyProgress
 	return c.doApplyProgress(httpRequest)
 }
 
+// ApplyProgressSuccessorOccupancy is a coarse, read-only successor advisory.
+type ApplyProgressSuccessorOccupancy struct {
+	Occupied bool   `json:"occupied"`
+	Category string `json:"category"`
+}
+
+// GetApplyProgressSuccessorOccupancy reads the coarse successor occupancy advisory.
+func (c *Client) GetApplyProgressSuccessorOccupancy(ctx context.Context, project, change string) (ApplyProgressSuccessorOccupancy, error) {
+	var wire struct {
+		Occupied *bool   `json:"occupied"`
+		Category *string `json:"category"`
+	}
+	path := "/sdd/changes/" + url.PathEscape(change) + "/successor-occupancy"
+	if err := c.get(ctx, path, url.Values{"project": {project}}, &wire, false); err != nil {
+		return ApplyProgressSuccessorOccupancy{}, err
+	}
+	if wire.Occupied == nil || wire.Category == nil {
+		return ApplyProgressSuccessorOccupancy{}, errors.New("invalid successor occupancy advisory")
+	}
+	if !*wire.Occupied {
+		if *wire.Category != "" {
+			return ApplyProgressSuccessorOccupancy{}, errors.New("invalid successor occupancy advisory")
+		}
+	} else {
+		switch *wire.Category {
+		case "memory", "head", "receipt", "binding":
+		default:
+			return ApplyProgressSuccessorOccupancy{}, errors.New("invalid successor occupancy advisory")
+		}
+	}
+	return ApplyProgressSuccessorOccupancy{Occupied: *wire.Occupied, Category: *wire.Category}, nil
+}
+
 // PublishApplyProgressSuccessor asks the daemon to create or replay the successor genesis.
 // The daemon owns the target state; the caller supplies only project identity.
 func (c *Client) PublishApplyProgressSuccessor(ctx context.Context, project, predecessorChange string) (ApplyProgressResult, error) {
