@@ -317,6 +317,26 @@ func (h hiveProgressAdvancer) Advance(request sddprogress.AdvanceRequest) (sddpr
 	if result.Outcome != "committed" {
 		return state, sddprogress.ErrBackendDiverged
 	}
+	sealed, snapshotBytes, sealErr := applyprogress.SealSnapshot(request.Snapshot)
+	if sealErr != nil {
+		return state, sddprogress.ErrBackendDiverged
+	}
+	batchBytes := make([][]byte, 0, len(request.Batches))
+	for _, batch := range request.Batches {
+		_, encoded, batchErr := applyprogress.SealBatch(batch)
+		if batchErr != nil {
+			return state, sddprogress.ErrBackendDiverged
+		}
+		batchBytes = append(batchBytes, encoded)
+	}
+	actual := applyprogress.AdvanceReceiptDigest(request.Snapshot.Project, request.Snapshot.Change, request.RequestID, request.ExpectedGeneration, request.ExpectedRevision, request.ExpectedDigest, request.LegacySourceSHA256, snapshotBytes, batchBytes)
+	if result.Receipt.RequestID != request.RequestID || result.Receipt.PayloadSHA256 == "" || result.Receipt.PayloadSHA256 != actual || state.Generation != sealed.Generation || state.Revision != sealed.Revision || state.Digest != sealed.Digest {
+		return state, sddprogress.ErrBackendDiverged
+	}
+	// Hybrid's acknowledgement hashes its own request envelope, not Hive's
+	// persisted transport envelope. Only a verified daemon receipt may use the
+	// Hybrid canonical fallback for a committed result.
+	state.PayloadSHA256 = ""
 	return state, nil
 }
 

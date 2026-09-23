@@ -24,6 +24,64 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress/filelock"
 )
 
+// daemonFormatReceipt seals the same wire request bytes as the real daemon.
+func daemonFormatReceipt(t *testing.T, request hiveclient.ApplyProgressAdvanceRequest) hiveclient.ApplyProgressReceipt {
+	t.Helper()
+	_, snapshot, err := applyprogress.SealSnapshot(request.Snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batches := make([][]byte, 0, len(request.Batches))
+	for _, batch := range request.Batches {
+		_, encoded, err := applyprogress.SealBatch(batch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		batches = append(batches, encoded)
+	}
+	return hiveclient.ApplyProgressReceipt{RequestID: request.RequestID, PayloadSHA256: applyprogress.AdvanceReceiptDigest(request.Project, request.Change, request.RequestID, request.ExpectedGeneration, request.ExpectedRevision, request.ExpectedDigest, request.LegacySourceSHA256, snapshot, batches)}
+}
+
+func TestHiveAdvanceRejectsForgedReceiptAndCoordinates(t *testing.T) {
+	snapshot := applyprogress.Snapshot{Schema: applyprogress.SnapshotSchema, Project: "project", Change: "change", Generation: 1, Revision: 1, TaskManifestSHA256: strings.Repeat("a", 64), Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}}
+	snapshot, encoded, err := applyprogress.SealSnapshot(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := sddprogress.AdvanceRequest{RequestID: "receipt-one", Snapshot: snapshot, Batches: []applyprogress.Batch{}}
+	digest := applyprogress.AdvanceReceiptDigest("project", "change", request.RequestID, 0, 0, "", "", encoded, [][]byte{})
+	for _, tc := range []struct {
+		name, receiptID, receiptDigest string
+		generation                     uint64
+		accepted                       bool
+	}{
+		{"valid", request.RequestID, digest, 1, true},
+		{"missing", "", "", 1, false},
+		{"forged", request.RequestID, strings.Repeat("f", 64), 1, false},
+		{"wrong request", "receipt-two", digest, 1, false},
+		{"wrong coordinates", request.RequestID, digest, 2, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(hiveclient.ApplyProgressResult{Outcome: "committed", State: hiveclient.ApplyProgressState{Generation: tc.generation, Revision: 1, Digest: snapshot.Digest, Snapshot: snapshot}, Receipt: hiveclient.ApplyProgressReceipt{RequestID: tc.receiptID, PayloadSHA256: tc.receiptDigest}})
+			}))
+			defer server.Close()
+			client, err := hiveclient.New(server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := (hiveProgressAdvancer{client: client}).Advance(request)
+			if tc.accepted {
+				if err != nil || got.PayloadSHA256 != "" {
+					t.Fatalf("valid receipt: %+v %v", got, err)
+				}
+			} else if err == nil {
+				t.Fatalf("invalid receipt accepted: %+v", got)
+			}
+		})
+	}
+}
+
 func TestHiveProgressPublishSuccessorGenesis(t *testing.T) {
 	seal := applyprogress.Snapshot{Schema: applyprogress.SupersessionSnapshotSchema, Project: "project", Change: "old", Generation: 1, Revision: 2, TaskManifestSHA256: strings.Repeat("a", 64), Status: applyprogress.StatusSuperseded, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}, SealIntent: &applyprogress.SealIntent{SuccessorProject: "project", SuccessorChange: "new", SuccessorManifestSHA256: strings.Repeat("c", 64), Actor: "agent", Reason: "replanned", Timestamp: "2026-01-01T00:00:00Z", OperationID: "request-1"}}
 	var err error
@@ -1692,7 +1750,7 @@ func TestConfiguredSddProgressCheckpointImportsLegacyHiveArtifacts(t *testing.T)
 		if got, want := request.LegacySourceSHA256, applyprogress.LegacySourceSHA256([]byte("status: partial\n")); got != want {
 			t.Fatalf("legacy Hive source binding = %q, want %q", got, want)
 		}
-		_ = json.NewEncoder(w).Encode(hiveclient.ApplyProgressResult{Outcome: "committed", State: hiveclient.ApplyProgressState{Generation: request.Snapshot.Generation, Revision: request.Snapshot.Revision, Digest: request.Snapshot.Digest, Snapshot: request.Snapshot}})
+		_ = json.NewEncoder(w).Encode(hiveclient.ApplyProgressResult{Outcome: "committed", State: hiveclient.ApplyProgressState{Generation: request.Snapshot.Generation, Revision: request.Snapshot.Revision, Digest: request.Snapshot.Digest, Snapshot: request.Snapshot}, Receipt: daemonFormatReceipt(t, request)})
 	}))
 	defer server.Close()
 	client, err := hiveclient.New(server.URL)
@@ -1736,7 +1794,7 @@ func TestConfiguredSddProgressCheckpointContinuesFromGuardedV2HeadAfterPartialLe
 				t.Fatal(err)
 			}
 			imported = request.Snapshot
-			_ = json.NewEncoder(w).Encode(hiveclient.ApplyProgressResult{Outcome: "committed", State: hiveclient.ApplyProgressState{Generation: imported.Generation, Revision: imported.Revision, Digest: imported.Digest, Snapshot: imported}})
+			_ = json.NewEncoder(w).Encode(hiveclient.ApplyProgressResult{Outcome: "committed", State: hiveclient.ApplyProgressState{Generation: imported.Generation, Revision: imported.Revision, Digest: imported.Digest, Snapshot: imported}, Receipt: daemonFormatReceipt(t, request)})
 		}
 	}))
 	t.Cleanup(server.Close)
@@ -1813,7 +1871,7 @@ func TestConfiguredSddProgressCheckpointTreatsHiveNotFoundAsInitial(t *testing.T
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatal(err)
 		}
-		_ = json.NewEncoder(w).Encode(hiveclient.ApplyProgressResult{Outcome: "committed", State: hiveclient.ApplyProgressState{Generation: request.Snapshot.Generation, Revision: request.Snapshot.Revision, Digest: request.Snapshot.Digest, Snapshot: request.Snapshot}})
+		_ = json.NewEncoder(w).Encode(hiveclient.ApplyProgressResult{Outcome: "committed", State: hiveclient.ApplyProgressState{Generation: request.Snapshot.Generation, Revision: request.Snapshot.Revision, Digest: request.Snapshot.Digest, Snapshot: request.Snapshot}, Receipt: daemonFormatReceipt(t, request)})
 	}))
 	defer server.Close()
 	client, err := hiveclient.New(server.URL)

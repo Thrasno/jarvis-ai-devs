@@ -409,7 +409,7 @@ func TestSupersedeRouteHiveNewAndRetry(t *testing.T) {
 						t.Errorf("non-exact seal request %+v", request)
 					}
 					heads[change] = request.Snapshot
-					reply(map[string]any{"outcome": "committed", "code": "ok", "state": hiveclient.ApplyProgressState{Generation: request.Snapshot.Generation, Revision: request.Snapshot.Revision, Digest: request.Snapshot.Digest, Snapshot: request.Snapshot}})
+					reply(hiveclient.ApplyProgressResult{Outcome: "committed", Code: "ok", State: hiveclient.ApplyProgressState{Generation: request.Snapshot.Generation, Revision: request.Snapshot.Revision, Digest: request.Snapshot.Digest, Snapshot: request.Snapshot}, Receipt: daemonFormatReceipt(t, request)})
 				case strings.HasSuffix(path, "/apply-progress/publish-successor"):
 					publishCalls++
 					seal := heads["issue-653"]
@@ -787,7 +787,7 @@ func TestSupersedeRouteHybridNewAndPartialSealReplay(t *testing.T) {
 						t.Errorf("not exact seal: %+v", request)
 					}
 					heads[change] = request.Snapshot
-					reply(map[string]any{"outcome": "committed", "code": "ok", "state": hiveclient.ApplyProgressState{Generation: request.Snapshot.Generation, Revision: request.Snapshot.Revision, Digest: request.Snapshot.Digest, Snapshot: request.Snapshot}})
+					reply(hiveclient.ApplyProgressResult{Outcome: "committed", Code: "ok", State: hiveclient.ApplyProgressState{Generation: request.Snapshot.Generation, Revision: request.Snapshot.Revision, Digest: request.Snapshot.Digest, Snapshot: request.Snapshot}, Receipt: daemonFormatReceipt(t, request)})
 				case strings.HasSuffix(path, "/apply-progress/publish-successor"):
 					writes++
 					if tc.publishInterrupted {
