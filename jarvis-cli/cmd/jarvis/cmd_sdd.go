@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddbinding"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
@@ -375,7 +376,51 @@ func buildStatusWithBinding(changeName string, src sddstatus.ArtifactSource, sto
 		StoreBinding:     binding,
 	}
 
-	return sddstatus.ComputeStatus(changeName, storeMode, input), nil
+	status := sddstatus.ComputeStatus(changeName, storeMode, input)
+	if arts[sddstatus.ArtifactApplyProgress] == sddstatus.ArtifactSuperseded {
+		seal, err := applyprogress.DecodeCanonicalSnapshot([]byte(contents[sddstatus.ArtifactApplyProgress]))
+		if err != nil {
+			return nil, fmt.Errorf("decode stored predecessor seal: %w", err)
+		}
+		resolver, ok := src.(interface {
+			ResolveSupersession(context.Context, string, applyprogress.Snapshot) (sddstatus.SupersessionProjection, error)
+		})
+		if !ok {
+			return nil, errors.New("bound source cannot validate supersession")
+		}
+		const maxSupersessionLinks = 16
+		visited := map[string]bool{changeName: true}
+		current := changeName
+		var projection sddstatus.SupersessionProjection
+		for depth := 0; depth < maxSupersessionLinks; depth++ {
+			projection, err = resolver.ResolveSupersession(ctx, current, seal)
+			if err != nil {
+				return nil, fmt.Errorf("validate successor publication at %q: %w", current, err)
+			}
+			if visited[projection.Change] {
+				return nil, errors.New("supersession cycle detected")
+			}
+			visited[projection.Change] = true
+			if projection.State == sddstatus.SupersessionReady && projection.Head == nil {
+				return nil, errors.New("ready successor lacks authenticated head")
+			}
+			if projection.State == sddstatus.SupersessionPending || projection.Head.Status != applyprogress.StatusSuperseded {
+				break
+			}
+			current, seal = projection.Change, *projection.Head
+			if depth == maxSupersessionLinks-1 {
+				return nil, errors.New("supersession chain exceeds maximum depth")
+			}
+		}
+		status.Supersession = &projection
+		status.NextRecommended = "none"
+		if projection.State == sddstatus.SupersessionPending {
+			status.BlockedReasons = append(status.BlockedReasons, "superseded_pending_successor — retry authenticated successor publication before continuing")
+		} else {
+			status.BlockedReasons = append(status.BlockedReasons, "predecessor superseded — continue with successor change "+projection.Change)
+		}
+	}
+	return status, nil
 }
 
 func validatedEditRootsForProject(_ string, workingDir string) []string {
@@ -433,6 +478,10 @@ func runSddContinue(given, projectFlag, workingDir string, asJSON bool) error {
 		return printJSON(status)
 	}
 
+	if status.Supersession != nil && status.Supersession.State == sddstatus.SupersessionReady {
+		fmt.Printf("predecessor %s superseded — continue with successor change %s\n", changeName, status.Supersession.Change)
+		return nil
+	}
 	if status.NextRecommended == "none" || status.NextRecommended == "" {
 		if len(status.BlockedReasons) > 0 {
 			fmt.Fprintf(os.Stderr, "blocked:\n")

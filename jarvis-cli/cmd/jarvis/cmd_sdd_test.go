@@ -3,7 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +20,184 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
 )
+
+func TestBuildStatusRoutesOnlyAuthenticatedCompletedSuccessor(t *testing.T) {
+	root := t.TempDir()
+	old := filepath.Join(root, "openspec", "changes", "old")
+	if err := os.MkdirAll(old, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := "- [ ] 1.1 original\n"
+	revised := "- [ ] 1.1 revised\n"
+	if err := os.WriteFile(filepath.Join(old, "tasks.md"), []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, manifest, err := applyprogress.TaskManifest([]applyprogress.Task{{ID: "1.1", Text: "original"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, _, err := applyprogress.SealSnapshot(applyprogress.Snapshot{Schema: applyprogress.SnapshotSchema, Project: "jarvis-dev", Change: "old", Generation: 1, Revision: 1, TaskManifestSHA256: manifest, Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := sddprogress.OpenSpec{Root: old}
+	if _, err := store.Advance(sddprogress.AdvanceRequest{RequestID: "initial", Snapshot: initial}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(old, "tasks.md"), []byte(revised), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, targetManifest, err := applyprogress.TaskManifest([]applyprogress.Task{{ID: "1.1", Text: "revised"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seal := initial
+	seal.Schema, seal.Status, seal.Revision, seal.PreviousDigest = applyprogress.SupersessionSnapshotSchema, applyprogress.StatusSuperseded, 2, initial.Digest
+	seal.SealIntent = &applyprogress.SealIntent{SuccessorProject: "jarvis-dev", SuccessorChange: "new", SuccessorManifestSHA256: targetManifest, Actor: "agent", Reason: "replanned", Timestamp: "2026-01-01T00:00:00Z", OperationID: "seal"}
+	seal, _, err = applyprogress.SealSnapshot(seal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(sddprogress.AdvanceRequest{RequestID: "seal", ExpectedGeneration: 1, ExpectedRevision: 1, ExpectedDigest: initial.Digest, Snapshot: seal}); err != nil {
+		t.Fatal(err)
+	}
+	src := sddstatus.NewOpenSpecSourceForProject(root, "jarvis-dev")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sdd/changes/old/store-binding" || r.Method != http.MethodGet {
+			t.Errorf("unexpected binding request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"code":"not_found"}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("HIVE_DAEMON_URL", server.URL)
+	writeOpenSpecBinding(t, root, "old", "openspec", "persisted:openspec", nil)
+	checkCommandSupersession := func(state, change string) {
+		t.Helper()
+		for _, command := range []struct {
+			name string
+			run  func(bool) error
+		}{
+			{"status", func(json bool) error { return runSddStatus("old", "jarvis-dev", root, json, false) }},
+			{"continue", func(json bool) error { return runSddContinue("old", "jarvis-dev", root, json) }},
+		} {
+			for _, asJSON := range []bool{false, true} {
+				output, commandErr := captureSDDStdout(t, func() error { return command.run(asJSON) })
+				if asJSON {
+					var result sddstatus.ChangeStatus
+					if commandErr != nil || json.Unmarshal([]byte(output), &result) != nil || result.Supersession == nil || result.Supersession.State != state || result.Supersession.Change != change || result.NextRecommended != "none" {
+						t.Fatalf("%s JSON state=%s: %s, %v", command.name, state, output, commandErr)
+					}
+				} else if state == sddstatus.SupersessionReady {
+					if commandErr != nil || !strings.Contains(output, change) || strings.Contains(output, "sdd-apply ←") {
+						t.Fatalf("%s human ready: %q, %v", command.name, output, commandErr)
+					}
+				} else if command.name == "status" {
+					if commandErr != nil || !strings.Contains(output, "superseded_pending_successor") || strings.Contains(output, "sdd-apply ←") {
+						t.Fatalf("%s human pending: %q, %v", command.name, output, commandErr)
+					}
+				} else if commandErr == nil || strings.Contains(output, "sdd-apply") {
+					t.Fatalf("continue routed pending successor: %q, %v", output, commandErr)
+				}
+			}
+		}
+	}
+	status, err := buildStatusWithBinding("old", src, "openspec", []string{root}, nil)
+	if err != nil || status.Supersession == nil || status.Supersession.State != sddstatus.SupersessionPending || status.NextRecommended != "none" {
+		t.Fatalf("pending status = %#v, err %v", status, err)
+	}
+	checkCommandSupersession(sddstatus.SupersessionPending, "new")
+	target := sddprogress.OpenSpec{Root: filepath.Join(root, "openspec", "changes", "new")}
+	if _, err := store.PublishSuccessorGenesis(target); err != nil {
+		t.Fatal(err)
+	}
+	status, err = buildStatusWithBinding("old", src, "openspec", []string{root}, nil)
+	if err != nil || status.Supersession == nil || status.Supersession.State != sddstatus.SupersessionReady || status.Supersession.Change != "new" {
+		t.Fatalf("published status = %#v, err %v", status, err)
+	}
+	bHead, err := target.InspectPublication()
+	if err != nil || bHead == nil {
+		t.Fatalf("B genesis: %v", err)
+	}
+	thirdTasks := "- [ ] 1.1 third\n"
+	if err := os.WriteFile(filepath.Join(target.Root, "tasks.md"), []byte(thirdTasks), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, thirdManifest, err := applyprogress.TaskManifest([]applyprogress.Task{{ID: "1.1", Text: "third"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bSeal := *bHead
+	bSeal.Revision++
+	bSeal.PreviousDigest = bHead.Digest
+	bSeal.Status = applyprogress.StatusSuperseded
+	bSeal.SealIntent = &applyprogress.SealIntent{SuccessorProject: "jarvis-dev", SuccessorChange: "third", SuccessorManifestSHA256: thirdManifest, Actor: "agent", Reason: "replanned again", Timestamp: "2026-01-02T00:00:00Z", OperationID: "seal-2"}
+	bSeal, _, err = applyprogress.SealSnapshot(bSeal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := target.Advance(sddprogress.AdvanceRequest{RequestID: "seal-2", ExpectedGeneration: bHead.Generation, ExpectedRevision: bHead.Revision, ExpectedDigest: bHead.Digest, Snapshot: bSeal}); err != nil {
+		t.Fatal(err)
+	}
+	third := sddprogress.OpenSpec{Root: filepath.Join(root, "openspec", "changes", "third")}
+	if _, err := target.PublishSuccessorGenesis(third); err != nil {
+		t.Fatal(err)
+	}
+	status, err = buildStatusWithBinding("old", src, "openspec", []string{root}, nil)
+	if err != nil || status.Supersession == nil || status.Supersession.Change != "third" || status.Supersession.State != sddstatus.SupersessionReady {
+		t.Fatalf("chain tail = %#v, err %v", status, err)
+	}
+	checkCommandSupersession(sddstatus.SupersessionReady, "third")
+}
+
+type chainStatusSource struct {
+	seal   applyprogress.Snapshot
+	length int
+	cycle  bool
+	noHead bool
+}
+
+func (s chainStatusSource) FetchArtifacts(_ context.Context, change string) (map[string]sddstatus.ArtifactState, map[string]string, error) {
+	data, _ := json.Marshal(s.seal)
+	return map[string]sddstatus.ArtifactState{sddstatus.ArtifactApplyProgress: sddstatus.ArtifactSuperseded}, map[string]string{sddstatus.ArtifactApplyProgress: string(data)}, nil
+}
+func (s chainStatusSource) ListChanges(context.Context) ([]string, error) { return nil, nil }
+func (s chainStatusSource) ResolveSupersession(_ context.Context, change string, _ applyprogress.Snapshot) (sddstatus.SupersessionProjection, error) {
+	index := 0
+	if change != "old" {
+		_, _ = fmt.Sscanf(change, "step-%d", &index)
+	}
+	next := fmt.Sprintf("step-%d", index+1)
+	if s.cycle && index == 1 {
+		next = "old"
+	}
+	if s.noHead {
+		return sddstatus.SupersessionProjection{State: sddstatus.SupersessionReady, Change: next}, nil
+	}
+	return sddstatus.SupersessionProjection{State: sddstatus.SupersessionReady, Change: next, Head: &s.seal}, nil
+}
+
+func TestBuildStatusRejectsSupersessionCycleAndDepth(t *testing.T) {
+	seal, _, err := applyprogress.SealSnapshot(applyprogress.Snapshot{Schema: applyprogress.SupersessionSnapshotSchema, Project: "project", Change: "old", Generation: 1, Revision: 2, TaskManifestSHA256: strings.Repeat("a", 64), Status: applyprogress.StatusSuperseded, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}, SealIntent: &applyprogress.SealIntent{SuccessorProject: "project", SuccessorChange: "step-1", SuccessorManifestSHA256: strings.Repeat("b", 64), Actor: "agent", Reason: "replanned", Timestamp: "2026-01-01T00:00:00Z", OperationID: "request-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		cycle  bool
+		noHead bool
+		want   string
+	}{{"cycle", true, false, "cycle"}, {"depth", false, false, "depth"}, {"ready without head", false, true, "head"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := buildStatusWithBinding("old", chainStatusSource{seal: seal, cycle: tc.cycle, noHead: tc.noHead}, "openspec", nil, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("chain error = %v, want %s", err, tc.want)
+			}
+		})
+	}
+}
 
 func TestResolveSourceAtBindsOpenSpecProject(t *testing.T) {
 	root := t.TempDir()

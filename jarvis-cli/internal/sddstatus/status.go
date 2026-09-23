@@ -188,6 +188,7 @@ type ChangeStatus struct {
 	ChangeName        string                     `json:"changeName"`
 	ArtifactStore     string                     `json:"artifactStore"`
 	StoreBinding      *StoreBindingStatus        `json:"storeBinding,omitempty"`
+	Supersession      *SupersessionProjection    `json:"supersession,omitempty"`
 	PlanningHome      string                     `json:"planningHome"`
 	ChangeRoot        string                     `json:"changeRoot"`
 	ArtifactPaths     map[string]string          `json:"artifactPaths"`

@@ -292,18 +292,31 @@ func ValidateSuccessor(previous, successor Snapshot, batches map[string]Batch) e
 // this pure check does not establish authority or inspect task contents.
 // Subsequent same-change transitions use ValidateSuccessor.
 func ValidateSuccessorGenesisPair(predecessor, successor Snapshot) error {
+	if err := ValidateSuccessorHeadPair(predecessor, successor); err != nil {
+		return err
+	}
+	if successor.Status != StatusPartial || successor.Generation != 1 || successor.Revision != 1 || successor.PreviousDigest != "" || len(successor.Batches) != 0 || len(successor.Coverage) != 0 || successor.hasContinuation() {
+		return invalid(CodeInvalidBase, "successor genesis")
+	}
+	return nil
+}
+
+// ValidateSuccessorHeadPair checks the signed cross-change link at the current
+// head. The caller must first authenticate both heads and their store lineages;
+// this pure predicate does not prove a genesis or a publication by itself.
+func ValidateSuccessorHeadPair(predecessor, successor Snapshot) error {
 	if VerifySnapshot(predecessor) != nil || VerifySnapshot(successor) != nil {
 		return invalid(CodeInvalidBase, "snapshot")
 	}
 	intent, pointer := predecessor.SealIntent, successor.Supersedes
 	if predecessor.Schema != SupersessionSnapshotSchema || predecessor.Status != StatusSuperseded || intent == nil ||
-		successor.Schema != SupersessionSnapshotSchema || successor.Status != StatusPartial || pointer == nil || successor.SealIntent != nil ||
+		successor.Schema != SupersessionSnapshotSchema || (successor.Status != StatusPartial && successor.Status != StatusComplete && successor.Status != StatusSuperseded) || pointer == nil ||
+		(successor.Status == StatusSuperseded) != (successor.SealIntent != nil) ||
 		predecessor.Project != pointer.Project || predecessor.Change != pointer.Change || predecessor.Digest != pointer.SealDigest || predecessor.TaskManifestSHA256 != pointer.OriginalManifestSHA256 ||
 		intent.SuccessorProject != successor.Project || intent.SuccessorChange != successor.Change || intent.SuccessorManifestSHA256 != successor.TaskManifestSHA256 ||
 		successor.Project == predecessor.Project && successor.Change == predecessor.Change ||
-		intent.Actor != pointer.Actor || intent.Reason != pointer.Reason || intent.Timestamp != pointer.Timestamp || intent.OperationID != pointer.OperationID ||
-		successor.Generation != 1 || successor.Revision != 1 || successor.PreviousDigest != "" || len(successor.Batches) != 0 || len(successor.Coverage) != 0 || successor.hasContinuation() {
-		return invalid(CodeInvalidBase, "successor genesis")
+		intent.Actor != pointer.Actor || intent.Reason != pointer.Reason || intent.Timestamp != pointer.Timestamp || intent.OperationID != pointer.OperationID {
+		return invalid(CodeInvalidBase, "successor head")
 	}
 	return nil
 }

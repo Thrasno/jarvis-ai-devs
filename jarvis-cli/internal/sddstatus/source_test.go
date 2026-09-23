@@ -124,6 +124,244 @@ func TestSealedProgressRequiresMatchingAuthenticatedBackends(t *testing.T) {
 	if _, err := store.Advance(sddprogress.AdvanceRequest{RequestID: "seal-request", ExpectedGeneration: initial.Generation, ExpectedRevision: initial.Revision, ExpectedDigest: initial.Digest, Snapshot: seal}); err != nil {
 		t.Fatal(err)
 	}
+	// The predecessor is stored; a target is not authority until genesis and its
+	// completion marker agree with the signed predecessor intent.
+	projection, err := sddstatus.NewOpenSpecSourceForProject(root, "jarvis-dev").ResolveSupersession(context.Background(), "old", seal)
+	if err != nil || projection.State != "superseded_pending_successor" {
+		t.Fatalf("absent successor: %#v, %v", projection, err)
+	}
+	target := sddprogress.OpenSpec{Root: filepath.Join(root, "openspec", "changes", "successor")}
+	if err := os.MkdirAll(target.Root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string]string{".apply-progress-successor-seal-digest": seal.Digest, "tasks.md": revised} {
+		if err := os.WriteFile(filepath.Join(target.Root, name), []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	projection, err = sddstatus.NewOpenSpecSourceForProject(root, "jarvis-dev").ResolveSupersession(context.Background(), "old", seal)
+	if err != nil || projection.State != sddstatus.SupersessionPending {
+		t.Fatalf("reserved claim and tasks: %#v, %v", projection, err)
+	}
+	rogue := filepath.Join(target.Root, "foreign.md")
+	if err := os.WriteFile(rogue, []byte("foreign"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sddstatus.NewOpenSpecSourceForProject(root, "jarvis-dev").ResolveSupersession(context.Background(), "old", seal); err == nil {
+		t.Fatal("foreign successor artifact accepted while pending")
+	}
+	if err := os.Remove(rogue); err != nil {
+		t.Fatal(err)
+	}
+	genesisPointer := &applyprogress.SupersedesPointer{Project: seal.Project, Change: seal.Change, SealDigest: seal.Digest, OriginalManifestSHA256: seal.TaskManifestSHA256, Actor: seal.SealIntent.Actor, Reason: seal.SealIntent.Reason, Timestamp: seal.SealIntent.Timestamp, OperationID: seal.SealIntent.OperationID}
+	genesisSnapshot, _, err := applyprogress.SealSnapshot(applyprogress.Snapshot{Schema: applyprogress.SupersessionSnapshotSchema, Project: seal.SealIntent.SuccessorProject, Change: seal.SealIntent.SuccessorChange, Generation: 1, Revision: 1, TaskManifestSHA256: seal.SealIntent.SuccessorManifestSHA256, Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}, Supersedes: genesisPointer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, dir, file string
+		data            []byte
+	}{
+		{"foreign stage bytes", target.Root, ".apply-progress-stage-" + strings.Repeat("a", 64), []byte("foreign")},
+		{"foreign canonical receipt payload", filepath.Join(target.Root, ".apply-progress-receipts"), seal.SealIntent.OperationID + ".json", func() []byte {
+			b, e := json.Marshal(struct {
+				Payload  string                 `json:"payload"`
+				Snapshot applyprogress.Snapshot `json:"snapshot"`
+			}{strings.Repeat("a", 64), genesisSnapshot})
+			if e != nil {
+				t.Fatal(e)
+			}
+			return b
+		}()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.MkdirAll(tc.dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(tc.dir, tc.file)
+			if err := os.WriteFile(path, tc.data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sddstatus.NewOpenSpecSourceForProject(root, "jarvis-dev").ResolveSupersession(context.Background(), "old", seal); err == nil {
+				t.Fatal("foreign pending residue accepted")
+			}
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	interrupted := target
+	interrupted.BeforeRename = func() error { return errors.New("interrupted before rename") }
+	if _, err := store.PublishSuccessorGenesis(interrupted); err == nil {
+		t.Fatal("expected staging interruption")
+	}
+	if _, err := os.Lstat(filepath.Join(target.Root, ".apply-progress-successor-complete")); !os.IsNotExist(err) {
+		t.Fatalf("completion marker before genesis: %v", err)
+	}
+	projection, err = sddstatus.NewOpenSpecSourceForProject(root, "jarvis-dev").ResolveSupersession(context.Background(), "old", seal)
+	if err != nil || projection.State != sddstatus.SupersessionPending || projection.Head != nil {
+		t.Fatalf("interrupted genesis must remain pending: %#v, %v", projection, err)
+	}
+	if _, err := store.PublishSuccessorGenesis(target); err != nil {
+		t.Fatalf("genesis retry: %v", err)
+	}
+	projection, err = sddstatus.NewOpenSpecSourceForProject(root, "jarvis-dev").ResolveSupersession(context.Background(), "old", seal)
+	if err != nil || projection.State != "superseded_successor" || projection.Change != "successor" {
+		t.Fatalf("committed successor: %#v, %v", projection, err)
+	}
+	genesis, err := target.InspectPublication()
+	if err != nil || genesis == nil {
+		t.Fatalf("successor genesis: %v", err)
+	}
+	receiptPath := filepath.Join(target.Root, ".apply-progress-receipts", seal.SealIntent.OperationID+".json")
+	receiptData, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var foreign map[string]json.RawMessage
+	if err := json.Unmarshal(receiptData, &foreign); err != nil {
+		t.Fatal(err)
+	}
+	foreign["payload"], _ = json.Marshal(strings.Repeat("a", 64))
+	foreignData, err := json.Marshal(foreign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(receiptPath, foreignData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sddstatus.NewOpenSpecSourceForProject(root, "jarvis-dev").ResolveSupersession(context.Background(), "old", seal); err == nil {
+		t.Fatal("foreign receipt payload accepted")
+	}
+	if err := os.WriteFile(receiptPath, receiptData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	advancedHive := *genesis
+	advancedHive.Revision++
+	advancedHive.PreviousDigest = genesis.Digest
+	advancedHive.StreamSHA256 = strings.Repeat("c", 64)
+	advancedHive.NextEntryID = "next-entry"
+	advancedHive, _, err = applyprogress.SealSnapshot(advancedHive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name           string
+		successor      *applyprogress.Snapshot
+		bad, hybridBad bool
+	}{
+		{"matching", genesis, false, false},
+		{"missing", nil, true, true},
+		{"absent", nil, false, false},
+		{"advanced divergent", &advancedHive, false, true},
+		{"foreign pointer", func() *applyprogress.Snapshot {
+			bad := *genesis
+			p := *bad.Supersedes
+			p.Change = "foreign"
+			bad.Supersedes = &p
+			sealed, _, err := applyprogress.SealSnapshot(bad)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return &sealed
+		}(), true, true},
+	} {
+		t.Run("hive and hybrid "+tc.name, func(t *testing.T) {
+			oldData, _ := json.Marshal(seal)
+			batches, _ := json.Marshal([]applyprogress.Batch{batch})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/sdd/changes/old/artifacts":
+					_, _ = fmt.Fprintf(w, `{"artifacts":[{"artifact":"tasks","content":%q}]}`, revised)
+				case "/sdd/changes/old/apply-progress":
+					_, _ = fmt.Fprintf(w, `{"outcome":"current","state":{"snapshot":%s,"batches":%s}}`, oldData, batches)
+				case "/sdd/changes/successor/artifacts":
+					if tc.name == "absent" {
+						_, _ = w.Write([]byte(`{"artifacts":[]}`))
+					} else {
+						_, _ = fmt.Fprintf(w, `{"artifacts":[{"artifact":"tasks","content":%q}]}`, revised)
+					}
+				case "/sdd/changes/successor/apply-progress":
+					if tc.successor == nil {
+						w.WriteHeader(http.StatusNotFound)
+						_, _ = w.Write([]byte(`{"outcome":"not_found","code":"not_found"}`))
+						return
+					}
+					data, _ := json.Marshal(tc.successor)
+					_, _ = fmt.Fprintf(w, `{"outcome":"current","state":{"snapshot":%s,"batches":[]}}`, data)
+				default:
+					t.Errorf("unexpected path %s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			hive := newHiveSource(t, server.URL)
+			hybrid := sddstatus.NewHybridSource(hive, sddstatus.NewOpenSpecSourceForProject(root, "jarvis-dev"))
+			for i, src := range []interface {
+				ResolveSupersession(context.Context, string, applyprogress.Snapshot) (sddstatus.SupersessionProjection, error)
+			}{hive, hybrid} {
+				got, err := src.ResolveSupersession(context.Background(), "old", seal)
+				if (tc.bad || i == 1 && tc.hybridBad) && err == nil {
+					t.Fatalf("accepted invalid successor: %#v", got)
+				}
+				if !tc.bad && !(i == 1 && tc.hybridBad) && (err != nil || (tc.successor == nil && got.State != sddstatus.SupersessionPending) || (tc.successor != nil && got.State != sddstatus.SupersessionReady)) {
+					t.Fatalf("projection %#v: %v", got, err)
+				}
+			}
+			if tc.name == "matching" {
+				marker := filepath.Join(target.Root, ".apply-progress-successor-complete")
+				if err := os.Remove(marker); err != nil {
+					t.Fatal(err)
+				}
+				got, err := hybrid.ResolveSupersession(context.Background(), "old", seal)
+				if err != nil || got.State != sddstatus.SupersessionPending {
+					t.Fatalf("hybrid unmarked: %#v, %v", got, err)
+				}
+				if err := os.WriteFile(marker, []byte(genesis.Digest), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+	advanced := *genesis
+	advanced.Revision++
+	advanced.PreviousDigest = genesis.Digest
+	advanced.StreamSHA256 = strings.Repeat("c", 64)
+	advanced.NextEntryID = "next-entry"
+	advanced, _, err = applyprogress.SealSnapshot(advanced)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := target.Advance(sddprogress.AdvanceRequest{RequestID: "continue-successor", ExpectedGeneration: genesis.Generation, ExpectedRevision: genesis.Revision, ExpectedDigest: genesis.Digest, Snapshot: advanced}); err != nil {
+		t.Fatal(err)
+	}
+	projection, err = sddstatus.NewOpenSpecSourceForProject(root, "jarvis-dev").ResolveSupersession(context.Background(), "old", seal)
+	if err != nil || projection.State != sddstatus.SupersessionReady || projection.Head == nil || projection.Head.Digest != advanced.Digest {
+		t.Fatalf("advanced partial: %#v, %v", projection, err)
+	}
+	marker := filepath.Join(target.Root, ".apply-progress-successor-complete")
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	projection, err = sddstatus.NewOpenSpecSourceForProject(root, "jarvis-dev").ResolveSupersession(context.Background(), "old", seal)
+	if err != nil || projection.State != "superseded_pending_successor" {
+		t.Fatalf("unmarked successor: %#v, %v", projection, err)
+	}
+	if err := os.WriteFile(marker, []byte(strings.Repeat("a", 64)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sddstatus.NewOpenSpecSourceForProject(root, "jarvis-dev").ResolveSupersession(context.Background(), "old", seal); err == nil {
+		t.Fatal("foreign completion marker accepted")
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	claim := filepath.Join(target.Root, ".apply-progress-successor-seal-digest")
+	if err := os.WriteFile(claim, []byte(strings.Repeat("b", 64)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sddstatus.NewOpenSpecSourceForProject(root, "jarvis-dev").ResolveSupersession(context.Background(), "old", seal); err == nil {
+		t.Fatal("foreign predecessor claim accepted")
+	}
 	cases := []struct {
 		name     string
 		snapshot applyprogress.Snapshot
