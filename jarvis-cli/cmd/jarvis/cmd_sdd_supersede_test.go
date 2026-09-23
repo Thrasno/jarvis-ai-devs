@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -10,6 +11,24 @@ import (
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
 )
+
+func assertSupersessionEmptyBatchWire(t *testing.T, request any, batches []applyprogress.Batch) {
+	t.Helper()
+	if batches == nil || len(batches) != 0 {
+		t.Fatalf("expected nonnil empty evidence batches, got %#v", batches)
+	}
+	wire, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(wire, &document); err != nil {
+		t.Fatal(err)
+	}
+	if string(document["batches"]) != "[]" {
+		t.Fatalf("expected batches:[] on wire: %s", wire)
+	}
+}
 
 func TestPlanNewSupersessionSeal(t *testing.T) {
 	old, _, err := applyprogress.SealSnapshot(applyprogress.Snapshot{Schema: applyprogress.SnapshotSchema, Project: "project", Change: "old", Generation: 1, Revision: 1, TaskManifestSHA256: strings.Repeat("a", 64), Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}})
@@ -22,10 +41,14 @@ func TestPlanNewSupersessionSeal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertSupersessionEmptyBatchWire(t, req, req.Batches)
 	if req.RequestID != "operation" || req.ExpectedDigest != old.Digest || req.ExpectedRevision != old.Revision || req.Snapshot.SealIntent.Timestamp != now.UTC().Format(time.RFC3339Nano) || !applyprogress.IsSupersessionSeal(old, req.Snapshot) {
 		t.Fatalf("invalid request: %+v", req)
 	}
 	retry, err := retrySupersessionSealRequest(req.Snapshot, "next", nil, nil)
+	if err == nil {
+		assertSupersessionEmptyBatchWire(t, retry, retry.Batches)
+	}
 	if err != nil || !reflect.DeepEqual(retry, req) {
 		t.Fatalf("retry differs: %+v, %v", retry, err)
 	}
@@ -73,7 +96,7 @@ func TestPlanNewSupersessionSealCreditedEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	seal := req.Snapshot
-	if !applyprogress.IsSupersessionSeal(old, seal) || !reflect.DeepEqual(old.Batches, seal.Batches) || !reflect.DeepEqual(old.Coverage, seal.Coverage) || seal.StreamSHA256 != "" || seal.NextEntryIndex != 0 || seal.NextEntryID != "" || !reflect.DeepEqual(req.Batches, []applyprogress.Batch(nil)) || req.ExpectedGeneration != old.Generation || req.ExpectedRevision != old.Revision || req.ExpectedDigest != old.Digest || seal.PreviousDigest != old.Digest || seal.TaskManifestSHA256 != old.TaskManifestSHA256 || seal.SealIntent.SuccessorManifestSHA256 != manifest {
+	if !applyprogress.IsSupersessionSeal(old, seal) || !reflect.DeepEqual(old.Batches, seal.Batches) || !reflect.DeepEqual(old.Coverage, seal.Coverage) || seal.StreamSHA256 != "" || seal.NextEntryIndex != 0 || seal.NextEntryID != "" || req.Batches == nil || len(req.Batches) != 0 || req.ExpectedGeneration != old.Generation || req.ExpectedRevision != old.Revision || req.ExpectedDigest != old.Digest || seal.PreviousDigest != old.Digest || seal.TaskManifestSHA256 != old.TaskManifestSHA256 || seal.SealIntent.SuccessorManifestSHA256 != manifest {
 		t.Fatalf("credited evidence or continuation changed: %+v", req)
 	}
 	if old.StreamSHA256 != stream || old.NextEntryIndex != 1 || old.NextEntryID != next.EntryID {
@@ -82,6 +105,9 @@ func TestPlanNewSupersessionSealCreditedEvidence(t *testing.T) {
 	actor, reason := seal.SealIntent.Actor, seal.SealIntent.Reason
 	for _, flags := range []struct{ actor, reason *string }{{nil, nil}, {&actor, nil}, {nil, &reason}, {&actor, &reason}} {
 		retry, err := retrySupersessionSealRequest(seal, "successor", flags.actor, flags.reason)
+		if err == nil {
+			assertSupersessionEmptyBatchWire(t, retry, retry.Batches)
+		}
 		if err != nil || !reflect.DeepEqual(retry, req) {
 			t.Fatalf("retry changed signed request: %+v, %v", retry, err)
 		}

@@ -43,7 +43,7 @@ func planNewSupersessionSeal(preflight newSupersessionPreflightResult, successor
 	if !applyprogress.IsSupersessionSeal(old, sealed) {
 		return zero, fmt.Errorf("invalid supersession seal transition")
 	}
-	return sddprogress.AdvanceRequest{RequestID: operationID, ExpectedGeneration: old.Generation, ExpectedRevision: old.Revision, ExpectedDigest: old.Digest, Snapshot: sealed}, nil
+	return sddprogress.AdvanceRequest{RequestID: operationID, ExpectedGeneration: old.Generation, ExpectedRevision: old.Revision, ExpectedDigest: old.Digest, Batches: []applyprogress.Batch{}, Snapshot: sealed}, nil
 }
 
 // retrySupersessionSealRequest reuses only the signed intent and exact stored seal.
@@ -62,7 +62,7 @@ func retrySupersessionSealRequest(storedSeal applyprogress.Snapshot, successor s
 	if actorFlag != nil && *actorFlag != intent.Actor || reasonFlag != nil && *reasonFlag != intent.Reason {
 		return zero, fmt.Errorf("supplied attribution differs from SIGNED actor %q, reason %q, intention %q", intent.Actor, intent.Reason, intent.SuccessorChange)
 	}
-	return sddprogress.AdvanceRequest{RequestID: intent.OperationID, ExpectedGeneration: storedSeal.Generation, ExpectedRevision: storedSeal.Revision - 1, ExpectedDigest: storedSeal.PreviousDigest, Snapshot: storedSeal}, nil
+	return sddprogress.AdvanceRequest{RequestID: intent.OperationID, ExpectedGeneration: storedSeal.Generation, ExpectedRevision: storedSeal.Revision - 1, ExpectedDigest: storedSeal.PreviousDigest, Batches: []applyprogress.Batch{}, Snapshot: storedSeal}, nil
 }
 
 // validateSupersessionAttribution checks the exact values to be signed for a
