@@ -118,6 +118,50 @@ func TestApplyProgressReceiptIdentityClientTreatsMissingReceiptAsUnused(t *testi
 	}
 }
 
+func TestPublishApplyProgressSuccessor(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		status    int
+		response  string
+		wantError bool
+	}{
+		{"genesis", http.StatusOK, `{"outcome":"committed","code":"ok","state":{"generation":1,"revision":1,"digest":"genesis"},"receipt":{"request_id":"successor","generation":1,"revision":1}}`, false},
+		{"replay", http.StatusOK, `{"outcome":"replayed","code":"ok","state":{"generation":1,"revision":1,"digest":"genesis"},"receipt":{"request_id":"successor","generation":1,"revision":1}}`, false},
+		{"blocked", http.StatusLocked, `{"outcome":"blocked","code":"predecessor_unsealed","recovery":"seal predecessor"}`, true},
+		{"invalid", http.StatusUnprocessableEntity, `{"outcome":"invalid","code":"validation","recovery":"fix project"}`, true},
+		{"server error", http.StatusInternalServerError, `{"outcome":"unavailable","code":"internal","recovery":"retry"}`, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newSDDClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.EscapedPath() != "/sdd/changes/change%25_/apply-progress/publish-successor" || r.URL.RawQuery != "" {
+					t.Fatalf("request = %s %s?%s", r.Method, r.URL.EscapedPath(), r.URL.RawQuery)
+				}
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				if len(body) != 1 || body["project"] != "project name" || r.Header.Get("Content-Type") != "application/json" {
+					t.Fatalf("body = %#v, content type = %q", body, r.Header.Get("Content-Type"))
+				}
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.response))
+			})
+			result, err := client.PublishApplyProgressSuccessor(context.Background(), "project name", "change%_")
+			if tt.wantError {
+				var applyErr *hiveclient.ApplyProgressError
+				if !errors.As(err, &applyErr) || applyErr.StatusCode != tt.status || applyErr.Result.Code != result.Code || applyErr.Result.Recovery != result.Recovery {
+					t.Fatalf("result = %#v, error = %#v", result, err)
+				}
+				if result.Recovery == "" || result.Code == "" {
+					t.Fatalf("missing recovery envelope: %#v", result)
+				}
+			} else if err != nil || result.State.Generation != 1 || result.State.Revision != 1 || result.Receipt.RequestID != "successor" || result.Outcome == "" {
+				t.Fatalf("result = %#v, error = %v", result, err)
+			}
+		})
+	}
+}
+
 func TestApplyProgressClientPreservesConflictRecovery(t *testing.T) {
 	client := newSDDClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/sdd/changes/change/apply-progress/advance" {

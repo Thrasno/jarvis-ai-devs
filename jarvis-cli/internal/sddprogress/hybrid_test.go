@@ -12,6 +12,202 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress/filelock"
 )
 
+func TestHybridSuccessorRejectsDivergentSealBeforePublication(t *testing.T) {
+	root := t.TempDir()
+	open := OpenSpec{Root: root}
+	hive := &checkpointHiveBackend{}
+	h := Hybrid{Root: root, OpenSpec: open, Hive: hive}
+	if _, err := h.PublishSuccessorGenesis(); !errors.Is(err, ErrBackendDiverged) {
+		t.Fatalf("PublishSuccessorGenesis() = %v, want divergence", err)
+	}
+	if hive.calls != 0 {
+		t.Fatal("mutated Hive before matching seals")
+	}
+}
+
+type successorHive struct {
+	seal, genesis    *applyprogress.Snapshot
+	calls            int
+	interrupt, forge bool
+}
+
+func (b *successorHive) Advance(AdvanceRequest) (AdvanceResult, error) {
+	return AdvanceResult{}, ErrConflict
+}
+func (b *successorHive) CurrentSnapshot(request AdvanceRequest) (*applyprogress.Snapshot, error) {
+	if b.seal == nil || request.Snapshot.Project != b.seal.Project || request.Snapshot.Change != b.seal.Change {
+		return nil, ErrConflict
+	}
+	return b.seal, nil
+}
+func (b *successorHive) PublishSuccessorGenesis(seal applyprogress.Snapshot) (applyprogress.Snapshot, error) {
+	b.calls++
+	if b.interrupt {
+		b.interrupt = false
+		return applyprogress.Snapshot{}, errInterrupted
+	}
+	if b.seal == nil || !sameSnapshot(*b.seal, seal) {
+		return applyprogress.Snapshot{}, ErrConflict
+	}
+	if b.genesis == nil {
+		pointer := &applyprogress.SupersedesPointer{Project: seal.Project, Change: seal.Change, SealDigest: seal.Digest, OriginalManifestSHA256: seal.TaskManifestSHA256, Actor: seal.SealIntent.Actor, Reason: seal.SealIntent.Reason, Timestamp: seal.SealIntent.Timestamp, OperationID: seal.SealIntent.OperationID}
+		genesis, _, err := applyprogress.SealSnapshot(applyprogress.Snapshot{Schema: applyprogress.SupersessionSnapshotSchema, Project: seal.SealIntent.SuccessorProject, Change: seal.SealIntent.SuccessorChange, Generation: 1, Revision: 1, TaskManifestSHA256: seal.SealIntent.SuccessorManifestSHA256, Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}, Supersedes: pointer})
+		if err != nil {
+			return applyprogress.Snapshot{}, err
+		}
+		b.genesis = &genesis
+	}
+	if b.forge {
+		forged := *b.genesis
+		pointer := *forged.Supersedes
+		pointer.OperationID = "foreign"
+		forged.Supersedes = &pointer
+		forged, _, _ = applyprogress.SealSnapshot(forged)
+		return forged, nil
+	}
+	return *b.genesis, nil
+}
+
+func successorHybridFixture(t *testing.T) (Hybrid, *successorHive, OpenSpec) {
+	t.Helper()
+	parent := t.TempDir()
+	root := filepath.Join(parent, "source")
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	tasks := filepath.Join(root, "tasks.md")
+	if err := os.WriteFile(tasks, []byte("- [ ] 1.1 task\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	open := OpenSpec{Root: root}
+	initial := request(t, "old-request", "apb-00000000000000000000000000000001", 1, 1, "")
+	prepareContinuationSuccessor(t, &initial, "apb-00000000000000000000000000000002")
+	if _, err := open.Advance(initial); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tasks, []byte("- [ ] 1.1 changed\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, manifest, err := applyprogress.TaskManifest([]applyprogress.Task{{ID: "1.1", Text: "changed"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seal := initial
+	seal.RequestID = "seal-request"
+	seal.ExpectedGeneration, seal.ExpectedRevision, seal.ExpectedDigest = initial.Snapshot.Generation, initial.Snapshot.Revision, initial.Snapshot.Digest
+	seal.Batches = nil
+	seal.Snapshot.Schema = applyprogress.SupersessionSnapshotSchema
+	seal.Snapshot.Revision++
+	seal.Snapshot.PreviousDigest = initial.Snapshot.Digest
+	seal.Snapshot.Status = applyprogress.StatusSuperseded
+	seal.Snapshot.StreamSHA256, seal.Snapshot.NextEntryIndex, seal.Snapshot.NextEntryID = "", 0, ""
+	seal.Snapshot.SealIntent = &applyprogress.SealIntent{SuccessorProject: "jarvis-dev", SuccessorChange: "successor", SuccessorManifestSHA256: manifest, Actor: "agent", Reason: "replanned", Timestamp: "2026-01-01T00:00:00Z", OperationID: "seal-request"}
+	seal.Snapshot, _, err = applyprogress.SealSnapshot(seal.Snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := open.Advance(seal); err != nil {
+		t.Fatal(err)
+	}
+	hive := &successorHive{seal: &seal.Snapshot}
+	return Hybrid{Root: root, OpenSpec: open, Hive: hive}, hive, OpenSpec{Root: filepath.Join(parent, "successor")}
+}
+
+func TestHybridSuccessorRejectsForgedOpenSpecResultBeforeHive(t *testing.T) {
+	h, hive, target := successorHybridFixture(t)
+	h.publishOpenSpecSuccessor = func(source, destination OpenSpec) (AdvanceResult, error) {
+		result, err := source.PublishSuccessorGenesis(destination)
+		result.Digest = "0000000000000000000000000000000000000000000000000000000000000000"
+		return result, err
+	}
+	if _, err := h.PublishSuccessorGenesis(); !errors.Is(err, ErrBackendDiverged) {
+		t.Fatalf("forged OpenSpec result: %v", err)
+	}
+	if hive.calls != 0 {
+		t.Fatal("published Hive after forged OpenSpec result")
+	}
+	if published, err := target.InspectPublication(); err != nil || published == nil {
+		t.Fatalf("fixture did not publish OpenSpec: %v, %v", published, err)
+	}
+}
+
+func TestHybridSuccessorDivergenceBeforeMutation(t *testing.T) {
+	h, hive, target := successorHybridFixture(t)
+	other := *hive.seal
+	intent := *other.SealIntent
+	intent.SuccessorChange = "foreign"
+	other.SealIntent = &intent
+	var err error
+	other, _, err = applyprogress.SealSnapshot(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hive.seal = &other
+	if _, err := h.PublishSuccessorGenesis(); !errors.Is(err, ErrBackendDiverged) {
+		t.Fatalf("divergent seal: %v", err)
+	}
+	if hive.calls != 0 {
+		t.Fatal("Hive publication before seal agreement")
+	}
+	if _, err := os.Lstat(target.Root); !os.IsNotExist(err) {
+		t.Fatalf("OpenSpec publication before seal agreement: %v", err)
+	}
+}
+
+func TestHybridSuccessorInterruptedRemoteRequiresExactRetry(t *testing.T) {
+	h, hive, target := successorHybridFixture(t)
+	hive.interrupt = true
+	if _, err := h.PublishSuccessorGenesis(); !errors.Is(err, errInterrupted) {
+		t.Fatalf("interruption: %v", err)
+	}
+	published, err := target.InspectPublication()
+	if err != nil || published == nil {
+		t.Fatalf("OpenSpec first: %v, %v", published, err)
+	}
+	if hive.genesis != nil {
+		t.Fatal("credited interrupted Hive publication")
+	}
+	got, err := h.PublishSuccessorGenesis()
+	if err != nil || !sameSnapshot(*published, got) || hive.calls != 2 {
+		t.Fatalf("exact retry: %v, %v, calls %d", got, err, hive.calls)
+	}
+	if got.Generation != 1 || got.Revision != 1 || got.PreviousDigest != "" || got.StreamSHA256 != "" || len(got.Batches) != 0 || len(got.Coverage) != 0 || got.Supersedes == nil || got.Supersedes.SealDigest != hive.seal.Digest {
+		t.Fatalf("successor inherited predecessor credit or lost authority: %+v", got)
+	}
+	if _, err := h.PublishSuccessorGenesis(); err != nil || hive.calls != 3 {
+		t.Fatalf("idempotent replay: %v, calls %d", err, hive.calls)
+	}
+}
+
+func TestHybridSuccessorRejectsForeignTargetAndForgedRemoteGenesis(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		foreign, forge bool
+	}{{"occupied target", true, false}, {"forged returned genesis", false, true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, hive, target := successorHybridFixture(t)
+			if tc.foreign {
+				if err := os.Mkdir(target.Root, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(target.Root, "foreign"), []byte("foreign"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			hive.forge = tc.forge
+			if _, err := h.PublishSuccessorGenesis(); err == nil {
+				t.Fatal("accepted foreign successor")
+			}
+			if tc.foreign && hive.calls != 0 {
+				t.Fatal("published Hive despite foreign OpenSpec target")
+			}
+			if tc.forge && (hive.genesis == nil || hive.calls != 1) {
+				t.Fatal("forged return did not reach validation")
+			}
+		})
+	}
+}
+
 func TestResolveHybridFailsClosedOnDifferentMissingOrInvalidSides(t *testing.T) {
 	first := request(t, "first", "apb-00000000000000000000000000000001", 1, 1, "")
 	other := request(t, "other", "apb-00000000000000000000000000000002", 1, 1, "")

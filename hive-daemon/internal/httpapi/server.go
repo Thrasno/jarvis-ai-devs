@@ -88,6 +88,7 @@ type SDDService interface {
 	GetApplyProgressEvidence(context.Context, string, string, string, string) (applyprogress.Batch, error)
 	GetApplyProgressReceipt(context.Context, string, string, string) (governance.ApplyProgressReceipt, error)
 	AdvanceApplyProgress(context.Context, governance.ApplyProgressAdvanceRequest) (governance.ApplyProgressAdvanceResult, error)
+	PublishApplyProgressSuccessor(context.Context, string, string) (governance.ApplyProgressAdvanceResult, error)
 	GetSDDStoreBinding(context.Context, string, string) (governance.SDDStoreBinding, bool, error)
 	AdoptSDDStoreBinding(context.Context, string, string, governance.SDDStoreBindingRequest) (governance.SDDStoreBinding, bool, error)
 }
@@ -219,6 +220,7 @@ func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, 
 		s.mux.HandleFunc("GET /sdd/changes/{change}/apply-evidence/{batch_id}", s.handleApplyProgressEvidenceGet)
 		s.mux.HandleFunc("GET /sdd/changes/{change}/apply-progress/receipts/{request_id}", s.handleApplyProgressReceiptGet)
 		s.mux.HandleFunc("POST /sdd/changes/{change}/apply-progress/advance", s.handleApplyProgressAdvance)
+		s.mux.HandleFunc("POST /sdd/changes/{change}/apply-progress/publish-successor", s.handleApplyProgressPublishSuccessor)
 		s.mux.HandleFunc("/governance/capabilities", s.handleGovernanceCapabilities)
 		s.mux.HandleFunc("/governance/projects", s.handleGovernanceProjects)
 		s.mux.HandleFunc("/governance/projects/merge", s.handleGovernanceProjectMergeBatch)
@@ -510,6 +512,39 @@ func (s *Server) handleApplyProgressAdvance(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]any{"outcome": result.Outcome, "code": "ok", "state": result.State, "receipt": result.Receipt})
 }
 
+func (s *Server) handleApplyProgressPublishSuccessor(w http.ResponseWriter, r *http.Request) {
+	if s.sdd == nil {
+		writeApplyProgressError(w, errors.New("SDD apply progress is not configured"))
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var request struct {
+		Project string `json:"project"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		var capacity *http.MaxBytesError
+		if errors.As(err, &capacity) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"outcome": "invalid", "code": "capacity", "recovery": "submit a bounded project request"})
+			return
+		}
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"outcome": "invalid", "code": "validation", "recovery": "submit only a project"})
+		return
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"outcome": "invalid", "code": "validation", "recovery": "submit only a project"})
+		return
+	}
+	result, err := s.sdd.PublishApplyProgressSuccessor(r.Context(), request.Project, r.PathValue("change"))
+	if err != nil {
+		writeApplyProgressError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"outcome": result.Outcome, "code": "ok", "state": result.State, "receipt": result.Receipt})
+}
+
 func writeApplyProgressError(w http.ResponseWriter, err error) {
 	status, outcome, code, recovery := http.StatusServiceUnavailable, "unavailable", "unavailable", "retry the same request ID after the daemon recovers"
 	var capacity *applyprogress.CapacityError
@@ -533,6 +568,8 @@ func writeApplyProgressError(w http.ResponseWriter, err error) {
 		status, outcome, code, recovery = http.StatusConflict, "invalid", "request_id_conflict", "use a new request ID for changed content"
 	case errors.Is(err, db.ErrApplyProgressBatchCollision):
 		status, outcome, code, recovery = http.StatusConflict, "invalid", "batch_collision", "use a new immutable batch ID"
+	case errors.Is(err, db.ErrProjectBlocked):
+		status, outcome, code, recovery = http.StatusLocked, "blocked", "project_blocked", "unblock the project before publishing new progress"
 	case errors.Is(err, db.ErrApplyProgressInvalid), errors.Is(err, governance.ErrProjectRequired), errors.Is(err, governance.ErrSDDChangeRequired), errors.Is(err, governance.ErrSDDChangeInvalid):
 		status, outcome, code, recovery = http.StatusUnprocessableEntity, "invalid", "validation", "repair progress and retry"
 	}

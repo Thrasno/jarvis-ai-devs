@@ -24,6 +24,82 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress/filelock"
 )
 
+func TestHiveProgressPublishSuccessorGenesis(t *testing.T) {
+	seal := applyprogress.Snapshot{Schema: applyprogress.SupersessionSnapshotSchema, Project: "project", Change: "old", Generation: 1, Revision: 2, TaskManifestSHA256: strings.Repeat("a", 64), Status: applyprogress.StatusSuperseded, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}, SealIntent: &applyprogress.SealIntent{SuccessorProject: "project", SuccessorChange: "new", SuccessorManifestSHA256: strings.Repeat("c", 64), Actor: "agent", Reason: "replanned", Timestamp: "2026-01-01T00:00:00Z", OperationID: "request-1"}}
+	var err error
+	seal, _, err = applyprogress.SealSnapshot(seal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesis := applyprogress.Snapshot{Schema: applyprogress.SupersessionSnapshotSchema, Project: "project", Change: "new", Generation: 1, Revision: 1, TaskManifestSHA256: strings.Repeat("c", 64), Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}, Supersedes: &applyprogress.SupersedesPointer{Project: seal.Project, Change: seal.Change, SealDigest: seal.Digest, OriginalManifestSHA256: seal.TaskManifestSHA256, Actor: seal.SealIntent.Actor, Reason: seal.SealIntent.Reason, Timestamp: seal.SealIntent.Timestamp, OperationID: seal.SealIntent.OperationID}}
+	genesis, _, err = applyprogress.SealSnapshot(genesis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name      string
+		input     applyprogress.Snapshot
+		result    hiveclient.ApplyProgressResult
+		status    int
+		wantError bool
+		remote    bool
+		calls     int
+	}{
+		{name: "valid pair", input: seal, result: hiveclient.ApplyProgressResult{Outcome: "committed", State: hiveclient.ApplyProgressState{Generation: 1, Revision: 1, Digest: genesis.Digest, Snapshot: genesis}}, status: 200, calls: 1},
+		{name: "missing state", input: seal, result: hiveclient.ApplyProgressResult{Outcome: "committed"}, status: 200, wantError: true, calls: 1},
+		{name: "forged pair", input: seal, result: hiveclient.ApplyProgressResult{Outcome: "committed", State: hiveclient.ApplyProgressState{Generation: 1, Revision: 1, Digest: genesis.Digest, Snapshot: func() applyprogress.Snapshot {
+			s := genesis
+			s.Supersedes = nil
+			s, _, _ = applyprogress.SealSnapshot(s)
+			return s
+		}()}}, status: 200, wantError: true, calls: 1},
+		{name: "uncommitted", input: seal, result: hiveclient.ApplyProgressResult{Outcome: "conflict", State: hiveclient.ApplyProgressState{Generation: 1, Revision: 1, Digest: genesis.Digest, Snapshot: genesis}}, status: 200, wantError: true, calls: 1},
+		{name: "locked", input: seal, result: hiveclient.ApplyProgressResult{Outcome: "conflict", Code: "locked"}, status: 423, wantError: true, remote: true, calls: 1},
+		{name: "unsigned predecessor", input: func() applyprogress.Snapshot { s := seal; s.Digest = ""; return s }(), wantError: true},
+		{name: "nonterminal predecessor", input: func() applyprogress.Snapshot { s := seal; s.Status = applyprogress.StatusPartial; return s }(), wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if r.Method != http.MethodPost || r.URL.Path != "/sdd/changes/old/apply-progress/publish-successor" {
+					t.Errorf("request path/method: %s %s", r.Method, r.URL.Path)
+				}
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				if !reflect.DeepEqual(body, map[string]any{"project": "project"}) || r.URL.RawQuery != "" {
+					t.Errorf("unexpected target parameters: body=%v query=%q", body, r.URL.RawQuery)
+				}
+				w.WriteHeader(tc.status)
+				_ = json.NewEncoder(w).Encode(tc.result)
+			}))
+			defer server.Close()
+			client, err := hiveclient.New(server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := (hiveProgressAdvancer{client: client}).PublishSuccessorGenesis(tc.input)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("result=%+v error=%v wantError=%v", got, err, tc.wantError)
+			}
+			if tc.remote {
+				var apiErr *hiveclient.ApplyProgressError
+				if !errors.As(err, &apiErr) || apiErr.StatusCode != 423 || apiErr.Result.Code != "locked" {
+					t.Fatalf("typed error: %v", err)
+				}
+			}
+			if !tc.wantError && !reflect.DeepEqual(got, genesis) {
+				t.Fatalf("genesis=%+v want %+v", got, genesis)
+			}
+			if calls != tc.calls {
+				t.Fatalf("calls=%d want %d", calls, tc.calls)
+			}
+		})
+	}
+}
+
 func TestBoundSddProgressCommandsResolveRequestAwareStoreBeforeWriter(t *testing.T) {
 	resolverErr := errors.New("binding unavailable")
 	var calls []struct{ project, change string }

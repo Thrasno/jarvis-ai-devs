@@ -23,6 +23,230 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestPublishApplyProgressSuccessorRejectsUnsealedPredecessor(t *testing.T) {
+	store := openTestDB(t)
+	first := applyProgressRequest(t, "publish-first", 0, 0, "", "apb-91919191919191919191919191919191")
+	_, err := store.AdvanceApplyProgress(first)
+	require.NoError(t, err)
+	_, err = store.PublishApplyProgressSuccessor("project", "change")
+	require.ErrorIs(t, err, ErrApplyProgressInvalid)
+	_, err = store.GetApplyProgress("project", "next")
+	require.ErrorIs(t, err, ErrApplyProgressNotFound)
+}
+
+func sealedPublishFixture(t *testing.T) (*DB, applyprogress.Snapshot) {
+	return sealedPublishFixtureWithReceipt(t, true)
+}
+
+func sealedPublishFixtureWithReceipt(t *testing.T, withReceipt bool) (*DB, applyprogress.Snapshot) {
+	t.Helper()
+	store := openTestDB(t)
+	first := applyProgressRequest(t, "publish-base", 0, 0, "", "apb-91919191919191919191919191919191")
+	base, err := store.AdvanceApplyProgress(first)
+	require.NoError(t, err)
+	tasks := "- [ ] 1.1 successor task\n"
+	parsed, err := applyprogress.ParseTasksMarkdown(tasks)
+	require.NoError(t, err)
+	_, manifest, err := applyprogress.TaskManifest(parsed.Tasks)
+	require.NoError(t, err)
+	topic := "sdd/change/tasks"
+	insertSDDMemory(t, store, "project", &topic, "tasks", tasks, "2026-09-10 10:00:00", false)
+	seal := base.State.Snapshot
+	seal.Schema, seal.Status = applyprogress.SupersessionSnapshotSchema, applyprogress.StatusSuperseded
+	seal.Revision++
+	seal.PreviousDigest = base.State.Digest
+	seal.StreamSHA256, seal.NextEntryIndex, seal.NextEntryID = "", 0, ""
+	seal.SealIntent = &applyprogress.SealIntent{SuccessorProject: "project", SuccessorChange: "next", SuccessorManifestSHA256: manifest, Actor: "agent", Reason: "replanned", Timestamp: "2026-01-01T00:00:00Z", OperationID: "publish-seal"}
+	seal, _, err = applyprogress.SealSnapshot(seal)
+	require.NoError(t, err)
+	if withReceipt {
+		_, err = store.AdvanceApplyProgress(ApplyProgressAdvance{Project: "project", Change: "change", RequestID: "publish-seal", ExpectedGeneration: base.State.Generation, ExpectedRevision: base.State.Revision, ExpectedDigest: base.State.Digest, Snapshot: seal, Batches: []applyprogress.Batch{}})
+		require.NoError(t, err)
+	} else {
+		_, data, sealErr := applyprogress.SealSnapshot(seal)
+		require.NoError(t, sealErr)
+		sealTopic := "sdd/change/apply-progress/v2"
+		insertSDDMemory(t, store, "project", &sealTopic, "synced seal", string(data), "2026-09-11 10:00:00", false)
+	}
+	return store, seal
+}
+
+func TestPublishApplyProgressSuccessorCommitsAndReplays(t *testing.T) {
+	store, seal := sealedPublishFixture(t)
+	result, err := store.PublishApplyProgressSuccessor("project", "change")
+	require.NoError(t, err)
+	require.Equal(t, "committed", result.Outcome)
+	require.Equal(t, seal.SealIntent.SuccessorManifestSHA256, result.State.Snapshot.TaskManifestSHA256)
+	require.Equal(t, seal.Digest, result.State.Snapshot.Supersedes.SealDigest)
+	require.NotEqual(t, "publish-seal", result.Receipt.RequestID)
+	replayed, err := store.PublishApplyProgressSuccessor("project", "change")
+	require.NoError(t, err)
+	require.Equal(t, result, replayed)
+	var count int
+	require.NoError(t, store.RawDB().QueryRow(`SELECT COUNT(*) FROM memories WHERE project = ? AND topic_key = ?`, "project", "sdd/next/tasks").Scan(&count))
+	require.Equal(t, 1, count)
+}
+
+func TestPublishApplyProgressSuccessorReconcilesPredecessorHead(t *testing.T) {
+	for _, missing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("missing=%t", missing), func(t *testing.T) {
+			store, seal := sealedPublishFixture(t)
+			movePublishFixtureHeadBack(t, store, missing)
+			result, err := store.PublishApplyProgressSuccessor("project", "change")
+			require.NoError(t, err)
+			require.Equal(t, seal.Digest, result.State.Snapshot.Supersedes.SealDigest)
+			var head string
+			require.NoError(t, store.RawDB().QueryRow(`SELECT digest FROM sdd_apply_heads WHERE project = ? AND change_name = ?`, "project", "change").Scan(&head))
+			require.Equal(t, seal.Digest, head)
+		})
+	}
+}
+
+func movePublishFixtureHeadBack(t *testing.T, store *DB, missing bool) string {
+	t.Helper()
+	var id int64
+	var digest string
+	require.NoError(t, store.RawDB().QueryRow(`SELECT id, json_extract(content, '$.digest') FROM memories WHERE project = ? AND topic_key = ? ORDER BY id LIMIT 1`, "project", "sdd/change/apply-progress/v2").Scan(&id, &digest))
+	var err error
+	if missing {
+		_, err = store.RawDB().Exec(`DELETE FROM sdd_apply_heads WHERE project = ? AND change_name = ?`, "project", "change")
+	} else {
+		_, err = store.RawDB().Exec(`UPDATE sdd_apply_heads SET snapshot_memory_id = ?, revision = 1, digest = ? WHERE project = ? AND change_name = ?`, id, digest, "project", "change")
+	}
+	require.NoError(t, err)
+	return digest
+}
+
+func TestPublishApplyProgressSuccessorAcceptsReceiptlessSignedSeal(t *testing.T) {
+	store, seal := sealedPublishFixtureWithReceipt(t, false)
+	movePublishFixtureHeadBack(t, store, true)
+	published, err := store.PublishApplyProgressSuccessor("project", "change")
+	require.NoError(t, err)
+	require.Equal(t, seal.Digest, published.State.Snapshot.Supersedes.SealDigest)
+	var head string
+	require.NoError(t, store.RawDB().QueryRow(`SELECT digest FROM sdd_apply_heads WHERE project = ? AND change_name = ?`, "project", "change").Scan(&head))
+	require.Equal(t, seal.Digest, head)
+}
+
+func TestPublishApplyProgressSuccessorBlockedReplayDoesNotReconcileHead(t *testing.T) {
+	for _, missing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("missing=%t", missing), func(t *testing.T) {
+			store, _ := sealedPublishFixture(t)
+			committed, err := store.PublishApplyProgressSuccessor("project", "change")
+			require.NoError(t, err)
+			oldDigest := movePublishFixtureHeadBack(t, store, missing)
+			_, err = store.RawDB().Exec(`INSERT INTO project_blocks (canonical_project_key, project, command_id, blocked_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)`, "project", "project", "block-successor-replay")
+			require.NoError(t, err)
+			replayed, err := store.PublishApplyProgressSuccessor("project", "change")
+			require.NoError(t, err)
+			require.Equal(t, committed, replayed)
+			var digest string
+			err = store.RawDB().QueryRow(`SELECT digest FROM sdd_apply_heads WHERE project = ? AND change_name = ?`, "project", "change").Scan(&digest)
+			if missing {
+				require.ErrorIs(t, err, sql.ErrNoRows)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, oldDigest, digest)
+			}
+		})
+	}
+}
+
+func TestPublishApplyProgressSuccessorRollsBackHeadReconciliation(t *testing.T) {
+	for _, invalidTopology := range []bool{false, true} {
+		t.Run(fmt.Sprintf("invalid-topology=%t", invalidTopology), func(t *testing.T) {
+			store, _ := sealedPublishFixture(t)
+			oldDigest := movePublishFixtureHeadBack(t, store, false)
+			if invalidTopology {
+				topic := "sdd/change/apply-progress/v2"
+				insertSDDMemory(t, store, "project", &topic, "invalid snapshot", `{"schema":`, "2026-09-11 10:00:00", false)
+			} else {
+				topic := "sdd/next/tasks"
+				insertSDDMemory(t, store, "project", &topic, "occupied", "old", "2026-09-11 10:00:00", false)
+			}
+			_, err := store.PublishApplyProgressSuccessor("project", "change")
+			require.ErrorIs(t, err, ErrApplyProgressInvalid)
+			var head string
+			require.NoError(t, store.RawDB().QueryRow(`SELECT digest FROM sdd_apply_heads WHERE project = ? AND change_name = ?`, "project", "change").Scan(&head))
+			require.Equal(t, oldDigest, head)
+			var count int
+			require.NoError(t, store.RawDB().QueryRow(`SELECT COUNT(*) FROM memories WHERE project = ? AND topic_key = ?`, "project", "sdd/next/apply-progress/v2").Scan(&count))
+			require.Zero(t, count)
+		})
+	}
+}
+
+func TestAdvanceApplyProgressRejectsForgedSuccessorGenesis(t *testing.T) {
+	store := openTestDB(t)
+	request := applyProgressRequest(t, "forged-genesis", 0, 0, "", "apb-91919191919191919191919191919191")
+	request.Snapshot.Schema = applyprogress.SupersessionSnapshotSchema
+	request.Snapshot.Status = applyprogress.StatusPartial
+	request.Snapshot.Coverage = []applyprogress.Coverage{}
+	request.Snapshot.Batches = []applyprogress.BatchRef{}
+	request.Batches = []applyprogress.Batch{}
+	request.Snapshot.Supersedes = &applyprogress.SupersedesPointer{Project: "project", Change: "absent", SealDigest: strings.Repeat("a", 64), OriginalManifestSHA256: request.Snapshot.TaskManifestSHA256, Actor: "agent", Reason: "replanned", Timestamp: "2026-01-01T00:00:00Z", OperationID: "forged-seal"}
+	var err error
+	request.Snapshot, _, err = applyprogress.SealSnapshot(request.Snapshot)
+	require.NoError(t, err)
+	_, err = store.AdvanceApplyProgress(request)
+	require.ErrorIs(t, err, ErrApplyProgressInvalid)
+	_, err = store.GetApplyProgress("project", "change")
+	require.ErrorIs(t, err, ErrApplyProgressNotFound)
+}
+
+func TestPublishApplyProgressSuccessorReplayAfterAdvanceReturnsGenesis(t *testing.T) {
+	store, _ := sealedPublishFixture(t)
+	genesis, err := store.PublishApplyProgressSuccessor("project", "change")
+	require.NoError(t, err)
+	entry := applyprogress.EvidenceEntry{EntryID: "next-entry", TaskIDs: []string{}, CompletesTaskIDs: []string{}, Kind: applyprogress.EvidenceGreen, Summary: "continuation", Command: "go test", Outcome: applyprogress.OutcomePass, Files: []string{}}
+	stream, err := applyprogress.StreamSHA256([]applyprogress.EvidenceEntry{entry})
+	require.NoError(t, err)
+	continuation := genesis.State.Snapshot
+	continuation.Revision++
+	continuation.PreviousDigest = genesis.State.Digest
+	continuation.StreamSHA256 = stream
+	continuation.NextEntryID = entry.EntryID
+	continuation, _, err = applyprogress.SealSnapshot(continuation)
+	require.NoError(t, err)
+	_, err = store.AdvanceApplyProgress(ApplyProgressAdvance{Project: "project", Change: "next", RequestID: "next-advance", ExpectedGeneration: 1, ExpectedRevision: 1, ExpectedDigest: genesis.State.Digest, Snapshot: continuation, Batches: []applyprogress.Batch{}})
+	require.NoError(t, err)
+	replayed, err := store.PublishApplyProgressSuccessor("project", "change")
+	require.NoError(t, err)
+	require.Equal(t, genesis, replayed)
+}
+
+func TestPublishApplyProgressSuccessorRejectsOccupiedAndMismatchedTasks(t *testing.T) {
+	for _, tc := range []struct {
+		name, topic, title string
+		deleted, mismatch  bool
+	}{
+		{name: "unicode topic tombstone", topic: "\u00a0sdd/next/tasks\u00a0", title: "legacy", deleted: true},
+		{name: "unicode title legacy", title: "\u00a0sdd/next/proposal\u00a0", deleted: true},
+		{name: "manifest mismatch", mismatch: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, _ := sealedPublishFixture(t)
+			if tc.mismatch {
+				topic := "sdd/change/tasks"
+				insertSDDMemory(t, store, "project", &topic, "tasks", "- [ ] 1.1 different task\n", "2026-09-11 10:00:00", false)
+			} else {
+				var topic *string
+				if tc.topic != "" {
+					topic = &tc.topic
+				}
+				insertSDDMemory(t, store, "project", topic, tc.title, "old", "2026-09-10 10:00:00", tc.deleted)
+			}
+			_, err := store.PublishApplyProgressSuccessor("project", "change")
+			require.ErrorIs(t, err, ErrApplyProgressInvalid)
+			var count int
+			require.NoError(t, store.RawDB().QueryRow(`SELECT COUNT(*) FROM memories WHERE project = ? AND topic_key = ?`, "project", "sdd/next/tasks").Scan(&count))
+			require.Zero(t, count)
+			_, err = store.GetApplyProgress("project", "next")
+			require.ErrorIs(t, err, ErrApplyProgressNotFound)
+		})
+	}
+}
+
 func TestAdvanceApplyProgressSupersessionAfterHiveTasksChange(t *testing.T) {
 	store := openTestDB(t)
 	first := applyProgressRequest(t, "seal-first", 0, 0, "", "apb-91919191919191919191919191919191")
