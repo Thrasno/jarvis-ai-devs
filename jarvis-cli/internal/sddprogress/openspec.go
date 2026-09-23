@@ -59,6 +59,54 @@ func (s OpenSpec) Current() (*applyprogress.Snapshot, error) {
 	return s.InspectPublication()
 }
 
+// InspectSealablePredecessor inspects a stored PARTIAL head without binding its
+// historical task manifest to the currently revised tasks. It never recovers
+// publication state or creates an authority target.
+func (s OpenSpec) InspectSealablePredecessor(project, change string) (*applyprogress.Snapshot, error) {
+	if err := s.validateRoot(); err != nil {
+		return nil, err
+	}
+	if err := s.validateStaging(nil); err != nil {
+		return nil, err
+	}
+	snapshot, raw, err := s.current()
+	if err != nil {
+		if !isV2(raw) {
+			if receiptErr := s.validateReceiptLineage(nil, false); receiptErr != nil {
+				return nil, receiptErr
+			}
+			return nil, ErrLegacyMigration
+		}
+		return nil, err
+	}
+	if snapshot == nil {
+		return nil, ErrConflict
+	}
+	if err := s.validateReceiptLineage(snapshot, true); err != nil {
+		return nil, err
+	}
+	if snapshot.Status != applyprogress.StatusPartial || (project != "" && snapshot.Project != project) || (change != "" && snapshot.Change != change) {
+		return nil, ErrConflict
+	}
+	receipts, err := s.committedReceiptSnapshots()
+	if err != nil {
+		return nil, err
+	}
+	found := false
+	for _, receipt := range receipts[snapshot.Digest] {
+		if sameSnapshot(receipt.Snapshot, *snapshot) {
+			found = true
+		}
+	}
+	if !found {
+		return nil, ErrConflict
+	}
+	if _, err := s.referencedBatches(*snapshot); err != nil {
+		return nil, err
+	}
+	return snapshot, nil
+}
+
 // InspectPublication resolves the authoritative publication topology without
 // acquiring a lock, cleaning staging residue, or mutating the filesystem. Status
 // readers use it so an interrupted receipt lineage remains observable.

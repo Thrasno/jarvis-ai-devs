@@ -15,6 +15,142 @@ import (
 
 var errInterrupted = errors.New("interrupted before rename")
 
+func TestInspectSealablePredecessorAfterReplanning(t *testing.T) {
+	root := t.TempDir()
+	tasks := filepath.Join(root, "tasks.md")
+	if err := os.WriteFile(tasks, []byte("- [ ] 1.1 task\n- [ ] 1.2 remaining\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store := OpenSpec{Root: root}
+	initial := request(t, "old-request", "apb-00000000000000000000000000000001", 1, 1, "")
+	initial.Batches[0].Entries[0].TaskIDs = []string{"1.1"}
+	initial.Batches[0].Entries[0].CompletesTaskIDs = []string{"1.1"}
+	var err error
+	initial.Batches[0], _, err = applyprogress.SealBatch(initial.Batches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial.Snapshot.Batches[0].SHA256 = initial.Batches[0].SHA256
+	_, initial.Snapshot.TaskManifestSHA256, err = applyprogress.TaskManifest([]applyprogress.Task{{ID: "1.1", Text: "task"}, {ID: "1.2", Text: "remaining"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial.Snapshot.Coverage = []applyprogress.Coverage{{TaskID: "1.1", BatchID: initial.Batches[0].BatchID, EntryID: initial.Batches[0].Entries[0].EntryID}}
+	initial.Snapshot, _, err = applyprogress.SealSnapshot(initial.Snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepareContinuationSuccessor(t, &initial, "apb-00000000000000000000000000000002")
+	if _, err := store.Advance(initial); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tasks, []byte("- [ ] 1.1 revised\n- [ ] 1.2 remaining\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.InspectPublication(); err == nil {
+		t.Fatal("publication unexpectedly matches revised tasks")
+	}
+	head := filepath.Join(root, "apply-progress.md")
+	originalHead, err := os.ReadFile(head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := filepath.Join(root, "apply-evidence", initial.Batches[0].BatchID+".json")
+	originalBatch, err := os.ReadFile(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(want bool) {
+		t.Helper()
+		got, err := store.InspectSealablePredecessor(initial.Snapshot.Project, initial.Snapshot.Change)
+		if want && (err != nil || got == nil || got.Digest != initial.Snapshot.Digest) {
+			t.Fatalf("valid predecessor: %+v, %v", got, err)
+		}
+		if want && len(got.Coverage) != 1 {
+			t.Fatalf("predecessor coverage = %d, want 1", len(got.Coverage))
+		}
+		if !want && err == nil {
+			t.Fatal("unsafe predecessor accepted")
+		}
+		unchanged, readErr := os.ReadFile(head)
+		if readErr != nil || !bytes.Equal(unchanged, originalHead) {
+			t.Fatalf("inspection changed head: %v", readErr)
+		}
+	}
+	check(true)
+	if _, err := store.InspectSealablePredecessor("wrong-project", initial.Snapshot.Change); err == nil {
+		t.Fatal("accepted wrong identity")
+	}
+	if err := os.WriteFile(batch, []byte("corrupt"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	check(false)
+	if err := os.WriteFile(batch, originalBatch, 0600); err != nil {
+		t.Fatal(err)
+	}
+	receipt := filepath.Join(root, ".apply-progress-receipts", initial.RequestID+".json")
+	originalReceipt, err := os.ReadFile(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(receipt, []byte("corrupt"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	check(false)
+	if err := os.WriteFile(receipt, originalReceipt, 0600); err != nil {
+		t.Fatal(err)
+	}
+	rogue := filepath.Join(root, ".apply-progress-receipts", "rogue.json")
+	if err := os.WriteFile(rogue, []byte("rogue"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	check(false)
+	if err := os.Remove(rogue); err != nil {
+		t.Fatal(err)
+	}
+	stage := filepath.Join(root, ".apply-progress-stage-rogue")
+	if err := os.WriteFile(stage, []byte("rogue"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	check(false)
+	if err := os.Remove(stage); err != nil {
+		t.Fatal(err)
+	}
+	other := initial.Snapshot
+	other.Revision++
+	other.PreviousDigest = initial.Snapshot.Digest
+	other, otherBytes, err := applyprogress.SealSnapshot(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.Digest == initial.Snapshot.Digest {
+		t.Fatal("head mismatch fixture unchanged")
+	}
+	if err := os.WriteFile(head, otherBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.InspectSealablePredecessor("", ""); err == nil {
+		t.Fatal("accepted head without matching receipt")
+	}
+	if err := os.WriteFile(head, []byte("malformed"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.InspectSealablePredecessor("", ""); err == nil {
+		t.Fatal("accepted malformed head")
+	}
+	if err := os.WriteFile(head, originalHead, 0600); err != nil {
+		t.Fatal(err)
+	}
+	check(true)
+	missing := OpenSpec{Root: filepath.Join(t.TempDir(), "absent")}
+	if _, err := missing.InspectSealablePredecessor("", ""); err == nil {
+		t.Fatal("accepted missing target")
+	}
+	if _, err := os.Lstat(missing.Root); !os.IsNotExist(err) {
+		t.Fatalf("inspection created target: %v", err)
+	}
+}
+
 func TestPublishSuccessorGenesis(t *testing.T) {
 	parent := t.TempDir()
 	source := OpenSpec{Root: filepath.Join(parent, "source")}
