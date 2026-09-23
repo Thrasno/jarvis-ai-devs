@@ -83,6 +83,9 @@ func TestMain(m *testing.M) {
 		module := filepath.Join("..", "..", "..", "hive-daemon")
 		if _, err := os.Stat(filepath.Join(module, "go.mod")); err == nil {
 			supersedeLiveDaemonBin = filepath.Join(binDir, "hive-daemon")
+			if runtime.GOOS == "windows" {
+				supersedeLiveDaemonBin += ".exe"
+			}
 			build := exec.Command("go", "build", "-o", supersedeLiveDaemonBin, "./cmd/hive-daemon")
 			build.Dir = module
 			if output, err := build.CombinedOutput(); err != nil {
