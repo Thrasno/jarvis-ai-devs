@@ -75,16 +75,37 @@ func captureSDDStdout(t *testing.T, run func() error) (string, error) {
 		_ = reader.Close()
 	}()
 
+	type readResult struct {
+		output []byte
+		err    error
+	}
+	readDone := make(chan readResult, 1)
+	go func() {
+		output, err := io.ReadAll(reader)
+		readDone <- readResult{output: output, err: err}
+	}()
+
 	runErr := run()
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close stdout pipe: %v", err)
 	}
 	os.Stdout = original
-	output, err := io.ReadAll(reader)
-	if err != nil {
-		t.Fatalf("read stdout pipe: %v", err)
+	result := <-readDone
+	if result.err != nil {
+		t.Fatalf("read stdout pipe: %v", result.err)
 	}
-	return string(output), runErr
+	return string(result.output), runErr
+}
+
+func TestCaptureSDDStdoutDrainsLargeOutput(t *testing.T) {
+	payload := strings.Repeat("x", 1<<20)
+	output, err := captureSDDStdout(t, func() error {
+		_, err := os.Stdout.Write([]byte(payload))
+		return err
+	})
+	if err != nil || output != payload {
+		t.Fatalf("captured %d bytes, want %d: %v", len(output), len(payload), err)
+	}
 }
 
 func writeOpenSpecBinding(t *testing.T, workspace, change, mode, provenance string, files map[string]string) {
