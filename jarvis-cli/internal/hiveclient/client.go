@@ -1139,6 +1139,25 @@ func (c *Client) AdvanceApplyProgress(ctx context.Context, request ApplyProgress
 	return c.doApplyProgress(httpRequest)
 }
 
+// PublishApplyProgressSuccessor asks the daemon to create or replay the successor genesis.
+// The daemon owns the target state; the caller supplies only project identity.
+func (c *Client) PublishApplyProgressSuccessor(ctx context.Context, project, predecessorChange string) (ApplyProgressResult, error) {
+	body, err := json.Marshal(struct {
+		Project string `json:"project"`
+	}{Project: project})
+	if err != nil {
+		return ApplyProgressResult{}, err
+	}
+	u := *c.baseURL
+	setURLPath(&u, "/sdd/changes/"+url.PathEscape(predecessorChange)+"/apply-progress/publish-successor")
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
+	if err != nil {
+		return ApplyProgressResult{}, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	return c.doApplyProgress(request)
+}
+
 func (c *Client) doApplyProgress(request *http.Request) (ApplyProgressResult, error) {
 	response, err := c.http.Do(request)
 	if err != nil {
