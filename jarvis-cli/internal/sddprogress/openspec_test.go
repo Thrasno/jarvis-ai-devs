@@ -13,6 +13,67 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
 )
 
+func TestInspectSuccessorVacancy(t *testing.T) {
+	workspace := t.TempDir()
+	parent := filepath.Join(workspace, "openspec", "changes")
+	source := filepath.Join(parent, "predecessor")
+	if err := os.MkdirAll(source, 0700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(parent, "successor")
+	inspect := func(src, dst, id string) error {
+		return (OpenSpec{Root: src}).InspectSuccessorVacancy(OpenSpec{Root: dst}, id)
+	}
+	if err := inspect(source, target, "successor"); err != nil {
+		t.Fatalf("vacant: %v", err)
+	}
+	if _, err := os.Lstat(target); !os.IsNotExist(err) {
+		t.Fatalf("inspection created target: %v", err)
+	}
+	for _, kind := range []string{"directory", "file", "symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			var err error
+			switch kind {
+			case "directory":
+				err = os.Mkdir(target, 0700)
+			case "file":
+				err = os.WriteFile(target, nil, 0600)
+			case "symlink":
+				err = os.Symlink(source, target)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := inspect(source, target, "successor"); !errors.Is(err, ErrConflict) {
+				t.Fatalf("occupied: %v", err)
+			}
+			if err := os.Remove(target); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	alias := filepath.Join(workspace, "alias")
+	if err := os.Symlink(parent, alias); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, src, dst, id string }{
+		{"source symlink ancestor", filepath.Join(alias, "predecessor"), target, "successor"},
+		{"target symlink ancestor", source, filepath.Join(alias, "successor"), "successor"},
+		{"wrong parent", source, filepath.Join(workspace, "successor"), "successor"},
+		{"relative", "openspec/changes/predecessor", target, "successor"},
+		{"unclean", source, parent + "/./successor", "successor"},
+		{"invalid name", source, target, "../successor"},
+		{"mismatched name", source, target, "another"},
+		{"same name", source, source, "predecessor"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := inspect(tc.src, tc.dst, tc.id); !errors.Is(err, ErrInvalidChangeRoot) {
+				t.Fatalf("invalid root: %v", err)
+			}
+		})
+	}
+}
+
 var errInterrupted = errors.New("interrupted before rename")
 
 func TestInspectSealablePredecessorAfterReplanning(t *testing.T) {

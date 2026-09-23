@@ -145,6 +145,34 @@ func (s OpenSpec) InspectPublication() (*applyprogress.Snapshot, error) {
 	return snapshot, nil
 }
 
+// InspectSuccessorVacancy is an advisory, read-only preflight. The mutator must
+// recheck the target under its lock before creating a successor.
+func (s OpenSpec) InspectSuccessorVacancy(target OpenSpec, successor string) error {
+	if !filepath.IsAbs(s.Root) || !filepath.IsAbs(target.Root) ||
+		filepath.Clean(s.Root) != s.Root || filepath.Clean(target.Root) != target.Root ||
+		!applyprogress.ValidID(successor) || filepath.Base(successor) != successor ||
+		filepath.Base(s.Root) == successor ||
+		filepath.Base(filepath.Dir(s.Root)) != "changes" ||
+		filepath.Base(filepath.Dir(filepath.Dir(s.Root))) != "openspec" ||
+		target.Root != filepath.Join(filepath.Dir(s.Root), successor) {
+		return ErrInvalidChangeRoot
+	}
+	if err := validateRegularDirectory(s.Root); err != nil {
+		return err
+	}
+	if err := validateExistingPathComponents(filepath.Dir(target.Root)); err != nil {
+		return err
+	}
+	_, err := os.Lstat(target.Root)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return ErrConflict
+}
+
 // reserveSuccessor prepares a sibling change; genesis publication is a separate operation.
 // Both locks precede any state inspection, including the source publication read.
 func (s OpenSpec) reserveSuccessor(target OpenSpec) error {
