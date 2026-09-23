@@ -319,15 +319,14 @@ func TestReserveSuccessor(t *testing.T) {
 	// Opposite lock acquisition requests must terminate, even when the reverse
 	// reservation is invalid because the prepared target has no sealed head.
 	results := make(chan error, 2)
-	cwd, err := os.Getwd()
+	// The Go workspace and the system temp directory can occupy different
+	// Windows drives; make both relative roots from their shared parent.
+	t.Chdir(parent)
+	relSource, err := filepath.Rel(parent, source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	relSource, err := filepath.Rel(cwd, source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	relTarget, err := filepath.Rel(cwd, target.Root)
+	relTarget, err := filepath.Rel(parent, target.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
