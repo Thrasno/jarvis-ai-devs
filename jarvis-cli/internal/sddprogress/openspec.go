@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -19,11 +21,12 @@ import (
 
 // OpenSpec exposes the Go-only atomic publication seam used by a later adapter.
 type OpenSpec struct {
-	Root                   string
-	BeforeRename           func() error       // Test-only interruption point after durable staging.
-	BeforeImmutablePublish func() error       // Test-only interruption point before immutable publication.
-	BeforeArchiveValidate  func() error       // Test-only hook after archive lock acquisition.
-	SyncDir                func(string) error // Test-only durability observer.
+	Root                    string
+	BeforeRename            func() error       // Test-only interruption point after durable staging.
+	BeforeImmutablePublish  func() error       // Test-only interruption point before immutable publication.
+	BeforeArchiveValidate   func() error       // Test-only hook after archive lock acquisition.
+	BeforeSuccessorFileSync func(string) error // Test-only hook before syncing an existing successor file.
+	SyncDir                 func(string) error // Test-only durability observer.
 }
 
 type receipt struct {
@@ -94,19 +97,286 @@ func (s OpenSpec) InspectPublication() (*applyprogress.Snapshot, error) {
 	return snapshot, nil
 }
 
-func (s OpenSpec) advance(request AdvanceRequest, legacy []byte) (AdvanceResult, error) {
-	if !applyprogress.ValidID(request.RequestID) {
-		return AdvanceResult{}, fmt.Errorf("%w: request_id", applyprogress.ErrInvalidID)
+// reserveSuccessor prepares a sibling change; genesis publication is a separate operation.
+// Both locks precede any state inspection, including the source publication read.
+func (s OpenSpec) reserveSuccessor(target OpenSpec) error {
+	if filepath.Clean(s.Root) != s.Root || filepath.Clean(target.Root) != target.Root {
+		return ErrInvalidChangeRoot
 	}
-	if err := s.ValidateRequestManifest(request); err != nil {
+	source, err := filepath.Abs(s.Root)
+	if err != nil {
+		return err
+	}
+	destination, err := filepath.Abs(target.Root)
+	if err != nil {
+		return err
+	}
+	if source == destination || filepath.Dir(source) != filepath.Dir(destination) || filepath.Base(destination) == "." {
+		return ErrInvalidChangeRoot
+	}
+	if err := validateRegularDirectory(filepath.Dir(source)); err != nil {
+		return err
+	}
+	if err := validateExistingPathComponents(destination); err != nil {
+		return err
+	}
+	locks := []string{(OpenSpec{Root: source}).lockPath(), (OpenSpec{Root: destination}).lockPath()}
+	sort.Strings(locks)
+	first, err := filelock.Acquire(locks[0])
+	if err != nil {
+		return err
+	}
+	defer first()
+	second, err := filelock.Acquire(locks[1])
+	if err != nil {
+		return err
+	}
+	defer second()
+	head, err := s.InspectPublication()
+	if err != nil {
+		return err
+	}
+	if head == nil || head.Status != applyprogress.StatusSuperseded || head.SealIntent == nil || head.SealIntent.SuccessorChange != filepath.Base(destination) || head.SealIntent.SuccessorProject != head.Project {
+		return ErrConflict
+	}
+	tasks, err := readRegularFile(filepath.Join(source, "tasks.md"))
+	if err != nil {
+		return err
+	}
+	parsed, err := applyprogress.ParseTasksMarkdown(string(tasks))
+	if err != nil || len(parsed.Tasks) == 0 {
+		return ErrInvalidChangeRoot
+	}
+	_, manifest, err := applyprogress.TaskManifest(parsed.Tasks)
+	if err != nil || manifest != head.SealIntent.SuccessorManifestSHA256 {
+		return ErrConflict
+	}
+	marker := []byte(head.Digest)
+	markerPath := filepath.Join(destination, ".apply-progress-successor-seal-digest")
+	info, err := os.Lstat(destination)
+	if os.IsNotExist(err) {
+		if err := os.Mkdir(destination, 0o700); err != nil {
+			return err
+		}
+		if err := s.syncDir(filepath.Dir(destination)); err != nil {
+			return err
+		}
+		if err := createSuccessorFile(markerPath, marker, s.syncDir); err != nil {
+			return err
+		}
+	} else {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%w: successor target occupied", ErrConflict)
+		}
+		if err := s.syncExistingSuccessorFile(markerPath, marker); err != nil {
+			return fmt.Errorf("%w: successor target occupied without matching seal digest: %v", ErrConflict, err)
+		}
+	}
+	entries, err := os.ReadDir(destination)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		switch entry.Name() {
+		case ".apply-progress-successor-seal-digest", "tasks.md", "apply-progress.md", ".apply-progress-successor-complete":
+		case ".apply-progress-receipts":
+			if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+				return ErrConflict
+			}
+			receipts, err := os.ReadDir(filepath.Join(destination, entry.Name()))
+			if err != nil {
+				return err
+			}
+			for _, receipt := range receipts {
+				if receipt.Name() != head.SealIntent.OperationID+".json" && !strings.HasPrefix(receipt.Name(), ".apply-progress-stage-") {
+					return ErrConflict
+				}
+			}
+		default:
+			if strings.HasPrefix(entry.Name(), ".apply-progress-stage-") {
+				continue // The publication path validates exact staged bytes.
+			}
+			return fmt.Errorf("%w: successor target occupied by unknown artifact", ErrConflict)
+		}
+	}
+	targetTasks := filepath.Join(destination, "tasks.md")
+	if _, err := readRegularFile(targetTasks); err == nil {
+		if err := s.syncExistingSuccessorFile(targetTasks, tasks); err != nil {
+			return fmt.Errorf("%w: successor tasks differ: %v", ErrConflict, err)
+		}
+		if err := s.syncDir(destination); err != nil {
+			return err
+		}
+		return s.syncDir(filepath.Dir(destination))
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("%w: successor tasks occupied: %v", ErrConflict, err)
+	}
+	if err := s.syncDir(destination); err != nil {
+		return err
+	}
+	if err := createSuccessorFile(targetTasks, tasks, s.syncDir); err != nil {
+		return err
+	}
+	return s.syncDir(filepath.Dir(destination))
+}
+
+// PublishSuccessorGenesis publishes a sealed predecessor's authenticated successor.
+// Reservation is only a preparation step; all authority is rechecked under both locks.
+func (s OpenSpec) PublishSuccessorGenesis(target OpenSpec) (AdvanceResult, error) {
+	if err := s.reserveSuccessor(target); err != nil {
 		return AdvanceResult{}, err
+	}
+	source, err := filepath.Abs(s.Root)
+	if err != nil {
+		return AdvanceResult{}, err
+	}
+	destination, err := filepath.Abs(target.Root)
+	if err != nil {
+		return AdvanceResult{}, err
+	}
+	locks := []string{(OpenSpec{Root: source}).lockPath(), (OpenSpec{Root: destination}).lockPath()}
+	sort.Strings(locks)
+	first, err := filelock.Acquire(locks[0])
+	if err != nil {
+		return AdvanceResult{}, err
+	}
+	defer first()
+	second, err := filelock.Acquire(locks[1])
+	if err != nil {
+		return AdvanceResult{}, err
+	}
+	defer second()
+	seal, err := s.InspectPublication()
+	if err != nil {
+		return AdvanceResult{}, err
+	}
+	if seal == nil || seal.Status != applyprogress.StatusSuperseded || seal.SealIntent == nil || seal.SealIntent.SuccessorProject != seal.Project || seal.SealIntent.SuccessorChange != filepath.Base(destination) {
+		return AdvanceResult{}, ErrConflict
+	}
+	tasks, err := readRegularFile(filepath.Join(source, "tasks.md"))
+	if err != nil {
+		return AdvanceResult{}, err
+	}
+	if err := target.syncExistingSuccessorFile(filepath.Join(destination, ".apply-progress-successor-seal-digest"), []byte(seal.Digest)); err != nil {
+		return AdvanceResult{}, ErrConflict
+	}
+	if err := target.syncExistingSuccessorFile(filepath.Join(destination, "tasks.md"), tasks); err != nil {
+		return AdvanceResult{}, ErrConflict
+	}
+	manifest, err := target.authoritativeTaskManifest()
+	if err != nil || manifest != seal.SealIntent.SuccessorManifestSHA256 {
+		return AdvanceResult{}, ErrConflict
+	}
+	pointer := &applyprogress.SupersedesPointer{Project: seal.Project, Change: seal.Change, SealDigest: seal.Digest, OriginalManifestSHA256: seal.TaskManifestSHA256, Actor: seal.SealIntent.Actor, Reason: seal.SealIntent.Reason, Timestamp: seal.SealIntent.Timestamp, OperationID: seal.SealIntent.OperationID}
+	genesis, _, err := applyprogress.SealSnapshot(applyprogress.Snapshot{Schema: applyprogress.SupersessionSnapshotSchema, Project: seal.SealIntent.SuccessorProject, Change: seal.SealIntent.SuccessorChange, Generation: 1, Revision: 1, TaskManifestSHA256: manifest, Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}, Supersedes: pointer})
+	if err != nil {
+		return AdvanceResult{}, err
+	}
+	if err := applyprogress.ValidateSuccessorGenesisPair(*seal, genesis); err != nil {
+		return AdvanceResult{}, err
+	}
+	request := AdvanceRequest{RequestID: seal.SealIntent.OperationID, Snapshot: genesis}
+	marker := filepath.Join(destination, ".apply-progress-successor-complete")
+	if _, err := os.Lstat(marker); err == nil {
+		if err := target.syncExistingSuccessorFile(marker, []byte(genesis.Digest)); err != nil {
+			return AdvanceResult{}, ErrConflict
+		}
+		head, err := target.InspectPublication()
+		if err != nil || head == nil || head.Digest != genesis.Digest {
+			return AdvanceResult{}, ErrConflict
+		}
+		return target.advanceLocked(request, nil)
+	} else if !os.IsNotExist(err) {
+		return AdvanceResult{}, err
+	}
+	if head, _, err := target.current(); err != nil {
+		return AdvanceResult{}, err
+	} else if head != nil && head.Digest != genesis.Digest {
+		return AdvanceResult{}, ErrConflict
+	}
+	result, err := target.advanceLocked(request, nil)
+	if err != nil {
+		return AdvanceResult{}, err
+	}
+	if err := createSuccessorFile(marker, []byte(result.Digest), target.syncDir); err != nil {
+		if os.IsExist(err) {
+			return AdvanceResult{}, ErrConflict
+		}
+		return AdvanceResult{}, err
+	}
+	return result, nil
+}
+
+// syncExistingSuccessorFile revalidates exact bytes and syncs the opened regular
+// file, so a retry after an interrupted File.Sync does not trust directory syncs.
+func (s OpenSpec) syncExistingSuccessorFile(path string, expected []byte) error {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return ErrConflict
+	}
+	// Windows requires a writable handle for FlushFileBuffers (File.Sync),
+	// even though the retry only validates and syncs the existing bytes.
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
+		return ErrConflict
+	}
+	actual, err := io.ReadAll(file)
+	if err != nil || !bytes.Equal(actual, expected) {
+		return ErrConflict
+	}
+	if s.BeforeSuccessorFileSync != nil {
+		if err := s.BeforeSuccessorFileSync(path); err != nil {
+			return err
+		}
+	}
+	return file.Sync()
+}
+
+func createSuccessorFile(path string, data []byte, syncDir func(string) error) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = file.Write(data)
+	if err == nil {
+		err = file.Sync()
+	}
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(path))
+}
+
+func (s OpenSpec) advance(request AdvanceRequest, legacy []byte) (AdvanceResult, error) {
+	if request.Snapshot.Supersedes != nil && request.Snapshot.Generation == 1 && request.Snapshot.Revision == 1 {
+		return AdvanceResult{}, ErrConflict
 	}
 	unlock, err := s.lock()
 	if err != nil {
 		return AdvanceResult{}, err
 	}
 	defer unlock()
+	return s.advanceLocked(request, legacy)
+}
 
+func (s OpenSpec) advanceLocked(request AdvanceRequest, legacy []byte) (AdvanceResult, error) {
+	if !applyprogress.ValidID(request.RequestID) {
+		return AdvanceResult{}, fmt.Errorf("%w: request_id", applyprogress.ErrInvalidID)
+	}
+	if err := s.ValidateRequestManifest(request); err != nil {
+		return AdvanceResult{}, err
+	}
 	current, raw, currentErr := s.current()
 	snapshot, snapshotData, err := applyprogress.SealSnapshot(request.Snapshot)
 	if err != nil {

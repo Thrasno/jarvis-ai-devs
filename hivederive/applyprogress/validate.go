@@ -284,6 +284,30 @@ func ValidateSuccessor(previous, successor Snapshot, batches map[string]Batch) e
 	return nil
 }
 
+// ValidateSuccessorGenesisPair checks self-digests and pair shape for a
+// cross-change successor genesis against a superseded predecessor seal.
+// The caller must supply the canonical authoritative stored sealed predecessor
+// head, never one obtained from the pointer or an arbitrary supplied snapshot.
+// The caller must separately validate store publication, receipt, and CAS;
+// this pure check does not establish authority or inspect task contents.
+// Subsequent same-change transitions use ValidateSuccessor.
+func ValidateSuccessorGenesisPair(predecessor, successor Snapshot) error {
+	if VerifySnapshot(predecessor) != nil || VerifySnapshot(successor) != nil {
+		return invalid(CodeInvalidBase, "snapshot")
+	}
+	intent, pointer := predecessor.SealIntent, successor.Supersedes
+	if predecessor.Schema != SupersessionSnapshotSchema || predecessor.Status != StatusSuperseded || intent == nil ||
+		successor.Schema != SupersessionSnapshotSchema || successor.Status != StatusPartial || pointer == nil || successor.SealIntent != nil ||
+		predecessor.Project != pointer.Project || predecessor.Change != pointer.Change || predecessor.Digest != pointer.SealDigest || predecessor.TaskManifestSHA256 != pointer.OriginalManifestSHA256 ||
+		intent.SuccessorProject != successor.Project || intent.SuccessorChange != successor.Change || intent.SuccessorManifestSHA256 != successor.TaskManifestSHA256 ||
+		successor.Project == predecessor.Project && successor.Change == predecessor.Change ||
+		intent.Actor != pointer.Actor || intent.Reason != pointer.Reason || intent.Timestamp != pointer.Timestamp || intent.OperationID != pointer.OperationID ||
+		successor.Generation != 1 || successor.Revision != 1 || successor.PreviousDigest != "" || len(successor.Batches) != 0 || len(successor.Coverage) != 0 || successor.hasContinuation() {
+		return invalid(CodeInvalidBase, "successor genesis")
+	}
+	return nil
+}
+
 // IsSupersessionSeal reports the sole allowed terminal transition without task lookup.
 // It compares signed heads and requires identical immutable evidence and coverage.
 func IsSupersessionSeal(previous, candidate Snapshot) bool {
