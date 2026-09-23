@@ -482,9 +482,8 @@ func (d *DB) PublishApplyProgressSuccessor(project, predecessorChange string) (A
 	if err != nil || manifest != intent.SuccessorManifestSHA256 {
 		return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
 	}
-	pointer := &applyprogress.SupersedesPointer{Project: project, Change: predecessorChange, SealDigest: seal.Digest, OriginalManifestSHA256: seal.TaskManifestSHA256, Actor: intent.Actor, Reason: intent.Reason, Timestamp: intent.Timestamp, OperationID: intent.OperationID}
-	genesis, genesisBytes, err := applyprogress.SealSnapshot(applyprogress.Snapshot{Schema: applyprogress.SupersessionSnapshotSchema, Project: project, Change: change, Generation: 1, Revision: 1, TaskManifestSHA256: manifest, Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}, Supersedes: pointer})
-	if err != nil || applyprogress.ValidateSuccessorGenesisPair(seal, genesis) != nil {
+	genesis, genesisBytes, err := applyprogress.BuildSuccessorGenesis(seal)
+	if err != nil {
 		return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
 	}
 	requestHash := sha256.Sum256([]byte("successor-genesis/v1\x00" + intent.OperationID + "\x00" + seal.Digest))
