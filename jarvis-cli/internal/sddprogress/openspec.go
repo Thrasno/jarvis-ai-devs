@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -19,11 +21,12 @@ import (
 
 // OpenSpec exposes the Go-only atomic publication seam used by a later adapter.
 type OpenSpec struct {
-	Root                   string
-	BeforeRename           func() error       // Test-only interruption point after durable staging.
-	BeforeImmutablePublish func() error       // Test-only interruption point before immutable publication.
-	BeforeArchiveValidate  func() error       // Test-only hook after archive lock acquisition.
-	SyncDir                func(string) error // Test-only durability observer.
+	Root                    string
+	BeforeRename            func() error       // Test-only interruption point after durable staging.
+	BeforeImmutablePublish  func() error       // Test-only interruption point before immutable publication.
+	BeforeArchiveValidate   func() error       // Test-only hook after archive lock acquisition.
+	BeforeSuccessorFileSync func(string) error // Test-only hook before syncing an existing successor file.
+	SyncDir                 func(string) error // Test-only durability observer.
 }
 
 type receipt struct {
@@ -92,6 +95,160 @@ func (s OpenSpec) InspectPublication() (*applyprogress.Snapshot, error) {
 		return nil, err
 	}
 	return snapshot, nil
+}
+
+// reserveSuccessor prepares a sibling change; genesis publication is a separate operation.
+// Both locks precede any state inspection, including the source publication read.
+func (s OpenSpec) reserveSuccessor(target OpenSpec) error {
+	if filepath.Clean(s.Root) != s.Root || filepath.Clean(target.Root) != target.Root {
+		return ErrInvalidChangeRoot
+	}
+	source, err := filepath.Abs(s.Root)
+	if err != nil {
+		return err
+	}
+	destination, err := filepath.Abs(target.Root)
+	if err != nil {
+		return err
+	}
+	if source == destination || filepath.Dir(source) != filepath.Dir(destination) || filepath.Base(destination) == "." {
+		return ErrInvalidChangeRoot
+	}
+	if err := validateRegularDirectory(filepath.Dir(source)); err != nil {
+		return err
+	}
+	if err := validateExistingPathComponents(destination); err != nil {
+		return err
+	}
+	locks := []string{(OpenSpec{Root: source}).lockPath(), (OpenSpec{Root: destination}).lockPath()}
+	sort.Strings(locks)
+	first, err := filelock.Acquire(locks[0])
+	if err != nil {
+		return err
+	}
+	defer first()
+	second, err := filelock.Acquire(locks[1])
+	if err != nil {
+		return err
+	}
+	defer second()
+	head, err := s.InspectPublication()
+	if err != nil {
+		return err
+	}
+	if head == nil || head.Status != applyprogress.StatusSuperseded || head.SealIntent == nil || head.SealIntent.SuccessorChange != filepath.Base(destination) || head.SealIntent.SuccessorProject != head.Project {
+		return ErrConflict
+	}
+	tasks, err := readRegularFile(filepath.Join(source, "tasks.md"))
+	if err != nil {
+		return err
+	}
+	parsed, err := applyprogress.ParseTasksMarkdown(string(tasks))
+	if err != nil || len(parsed.Tasks) == 0 {
+		return ErrInvalidChangeRoot
+	}
+	_, manifest, err := applyprogress.TaskManifest(parsed.Tasks)
+	if err != nil || manifest != head.SealIntent.SuccessorManifestSHA256 {
+		return ErrConflict
+	}
+	marker := []byte(head.Digest)
+	markerPath := filepath.Join(destination, ".apply-progress-successor-seal-digest")
+	info, err := os.Lstat(destination)
+	if os.IsNotExist(err) {
+		if err := os.Mkdir(destination, 0o700); err != nil {
+			return err
+		}
+		if err := s.syncDir(filepath.Dir(destination)); err != nil {
+			return err
+		}
+		if err := createSuccessorFile(markerPath, marker, s.syncDir); err != nil {
+			return err
+		}
+	} else {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%w: successor target occupied", ErrConflict)
+		}
+		if err := s.syncExistingSuccessorFile(markerPath, marker); err != nil {
+			return fmt.Errorf("%w: successor target occupied without matching seal digest: %v", ErrConflict, err)
+		}
+	}
+	entries, err := os.ReadDir(destination)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name() != ".apply-progress-successor-seal-digest" && entry.Name() != "tasks.md" {
+			return fmt.Errorf("%w: successor target occupied by unknown artifact", ErrConflict)
+		}
+	}
+	targetTasks := filepath.Join(destination, "tasks.md")
+	if _, err := readRegularFile(targetTasks); err == nil {
+		if err := s.syncExistingSuccessorFile(targetTasks, tasks); err != nil {
+			return fmt.Errorf("%w: successor tasks differ: %v", ErrConflict, err)
+		}
+		if err := s.syncDir(destination); err != nil {
+			return err
+		}
+		return s.syncDir(filepath.Dir(destination))
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("%w: successor tasks occupied: %v", ErrConflict, err)
+	}
+	if err := s.syncDir(destination); err != nil {
+		return err
+	}
+	if err := createSuccessorFile(targetTasks, tasks, s.syncDir); err != nil {
+		return err
+	}
+	return s.syncDir(filepath.Dir(destination))
+}
+
+// syncExistingSuccessorFile revalidates exact bytes and syncs the opened regular
+// file, so a retry after an interrupted File.Sync does not trust directory syncs.
+func (s OpenSpec) syncExistingSuccessorFile(path string, expected []byte) error {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return ErrConflict
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
+		return ErrConflict
+	}
+	actual, err := io.ReadAll(file)
+	if err != nil || !bytes.Equal(actual, expected) {
+		return ErrConflict
+	}
+	if s.BeforeSuccessorFileSync != nil {
+		if err := s.BeforeSuccessorFileSync(path); err != nil {
+			return err
+		}
+	}
+	return file.Sync()
+}
+
+func createSuccessorFile(path string, data []byte, syncDir func(string) error) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = file.Write(data)
+	if err == nil {
+		err = file.Sync()
+	}
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(path))
 }
 
 func (s OpenSpec) advance(request AdvanceRequest, legacy []byte) (AdvanceResult, error) {

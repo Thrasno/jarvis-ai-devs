@@ -8,11 +8,204 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
 )
 
 var errInterrupted = errors.New("interrupted before rename")
+
+func TestReserveSuccessor(t *testing.T) {
+	parent := t.TempDir()
+	source := filepath.Join(parent, "source")
+	if err := os.Mkdir(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tasks := filepath.Join(source, "tasks.md")
+	if err := os.WriteFile(tasks, []byte("- [ ] 1.1 task\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := OpenSpec{Root: source}
+	initial := request(t, "old-request", "apb-00000000000000000000000000000001", 1, 1, "")
+	prepareContinuationSuccessor(t, &initial, "apb-00000000000000000000000000000002")
+	if _, err := store.Advance(initial); err != nil {
+		t.Fatal(err)
+	}
+	revised := []byte("- [ ] 1.1 changed\n")
+	if err := os.WriteFile(tasks, revised, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, manifest, err := applyprogress.TaskManifest([]applyprogress.Task{{ID: "1.1", Text: "changed"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seal := initial
+	seal.RequestID = "seal-request"
+	seal.ExpectedGeneration, seal.ExpectedRevision, seal.ExpectedDigest = initial.Snapshot.Generation, initial.Snapshot.Revision, initial.Snapshot.Digest
+	seal.Batches = nil
+	seal.Snapshot.Schema = applyprogress.SupersessionSnapshotSchema
+	seal.Snapshot.Revision++
+	seal.Snapshot.PreviousDigest = initial.Snapshot.Digest
+	seal.Snapshot.Status = applyprogress.StatusSuperseded
+	seal.Snapshot.StreamSHA256, seal.Snapshot.NextEntryIndex, seal.Snapshot.NextEntryID = "", 0, ""
+	seal.Snapshot.SealIntent = &applyprogress.SealIntent{SuccessorProject: "jarvis-dev", SuccessorChange: "successor", SuccessorManifestSHA256: manifest, Actor: "agent", Reason: "replanned", Timestamp: "2026-01-01T00:00:00Z", OperationID: "seal-request"}
+	seal.Snapshot, _, err = applyprogress.SealSnapshot(seal.Snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(seal); err != nil {
+		t.Fatal(err)
+	}
+	target := OpenSpec{Root: filepath.Join(parent, "successor")}
+	if err := store.reserveSuccessor(OpenSpec{Root: filepath.Join(t.TempDir(), "successor")}); err == nil {
+		t.Fatal("accepted outside sibling")
+	}
+	if err := os.Mkdir(target.Root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.reserveSuccessor(target); err == nil {
+		t.Fatal("adopted anonymous target")
+	}
+	if _, err := os.Stat(filepath.Join(target.Root, ".apply-progress-successor-seal-digest")); !os.IsNotExist(err) {
+		t.Fatalf("occupied target mutated: %v", err)
+	}
+	if err := os.Remove(target.Root); err != nil {
+		t.Fatal(err)
+	}
+	for _, occupied := range []string{"file", "symlink"} {
+		if occupied == "file" {
+			if err := os.WriteFile(target.Root, []byte("owned"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			if err := os.Symlink(source, target.Root); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := store.reserveSuccessor(target); err == nil {
+			t.Fatalf("accepted occupied %s", occupied)
+		}
+		if err := os.Remove(target.Root); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(source, ".apply-progress-successor-reservation.json")); !os.IsNotExist(err) {
+		t.Fatalf("reservation wrote source: %v", err)
+	}
+	if err := os.WriteFile(tasks, []byte("- [ ] 1.1 different\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.reserveSuccessor(target); err == nil {
+		t.Fatal("accepted manifest mismatch")
+	}
+	if err := os.WriteFile(tasks, revised, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(target.Root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.reserveSuccessor(target); err == nil {
+		t.Fatal("accepted crash-created empty target")
+	}
+	if err := os.Remove(target.Root); err != nil {
+		t.Fatal(err)
+	}
+	interrupted := store
+	failedSync := false
+	interrupted.SyncDir = func(path string) error {
+		if path == target.Root && !failedSync {
+			failedSync = true
+			return errInterrupted
+		}
+		return syncDir(path)
+	}
+	if err := interrupted.reserveSuccessor(target); !errors.Is(err, errInterrupted) {
+		t.Fatalf("digest sync interruption: %v", err)
+	}
+	failedFileSync := store
+	failedFileSync.BeforeSuccessorFileSync = func(string) error { return errInterrupted }
+	if err := failedFileSync.reserveSuccessor(target); !errors.Is(err, ErrConflict) {
+		t.Fatalf("existing digest sync failure: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(target.Root, "tasks.md")); !os.IsNotExist(err) {
+		t.Fatalf("tasks written before digest sync: %v", err)
+	}
+	calls := 0
+	retry := store
+	retry.SyncDir = func(path string) error { calls++; return syncDir(path) }
+	if err := retry.reserveSuccessor(target); err != nil || calls < 2 {
+		t.Fatalf("digest-only retry must sync target and parent: %v, calls=%d", err, calls)
+	}
+	marker := filepath.Join(target.Root, ".apply-progress-successor-seal-digest")
+	if _, err := os.Lstat(filepath.Join(target.Root, ".apply-progress-successor-marker.json")); !os.IsNotExist(err) {
+		t.Fatalf("reservation wrote final marker: %v", err)
+	}
+	dataMarker, err := os.ReadFile(marker)
+	if err != nil || !bytes.Equal(dataMarker, []byte(seal.Snapshot.Digest)) {
+		t.Fatalf("genesis digest: %q, %v", dataMarker, err)
+	}
+	if err := os.Remove(filepath.Join(target.Root, "tasks.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.reserveSuccessor(target); err != nil {
+		t.Fatalf("digest-only retry: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(target.Root, "unexpected"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.reserveSuccessor(target); err == nil {
+		t.Fatal("accepted unknown target artifact")
+	}
+	if err := os.Remove(filepath.Join(target.Root, "unexpected")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte(strings.Repeat("0", 64)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.reserveSuccessor(target); err == nil {
+		t.Fatal("accepted wrong genesis digest")
+	}
+	if err := os.WriteFile(marker, dataMarker, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	calls = 0
+	synced := map[string]bool{}
+	retry.BeforeSuccessorFileSync = func(path string) error { synced[filepath.Base(path)] = true; return nil }
+	if err := retry.reserveSuccessor(target); err != nil || calls < 2 {
+		t.Fatalf("exact retry must sync target and parent: %v, calls=%d", err, calls)
+	}
+	if !synced[".apply-progress-successor-seal-digest"] || !synced["tasks.md"] {
+		t.Fatalf("exact retry skipped existing file sync: %v", synced)
+	}
+	data, err := os.ReadFile(filepath.Join(target.Root, "tasks.md"))
+	if err != nil || !bytes.Equal(data, revised) {
+		t.Fatalf("reserved tasks: %q, %v", data, err)
+	}
+	// Opposite lock acquisition requests must terminate, even when the reverse
+	// reservation is invalid because the prepared target has no sealed head.
+	results := make(chan error, 2)
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relSource, err := filepath.Rel(cwd, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relTarget, err := filepath.Rel(cwd, target.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { results <- (OpenSpec{Root: relSource}).reserveSuccessor(target) }()
+	go func() { results <- (OpenSpec{Root: relTarget}).reserveSuccessor(store) }()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-results:
+		case <-time.After(3 * time.Second):
+			t.Fatal("reverse lock acquisition deadlocked")
+		}
+	}
+}
 
 func TestOpenSpecSupersessionAfterTaskEdit(t *testing.T) {
 	for _, mode := range []string{"receipt-backed", "historical-receiptless", "historical-publish-interrupted"} {
