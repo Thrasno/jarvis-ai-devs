@@ -206,6 +206,23 @@ func (h hiveProgressAdvancer) requestContext() context.Context {
 	return context.Background()
 }
 
+// PublishSuccessorGenesis delegates target reservation to Hive and authenticates
+// the committed genesis against the supplied signed predecessor seal.
+func (h hiveProgressAdvancer) PublishSuccessorGenesis(predecessorSeal applyprogress.Snapshot) (applyprogress.Snapshot, error) {
+	if applyprogress.VerifySnapshot(predecessorSeal) != nil || predecessorSeal.Status != applyprogress.StatusSuperseded || predecessorSeal.SealIntent == nil {
+		return applyprogress.Snapshot{}, sddprogress.ErrBackendDiverged
+	}
+	result, err := h.client.PublishApplyProgressSuccessor(h.requestContext(), predecessorSeal.Project, predecessorSeal.Change)
+	if err != nil {
+		return applyprogress.Snapshot{}, err
+	}
+	genesis := result.State.Snapshot
+	if result.Outcome != "committed" || genesis.Schema == "" || result.State.Generation != genesis.Generation || result.State.Revision != genesis.Revision || result.State.Digest != genesis.Digest || applyprogress.ValidateSuccessorGenesisPair(predecessorSeal, genesis) != nil {
+		return applyprogress.Snapshot{}, sddprogress.ErrBackendDiverged
+	}
+	return genesis, nil
+}
+
 func (h hiveProgressAdvancer) Current(request sddprogress.AdvanceRequest) (sddprogress.AdvanceResult, error) {
 	result, err := h.client.GetApplyProgress(h.requestContext(), request.Snapshot.Project, request.Snapshot.Change)
 	return sddprogress.AdvanceResult{Generation: result.State.Generation, Revision: result.State.Revision, Digest: result.State.Digest, PayloadSHA256: result.Receipt.PayloadSHA256}, err
