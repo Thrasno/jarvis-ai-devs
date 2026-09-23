@@ -140,6 +140,70 @@ func TestOpenCodeHiveTemplate_EarlyExitReportsStageWithoutCancellation(t *testin
 	}
 }
 
+func TestOpenCodeHiveTemplate_DelayedRunnerReadinessPreservesRequestWindow(t *testing.T) {
+	stages := hiveTemplateStages{ready: make(chan struct{})}
+	finished := make(chan error, 1)
+	requests := make(chan hiveTemplateRequest, 1)
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, _ = stages.Write([]byte("HIVE_STAGE:import started\n"))
+	select {
+	case <-stages.ready:
+		t.Fatal("runner became ready before dispatch")
+	default:
+	}
+	startup := make(chan error, 1)
+	go func() {
+		startup <- awaitHiveTemplateRunnerReady(&stages, finished, cancel, &bytes.Buffer{}, 30*time.Second)
+	}()
+	// Startup exceeds the one-second request deadline, with ample startup slack.
+	// Only the runner-ready marker permits the request timer to start.
+	<-time.After(2 * time.Second)
+	_, _ = stages.Write([]byte("HIVE_STAGE:import complete\nHIVE_STAGE:runner ready to dispatch\n"))
+	if err := <-startup; err != nil {
+		t.Fatal(err)
+	}
+	requests <- hiveTemplateRequest{method: http.MethodPost} // Buffer delivery before arming its timer.
+	request, err := awaitHiveTemplateRequest(requests, finished, cancel, &bytes.Buffer{}, "initial session start", time.Second)
+	if err != nil || request.method != http.MethodPost {
+		t.Fatalf("request after delayed readiness = %#v, %v", request, err)
+	}
+}
+
+func TestOpenCodeHiveTemplate_RunnerReadinessFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		exit bool
+		want string
+	}{
+		{"missing readiness", false, "timed out waiting for runner readiness"},
+		{"early child exit", true, "child exited before runner readiness"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stages := hiveTemplateStages{ready: make(chan struct{})}
+			_, _ = stages.Write([]byte("HIVE_STAGE:import started\n"))
+			finished := make(chan error, 1)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.exit {
+				finished <- fmt.Errorf("exit status 7")
+			} else {
+				go func() { <-ctx.Done(); finished <- fmt.Errorf("canceled") }()
+			}
+			err := awaitHiveTemplateRunnerReady(&stages, finished, cancel, &bytes.Buffer{}, 10*time.Millisecond)
+			if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "import started") {
+				t.Fatalf("runner readiness error = %v, want %q and stage", err, tc.want)
+			}
+			if tc.exit && ctx.Err() != nil {
+				t.Fatalf("early exit unexpectedly canceled child: %v", ctx.Err())
+			}
+			if !tc.exit && ctx.Err() != context.Canceled {
+				t.Fatalf("missing readiness did not cancel child: %v", ctx.Err())
+			}
+		})
+	}
+}
+
 func TestOpenCodeHiveTemplate_ChildExitFixture(t *testing.T) {
 	if os.Getenv("HIVE_TEST_CHILD_WAIT") == "1" {
 		_, _ = os.Stdout.WriteString("R")
@@ -253,6 +317,7 @@ if (synchronousCreatedFetches !== 1) throw new Error("synchronous lifecycle fetc
 if (unhandled.length !== 0) throw new Error("synchronous lifecycle failure was unhandled");
 const evidence = { id: "session-42", project: "jarvis-dev", directory: "/workspace/jarvis-dev" };
 const created = { event: { type: "session.created", id: "envelope-id", properties: { id: "unrelated-id", info: evidence } } };
+console.log("HIVE_STAGE:runner ready to dispatch");
 if (plugin["event"](created) !== undefined) throw new Error("event callback awaited lifecycle delivery");
 console.log("HIVE_STAGE:created event dispatched");
 plugin["event"](created);
@@ -297,13 +362,16 @@ if (unhandled.length !== 0) throw new Error("lifecycle callback produced an unha
 	cmd.Env = append(os.Environ(), "HIVE_HTTP_PORT="+port, "HIVE_OPENCODE_SESSION_ID=", "OPENCODE_SESSION_ID=", "SESSION_ID=", "HIVE_PROJECT=", "JARVIS_PROJECT=", "HIVE_PROJECT_DIRECTORY=", "JARVIS_WORKSPACE_DIRECTORY=", "PWD=")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	var stages hiveTemplateStages
+	stages := hiveTemplateStages{ready: make(chan struct{})}
 	cmd.Stdout = &stages
 	progress := func() string {
 		return fmt.Sprintf("%s; governance requests=%d; session requests=%d", stages.latest(), governance.Load(), starts.Load())
 	}
 	finished := make(chan error, 1)
 	go func() { finished <- cmd.Run() }()
+	if err := awaitHiveTemplateRunnerReady(&stages, finished, cancel, &stderr, hiveTemplateRequestWait); err != nil {
+		t.Fatal(err)
+	}
 
 	var primaryStart, distinctStart, environmentStart hiveTemplateRequest
 	var primaryStartSeen, distinctStartSeen, environmentStartSeen bool
@@ -677,6 +745,29 @@ func awaitHiveTemplateRequest(requests <-chan hiveTemplateRequest, finished <-ch
 	}
 }
 
+func awaitHiveTemplateRunnerReady(stages *hiveTemplateStages, finished <-chan error, cancel context.CancelFunc, stderr *bytes.Buffer, duration time.Duration) error {
+	if stages.ready == nil {
+		return fmt.Errorf("runner ready channel is not configured")
+	}
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-stages.ready:
+		return nil
+	case err := <-finished:
+		return fmt.Errorf("child exited before runner readiness: %v; stderr: %s; stage: %s", err, stderr.String(), stages.latest())
+	case <-timer.C:
+		stage := stages.latest()
+		cancel()
+		select {
+		case err := <-finished:
+			return fmt.Errorf("timed out waiting for runner readiness (canceled after deadline: %v; stderr: %s; stage: %s)", err, stderr.String(), stage)
+		case <-time.After(time.Second):
+			return fmt.Errorf("timed out waiting for runner readiness (child cancellation pending; stage: %s)", stage)
+		}
+	}
+}
+
 func hiveTemplateProgress(progress []func() string) string {
 	if len(progress) == 0 {
 		return "unknown"
@@ -688,6 +779,8 @@ type hiveTemplateStages struct {
 	mu      sync.Mutex
 	pending string
 	stage   string
+	ready   chan struct{}
+	once    sync.Once
 }
 
 func (s *hiveTemplateStages) Write(p []byte) (int, error) {
@@ -702,6 +795,9 @@ func (s *hiveTemplateStages) Write(p []byte) (int, error) {
 		s.pending = rest
 		if stage, ok := strings.CutPrefix(strings.TrimSpace(line), "HIVE_STAGE:"); ok {
 			s.stage = stage
+			if stage == "runner ready to dispatch" && s.ready != nil {
+				s.once.Do(func() { close(s.ready) })
+			}
 		}
 	}
 	return len(p), nil
