@@ -47,7 +47,7 @@ func preflightEvidence(t *testing.T) (applyprogress.Snapshot, applyprogress.Batc
 
 func preflightOpenSpec(t *testing.T, mode sddruntime.StoreMode) (string, string, applyprogress.Snapshot, applyprogress.Batch) {
 	t.Helper()
-	workspace := t.TempDir()
+	workspace := canonicalSddTestPath(t, t.TempDir())
 	root := filepath.Join(workspace, "openspec", "changes", "issue-653")
 	if err := os.MkdirAll(root, 0700); err != nil {
 		t.Fatal(err)
@@ -220,7 +220,7 @@ func TestNewSupersessionPreflightOpenSpec(t *testing.T) {
 func TestNewSupersessionPreflightRejectsUnsafeIdentity(t *testing.T) {
 	var requests []string
 	client := preflightClient(t, "", applyprogress.Snapshot{}, applyprogress.Batch{}, "", false, &requests)
-	workspace := t.TempDir()
+	workspace := canonicalSddTestPath(t, t.TempDir())
 	for _, path := range []string{workspace + "/.", filepath.Join(workspace, "absent"), "relative"} {
 		if _, err := newSupersessionPreflight(context.Background(), path, "jarvis-dev", "issue-653", "next", client); err == nil {
 			t.Fatalf("accepted workspace %q", path)
@@ -241,7 +241,7 @@ func TestNewSupersessionPreflightRejectsUnsafeIdentity(t *testing.T) {
 }
 
 func TestNewSupersessionPreflightRejectsHiveHeadChangingDuringTasksRead(t *testing.T) {
-	workspace := t.TempDir()
+	workspace := canonicalSddTestPath(t, t.TempDir())
 	if err := os.MkdirAll(filepath.Join(workspace, "openspec", "changes", "issue-653"), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +327,7 @@ func TestNewSupersessionPreflightHiveAndHybrid(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Hive-only has no local binding or OpenSpec predecessor.
-	hiveWorkspace := t.TempDir()
+	hiveWorkspace := canonicalSddTestPath(t, t.TempDir())
 	for _, occupied := range []bool{false, true} {
 		var requests []string
 		client := preflightClient(t, "hive", snapshot, batch, preflightNewTasks, occupied, &requests)
