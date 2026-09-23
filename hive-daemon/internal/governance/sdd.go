@@ -37,6 +37,7 @@ type sddStore interface {
 	GetApplyProgressEvidence(project, change, batchID, expectedHeadDigest string) (applyprogress.Batch, error)
 	GetApplyProgressReceipt(project, change, requestID string) (db.ApplyProgressReceipt, error)
 	AdvanceApplyProgress(db.ApplyProgressAdvance) (db.ApplyProgressAdvanceResult, error)
+	PublishApplyProgressSuccessor(project, predecessorChange string) (db.ApplyProgressAdvanceResult, error)
 	GetSDDStoreBinding(context.Context, string, string) (db.SDDStoreBinding, bool, error)
 	AdoptSDDStoreBinding(context.Context, string, string, db.SDDStoreBindingRequest) (db.SDDStoreBinding, bool, error)
 }
@@ -220,6 +221,25 @@ func (s *Service) AdvanceApplyProgress(ctx context.Context, request ApplyProgres
 		return ApplyProgressAdvanceResult{}, errors.New("SDD store is not configured")
 	}
 	return s.sdd.AdvanceApplyProgress(request)
+}
+
+// PublishApplyProgressSuccessor delegates target derivation and replay authority to the database.
+func (s *Service) PublishApplyProgressSuccessor(ctx context.Context, project, predecessorChange string) (ApplyProgressAdvanceResult, error) {
+	project = strings.TrimSpace(project)
+	if project == "" {
+		return ApplyProgressAdvanceResult{}, ErrProjectRequired
+	}
+	change, err := validateSDDChange(predecessorChange)
+	if err != nil {
+		return ApplyProgressAdvanceResult{}, err
+	}
+	if _, err := s.store.GetGovernanceProject(ctx, project); err != nil {
+		return ApplyProgressAdvanceResult{}, mapProjectError(err)
+	}
+	if s.sdd == nil {
+		return ApplyProgressAdvanceResult{}, errors.New("SDD store is not configured")
+	}
+	return s.sdd.PublishApplyProgressSuccessor(project, change)
 }
 
 func (s *Service) ListSDDChanges(ctx context.Context, request SDDChangePageRequest) (SDDChangePage, error) {

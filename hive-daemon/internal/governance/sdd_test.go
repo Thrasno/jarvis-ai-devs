@@ -12,6 +12,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestServicePublishApplyProgressSuccessorValidation(t *testing.T) {
+	_, service := newSDDService(t)
+	for _, tt := range []struct {
+		name, project, change string
+		want                  error
+	}{
+		{"missing project", " ", "change", governance.ErrProjectRequired},
+		{"missing change", "project", " ", governance.ErrSDDChangeRequired},
+		{"invalid change", "project", "a/b", governance.ErrSDDChangeInvalid},
+		{"unregistered project", "unknown", "change", governance.ErrProjectNotFound},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := service.PublishApplyProgressSuccessor(context.Background(), tt.project, tt.change)
+			require.ErrorIs(t, err, tt.want)
+		})
+	}
+}
+
 func TestServiceFetchSDDArtifactsReturnsFiniteVocabulary(t *testing.T) {
 	store, service := newSDDService(t)
 	artifacts := []string{"explore", "proposal", "spec", "design", "tasks", "apply-progress", "verify-report", "archive-report"}

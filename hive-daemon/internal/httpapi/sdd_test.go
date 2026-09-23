@@ -28,6 +28,141 @@ import (
 
 var updateApplyProgressFixtures = flag.Bool("update", false, "update shared apply-progress wire fixtures")
 
+func TestApplyProgressPublishSuccessorHTTPRejectsInvalidInputs(t *testing.T) {
+	_, server := newSDDHTTPServer(t)
+	for _, tt := range []struct {
+		name, path, body string
+		status           int
+		code             string
+	}{
+		{"missing project", "/sdd/changes/change/apply-progress/publish-successor", `{}`, 422, "validation"},
+		{"unknown field", "/sdd/changes/change/apply-progress/publish-successor", `{"project":"project","snapshot":{}}`, 422, "validation"},
+		{"malformed JSON", "/sdd/changes/change/apply-progress/publish-successor", `{"project":`, 422, "validation"},
+		{"trailing JSON", "/sdd/changes/change/apply-progress/publish-successor", `{"project":"project"}{}`, 422, "validation"},
+		{"missing change", "/sdd/changes/%20/apply-progress/publish-successor", `{"project":"project"}`, 422, "validation"},
+		{"unknown project", "/sdd/changes/change/apply-progress/publish-successor", `{"project":"unknown"}`, 404, "project_not_found"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			server.ServeHTTP(response, httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body)))
+			require.Equal(t, tt.status, response.Code, response.Body.String())
+			var envelope map[string]any
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+			assert.Equal(t, tt.code, envelope["code"])
+		})
+	}
+}
+
+func TestApplyProgressPublishSuccessorHTTPRejectsUnsealedPredecessor(t *testing.T) {
+	store, server := newSDDHTTPServer(t)
+	saveSDDHTTPMemory(t, store, "project", "sdd/change/explore", "explore")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/sdd/changes/change/apply-progress/publish-successor", strings.NewReader(`{"project":"project"}`)))
+	require.Equal(t, http.StatusNotFound, response.Code, response.Body.String())
+
+	var fixture struct {
+		State struct {
+			Snapshot applyprogress.Snapshot `json:"snapshot"`
+		} `json:"state"`
+	}
+	require.NoError(t, json.Unmarshal(sharedApplyProgressGetFixture(t), &fixture))
+	_, err := store.AdvanceApplyProgress(db.ApplyProgressAdvance{Project: "project", Change: "change", RequestID: "publish-http-base", Snapshot: fixture.State.Snapshot, Batches: sharedApplyProgressBatches(t)})
+	require.NoError(t, err)
+	response = httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/sdd/changes/change/apply-progress/publish-successor", strings.NewReader(`{"project":"project"}`)))
+	require.Equal(t, http.StatusUnprocessableEntity, response.Code, response.Body.String())
+}
+
+func TestApplyProgressPublishSuccessorSQLiteHTTP(t *testing.T) {
+	for _, blockedBeforePublish := range []bool{false, true} {
+		name := "committed replay blocked"
+		if blockedBeforePublish {
+			name = "blocked fresh publication"
+		}
+		t.Run(name, func(t *testing.T) {
+			store, server := newSDDHTTPServer(t)
+			saveSDDHTTPMemory(t, store, "project", "sdd/change/explore", "explore")
+			var fixture struct {
+				State struct {
+					Snapshot applyprogress.Snapshot `json:"snapshot"`
+				} `json:"state"`
+			}
+			require.NoError(t, json.Unmarshal(sharedApplyProgressGetFixture(t), &fixture))
+			base, err := store.AdvanceApplyProgress(db.ApplyProgressAdvance{Project: "project", Change: "change", RequestID: "publish-http-base", Snapshot: fixture.State.Snapshot, Batches: sharedApplyProgressBatches(t)})
+			require.NoError(t, err)
+			tasks := "- [ ] 1.1 successor task\n"
+			saveSDDHTTPMemory(t, store, "project", "sdd/change/tasks", tasks)
+			parsed, err := applyprogress.ParseTasksMarkdown(tasks)
+			require.NoError(t, err)
+			_, manifest, err := applyprogress.TaskManifest(parsed.Tasks)
+			require.NoError(t, err)
+			seal := base.State.Snapshot
+			seal.Schema, seal.Status = applyprogress.SupersessionSnapshotSchema, applyprogress.StatusSuperseded
+			seal.Revision++
+			seal.PreviousDigest = base.State.Digest
+			seal.StreamSHA256, seal.NextEntryIndex, seal.NextEntryID = "", 0, ""
+			seal.SealIntent = &applyprogress.SealIntent{SuccessorProject: "project", SuccessorChange: "next", SuccessorManifestSHA256: manifest, Actor: "agent", Reason: "replanned", Timestamp: "2026-01-01T00:00:00Z", OperationID: "publish-http-seal"}
+			seal, _, err = applyprogress.SealSnapshot(seal)
+			require.NoError(t, err)
+			_, err = store.AdvanceApplyProgress(db.ApplyProgressAdvance{Project: "project", Change: "change", RequestID: "publish-http-seal", ExpectedGeneration: base.State.Generation, ExpectedRevision: base.State.Revision, ExpectedDigest: base.State.Digest, Snapshot: seal, Batches: []applyprogress.Batch{}})
+			require.NoError(t, err)
+			publish := func() *httptest.ResponseRecorder {
+				response := httptest.NewRecorder()
+				server.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/sdd/changes/change/apply-progress/publish-successor", strings.NewReader(`{"project":"project"}`)))
+				return response
+			}
+			block := func() {
+				_, err := store.RecordProjectBlock(t.Context(), db.ProjectBlockCommand{Project: "project", CommandID: "block-http", AckToken: "ack-http", Reason: "test", Action: "block", Generation: 1})
+				require.NoError(t, err)
+			}
+			if blockedBeforePublish {
+				block()
+			}
+			first := publish()
+			if blockedBeforePublish {
+				require.Equal(t, http.StatusLocked, first.Code, first.Body.String())
+				var envelope map[string]any
+				require.NoError(t, json.Unmarshal(first.Body.Bytes(), &envelope))
+				assert.Equal(t, "project_blocked", envelope["code"])
+				_, err := store.GetApplyProgress("project", "next")
+				require.ErrorIs(t, err, db.ErrApplyProgressNotFound)
+			} else {
+				require.Equal(t, http.StatusOK, first.Code, first.Body.String())
+				var result struct {
+					Outcome string                  `json:"outcome"`
+					State   db.ApplyProgressState   `json:"state"`
+					Receipt db.ApplyProgressReceipt `json:"receipt"`
+				}
+				require.NoError(t, json.Unmarshal(first.Body.Bytes(), &result))
+				assert.Equal(t, "committed", result.Outcome)
+				assert.Equal(t, uint64(1), result.State.Generation)
+				assert.Equal(t, uint64(1), result.State.Revision)
+				require.NotNil(t, result.State.Snapshot.Supersedes)
+				assert.Equal(t, seal.Digest, result.State.Snapshot.Supersedes.SealDigest)
+				assert.Equal(t, "change", result.State.Snapshot.Supersedes.Change)
+				require.NotEmpty(t, result.Receipt.RequestID)
+				before, err := store.GetApplyProgress("project", "next")
+				require.NoError(t, err)
+				block()
+				replayed := publish()
+				require.Equal(t, http.StatusOK, replayed.Code, replayed.Body.String())
+				assert.JSONEq(t, first.Body.String(), replayed.Body.String())
+				stored, err := store.GetApplyProgress("project", "next")
+				require.NoError(t, err)
+				assert.Equal(t, before, stored, "blocked replay must not mutate the head")
+			}
+			advance := httptest.NewRecorder()
+			body, err := json.Marshal(db.ApplyProgressAdvance{Project: "project", Change: "other", RequestID: "blocked-http-advance", Snapshot: fixture.State.Snapshot, Batches: sharedApplyProgressBatches(t)})
+			require.NoError(t, err)
+			server.ServeHTTP(advance, httptest.NewRequest(http.MethodPost, "/sdd/changes/change/apply-progress/advance", bytes.NewReader(body)))
+			require.Equal(t, http.StatusLocked, advance.Code, advance.Body.String())
+			var blocked map[string]any
+			require.NoError(t, json.Unmarshal(advance.Body.Bytes(), &blocked))
+			assert.Equal(t, "project_blocked", blocked["code"])
+		})
+	}
+}
+
 func TestSDDStoreBindingHTTPCreatedReplayConflictAndProjection(t *testing.T) {
 	_, server := newSDDHTTPServer(t)
 	path := "/sdd/changes/change%25_/store-binding/adopt"
