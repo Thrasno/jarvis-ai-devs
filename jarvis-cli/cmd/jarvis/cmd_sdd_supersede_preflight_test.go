@@ -119,7 +119,8 @@ func preflightClient(t *testing.T, mode string, snapshot applyprogress.Snapshot,
 			if progressReads > 1 && len(later) != 0 {
 				head = later[0]
 			}
-			write(hiveclient.ApplyProgressResult{Outcome: "current", State: hiveclient.ApplyProgressState{Generation: head.Generation, Revision: head.Revision, Digest: head.Digest, Snapshot: head}})
+			// GET wire contract: hive-daemon/internal/httpapi/server.go:460.
+			write(map[string]any{"outcome": "committed", "code": "ok", "state": hiveclient.ApplyProgressState{Generation: head.Generation, Revision: head.Revision, Digest: head.Digest, Snapshot: head}})
 		case "/sdd/changes/issue-653/apply-evidence/" + batch.BatchID:
 			write(map[string]any{"batch": batch})
 		case "/sdd/changes/issue-653/artifacts":
