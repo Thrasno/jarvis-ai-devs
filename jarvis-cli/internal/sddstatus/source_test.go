@@ -19,6 +19,127 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
 )
 
+func TestHiveInspectSealablePredecessor(t *testing.T) {
+	old := []applyprogress.Task{{ID: "1.1", Text: "old first"}, {ID: "1.2", Text: "old second"}}
+	_, manifest, err := applyprogress.TaskManifest(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, batchData, err := applyprogress.SealBatch(applyprogress.Batch{Schema: applyprogress.EvidenceSchema, Project: "jarvis-dev", Change: "change", BatchID: "apb-00000000000000000000000000000001", Entries: []applyprogress.EvidenceEntry{{EntryID: "evidence", TaskIDs: []string{"1.1"}, CompletesTaskIDs: []string{"1.1"}, Kind: applyprogress.EvidenceGreen, Summary: "green", Command: "go test", Outcome: applyprogress.OutcomePass, Files: []string{}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := applyprogress.Snapshot{Schema: applyprogress.SnapshotSchema, Project: "jarvis-dev", Change: "change", Generation: 1, Revision: 1, TaskManifestSHA256: manifest, Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{{TaskID: "1.1", BatchID: batch.BatchID, EntryID: "evidence"}}, Batches: []applyprogress.BatchRef{{BatchID: batch.BatchID, SHA256: batch.SHA256}}}
+	for _, tc := range []struct {
+		name         string
+		mutate       func(*applyprogress.Snapshot)
+		outer        bool
+		matching     bool
+		embedded     bool
+		missing      bool
+		retry        bool
+		outcome      string
+		foreignBatch bool
+		wantError    bool
+	}{
+		{name: "revised tasks accepted"},
+		{name: "embedded batch accepted", embedded: true},
+		{name: "matching outer coordinates accepted", matching: true},
+		{name: "duplicate batch refs", mutate: func(s *applyprogress.Snapshot) { s.Batches = append(s.Batches, s.Batches[0]) }, wantError: true},
+		{name: "foreign batch identity", foreignBatch: true, wantError: true},
+		{name: "alternate head outcome", outcome: "superseded", wantError: true},
+		{name: "corrupt ref", mutate: func(s *applyprogress.Snapshot) { s.Batches[0].SHA256 = strings.Repeat("a", 64) }, wantError: true},
+		{name: "foreign identity", mutate: func(s *applyprogress.Snapshot) { s.Change = "foreign" }, wantError: true},
+		{name: "wrong outer coordinates", outer: true, wantError: true},
+		{name: "missing head", missing: true, wantError: true},
+		{name: "retryable evidence failure", retry: true, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := base
+			s.Batches = append([]applyprogress.BatchRef(nil), base.Batches...)
+			if tc.mutate != nil {
+				tc.mutate(&s)
+			}
+			s, data, err := applyprogress.SealSnapshot(s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			evidenceData := batchData
+			if tc.foreignBatch {
+				foreign := batch
+				foreign.Change = "foreign"
+				_, evidenceData, err = applyprogress.SealBatch(foreign)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Errorf("mutation request: %s", r.Method)
+					w.WriteHeader(405)
+					return
+				}
+				switch r.URL.Path {
+				case "/sdd/changes/change/artifacts":
+					_, _ = w.Write([]byte(`{"artifacts":[{"artifact":"tasks","content":"- [ ] 1.1 revised first\n- [ ] 1.2 old second\n"}]}`))
+				case "/sdd/changes/change/apply-progress":
+					if tc.missing {
+						w.WriteHeader(404)
+						_, _ = w.Write([]byte(`{"outcome":"rejected","code":"not_found"}`))
+						return
+					}
+					outer := ""
+					if tc.outer {
+						outer = `,"generation":2,"revision":1,"digest":"wrong"`
+					} else if tc.matching {
+						outer = fmt.Sprintf(`,"generation":%d,"revision":%d,"digest":%q`, s.Generation, s.Revision, s.Digest)
+					}
+					outcome := "current"
+					if tc.outcome != "" {
+						outcome = tc.outcome
+					}
+					batches := ""
+					if tc.embedded {
+						batches = `,"batches":[` + string(batchData) + `]`
+					}
+					_, _ = fmt.Fprintf(w, `{"outcome":%q,"state":{"snapshot":%s%s%s}}`, outcome, data, outer, batches)
+				case "/sdd/changes/change/apply-evidence/" + batch.BatchID:
+					if r.URL.Query().Get("expected_head_digest") != s.Digest {
+						t.Errorf("unbound evidence request: %s", r.URL.RawQuery)
+					}
+					if tc.retry {
+						w.WriteHeader(503)
+						_, _ = w.Write([]byte(`{"outcome":"rejected","code":"unavailable"}`))
+						return
+					}
+					_, _ = fmt.Fprintf(w, `{"batch":%s}`, evidenceData)
+				default:
+					t.Errorf("unexpected endpoint: %s", r.URL.Path)
+					w.WriteHeader(404)
+				}
+			}))
+			defer server.Close()
+			source := newHiveSource(t, server.URL)
+			if tc.name == "revised tasks accepted" {
+				artifacts, _, fetchErr := source.FetchArtifacts(context.Background(), "change")
+				if fetchErr != nil || artifacts[sddstatus.ArtifactApplyProgress] != sddstatus.ArtifactBlockedManifestMismatch {
+					t.Fatalf("ordinary fetch state = %q, err = %v; want manifest mismatch", artifacts[sddstatus.ArtifactApplyProgress], fetchErr)
+				}
+			}
+			got, err := source.InspectSealablePredecessor(context.Background(), "change")
+			if tc.wantError {
+				if err == nil {
+					t.Fatalf("accepted invalid predecessor: %+v", got)
+				}
+				return
+			}
+			if err != nil || got.Digest != s.Digest {
+				t.Fatalf("snapshot = %+v, err = %v", got, err)
+			}
+		})
+	}
+}
+
 func TestGuardedSourcesRejectForeignIdentity(t *testing.T) {
 	for _, tc := range []struct{ name, project, change string }{
 		{"foreign project", "foreign", "change"},

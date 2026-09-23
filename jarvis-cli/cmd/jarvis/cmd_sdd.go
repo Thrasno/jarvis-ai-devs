@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -73,6 +74,44 @@ func init() {
 	sddContinueCmd.Flags().Bool("json", false, "emit JSON output")
 	sddContinueCmd.Flags().String("project", "", "hive project name (overrides origin repository or working-directory basename derivation)")
 	sddCmd.AddCommand(sddStatusCmd, sddContinueCmd, newBoundSddArchiveCommand())
+}
+
+// requireSupersessionConsent is only a local interaction gate. Its caller must
+// authenticate the stored predecessor and target before calling, then revalidate
+// both under the publication lock/CAS before publishing anything.
+func requireSupersessionConsent(predecessor applyprogress.Snapshot, successor string, input io.Reader, output io.Writer) error {
+	if err := applyprogress.VerifySnapshot(predecessor); err != nil {
+		return fmt.Errorf("invalid predecessor snapshot: %w", err)
+	}
+	if predecessor.Status != applyprogress.StatusPartial || !applyprogress.ValidID(successor) || successor == predecessor.Change {
+		return errors.New("supersession consent requires a partial predecessor and distinct valid successor")
+	}
+	if len(predecessor.Coverage) == 0 {
+		return nil
+	}
+	if input == nil || output == nil {
+		return errors.New("supersession consent requires interactive input and output")
+	}
+	if _, err := fmt.Fprintf(output, "Type %s to confirm supersession of %d credited tasks: ", successor, len(predecessor.Coverage)); err != nil {
+		return fmt.Errorf("write supersession prompt: %w", err)
+	}
+	reader := bufio.NewReader(input)
+	// IDs are at most 64 bytes; consume no more than 65 bytes including newline.
+	var answer []byte
+	for len(answer) <= 64 {
+		b, err := reader.ReadByte()
+		if err != nil {
+			return fmt.Errorf("read supersession consent: %w", err)
+		}
+		if b == '\n' {
+			if string(answer) != successor {
+				return errors.New("supersession consent did not match successor")
+			}
+			return nil
+		}
+		answer = append(answer, b)
+	}
+	return errors.New("supersession consent input too long")
 }
 
 type sddArchiver interface {

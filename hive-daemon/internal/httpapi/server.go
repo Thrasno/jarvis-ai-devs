@@ -85,6 +85,7 @@ type SDDService interface {
 	FetchSDDArtifacts(context.Context, string, string) ([]governance.SDDArtifact, error)
 	ListSDDChanges(context.Context, governance.SDDChangePageRequest) (governance.SDDChangePage, error)
 	GetApplyProgress(context.Context, string, string) (governance.ApplyProgressState, error)
+	GetApplyProgressSuccessorOccupancy(context.Context, string, string) (governance.ApplyProgressSuccessorOccupancy, error)
 	GetApplyProgressEvidence(context.Context, string, string, string, string) (applyprogress.Batch, error)
 	GetApplyProgressReceipt(context.Context, string, string, string) (governance.ApplyProgressReceipt, error)
 	AdvanceApplyProgress(context.Context, governance.ApplyProgressAdvanceRequest) (governance.ApplyProgressAdvanceResult, error)
@@ -217,6 +218,7 @@ func NewServerWithAll(addr string, prompts PromptStore, projects project.Store, 
 		s.mux.HandleFunc("GET /sdd/changes", s.handleSDDChanges)
 		s.mux.HandleFunc("GET /sdd/changes/{change}/artifacts", s.handleSDDArtifacts)
 		s.mux.HandleFunc("GET /sdd/changes/{change}/apply-progress", s.handleApplyProgressGet)
+		s.mux.HandleFunc("GET /sdd/changes/{change}/successor-occupancy", s.handleSuccessorOccupancyGet)
 		s.mux.HandleFunc("GET /sdd/changes/{change}/apply-evidence/{batch_id}", s.handleApplyProgressEvidenceGet)
 		s.mux.HandleFunc("GET /sdd/changes/{change}/apply-progress/receipts/{request_id}", s.handleApplyProgressReceiptGet)
 		s.mux.HandleFunc("POST /sdd/changes/{change}/apply-progress/advance", s.handleApplyProgressAdvance)
@@ -455,6 +457,22 @@ func (s *Server) handleApplyProgressGet(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"outcome": "committed", "code": "ok", "state": state})
+}
+
+func (s *Server) handleSuccessorOccupancyGet(w http.ResponseWriter, r *http.Request) {
+	if s.sdd == nil {
+		writeApplyProgressError(w, errors.New("SDD apply progress is not configured"))
+		return
+	}
+	occupancy, err := s.sdd.GetApplyProgressSuccessorOccupancy(r.Context(), r.URL.Query().Get("project"), r.PathValue("change"))
+	if err != nil {
+		writeApplyProgressError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Occupied bool   `json:"occupied"`
+		Category string `json:"category"`
+	}{occupancy.Occupied, occupancy.Category})
 }
 
 func (s *Server) handleApplyProgressEvidenceGet(w http.ResponseWriter, r *http.Request) {

@@ -316,6 +316,54 @@ func NewHiveSource(client *hiveclient.Client, project string) *HiveSource {
 	return &HiveSource{client: client, project: project}
 }
 
+// InspectSealablePredecessor authenticates a stored partial head independently of
+// the current tasks artifact, which may already have been revised for a successor.
+func (h *HiveSource) InspectSealablePredecessor(ctx context.Context, changeName string) (applyprogress.Snapshot, error) {
+	result, err := h.client.GetApplyProgress(ctx, h.project, changeName)
+	if err != nil {
+		return applyprogress.Snapshot{}, err
+	}
+	snapshot := result.State.Snapshot
+	if result.Outcome != "current" || snapshot.Schema != applyprogress.SnapshotSchema || snapshot.Status != applyprogress.StatusPartial || snapshot.Project != h.project || snapshot.Change != changeName {
+		return applyprogress.Snapshot{}, fmt.Errorf("sealable predecessor: incompatible guarded head")
+	}
+	if err := applyprogress.VerifySnapshot(snapshot); err != nil {
+		return applyprogress.Snapshot{}, err
+	}
+	if result.State.CoordinatesPresent && (result.State.Generation != snapshot.Generation || result.State.Revision != snapshot.Revision || result.State.Digest != snapshot.Digest) {
+		return applyprogress.Snapshot{}, fmt.Errorf("sealable predecessor: inconsistent head coordinates")
+	}
+	batches := result.State.Batches
+	if len(batches) == 0 && len(snapshot.Batches) != 0 {
+		batches, err = h.fetchGuardedEvidence(ctx, changeName, snapshot)
+		if err != nil {
+			return applyprogress.Snapshot{}, err
+		}
+	}
+	if len(batches) != len(snapshot.Batches) {
+		return applyprogress.Snapshot{}, fmt.Errorf("sealable predecessor: evidence count mismatch")
+	}
+	byID := make(map[string]applyprogress.Batch, len(batches))
+	for i, ref := range snapshot.Batches {
+		batch := batches[i]
+		if _, duplicate := byID[ref.BatchID]; duplicate {
+			return applyprogress.Snapshot{}, fmt.Errorf("sealable predecessor: duplicate batch reference %q", ref.BatchID)
+		}
+		if batch.BatchID != ref.BatchID || batch.SHA256 != ref.SHA256 || batch.Project != snapshot.Project || batch.Change != snapshot.Change {
+			return applyprogress.Snapshot{}, fmt.Errorf("sealable predecessor: evidence identity mismatch")
+		}
+		sealed, _, err := applyprogress.SealBatch(batch)
+		if err != nil || sealed.SHA256 != ref.SHA256 {
+			return applyprogress.Snapshot{}, fmt.Errorf("sealable predecessor: invalid evidence %q: %v", ref.BatchID, err)
+		}
+		byID[ref.BatchID] = batch
+	}
+	if err := applyprogress.ValidateEvidenceCoverage(snapshot, byID); err != nil {
+		return applyprogress.Snapshot{}, err
+	}
+	return snapshot, nil
+}
+
 func (h *HiveSource) FetchArtifacts(ctx context.Context, changeName string) (map[string]ArtifactState, map[string]string, error) {
 	rows, err := h.client.FetchSDDArtifacts(ctx, h.project, changeName)
 	if err != nil {

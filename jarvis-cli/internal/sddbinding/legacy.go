@@ -184,6 +184,96 @@ func (e *PartialAdoptionError) Error() string {
 
 func (e *PartialAdoptionError) Unwrap() error { return errors.Join(ErrPartialAdoption, e.Cause) }
 
+// ResolveExisting resolves only complete persisted bindings. It never takes a
+// resolution lock, observes progress, or repairs a missing hybrid mirror.
+func (r LegacyResolver) ResolveExisting(ctx context.Context, project, change string) (Resolution, error) {
+	if err := ctx.Err(); err != nil {
+		return Resolution{}, err
+	}
+	if r.HiveBindings == nil {
+		return Resolution{}, errors.New("Hive binding store is required")
+	}
+	project = hiveclient.CanonicalProjectKey(project)
+	change = strings.TrimSpace(change)
+	if project == "" || change == "" || strings.TrimSpace(r.OpenSpecChangeDir) == "" {
+		return Resolution{}, fmt.Errorf("%w: project, change and OpenSpec change directory are required", ErrInvalidBinding)
+	}
+	if err := validateExistingChangeCoordinate(r.OpenSpecChangeDir, change); err != nil {
+		return Resolution{}, err
+	}
+	hive, found, err := r.HiveBindings.GetSDDStoreBinding(ctx, project, change)
+	if err != nil {
+		return Resolution{}, err
+	}
+	if found {
+		if err := validateStoredHiveBinding(hive, project, change); err != nil {
+			return Resolution{}, err
+		}
+	}
+	var local *Binding
+	if r.OpenSpecBindings != nil {
+		local, err = r.OpenSpecBindings.ReadOpenSpec(r.OpenSpecChangeDir)
+	} else {
+		local, err = ReadOpenSpec(r.OpenSpecChangeDir)
+	}
+	if err != nil {
+		return Resolution{}, err
+	}
+	if local != nil && local.Mode() != sddruntime.StoreModeOpenSpec && local.Mode() != sddruntime.StoreModeHybrid {
+		return Resolution{}, fmt.Errorf("%w: OpenSpec copy has mode %q", ErrUnsupportedStoredBinding, local.Mode())
+	}
+	switch {
+	case found && local != nil:
+		if hive.Mode != hiveclient.SDDStoreModeHybrid || local.Mode() != sddruntime.StoreModeHybrid || hive.Provenance != local.Provenance() {
+			return Resolution{}, fmt.Errorf("%w: Hive and OpenSpec copies disagree", ErrBindingCopiesDiverged)
+		}
+		return persistedResolution(sddruntime.StoreModeHybrid, hive.Provenance), nil
+	case found:
+		if hive.Mode != hiveclient.SDDStoreModeHive {
+			return Resolution{}, fmt.Errorf("%w: missing OpenSpec hybrid mirror", ErrBindingCopiesDiverged)
+		}
+		return persistedResolution(sddruntime.StoreModeHive, hive.Provenance), nil
+	case local != nil:
+		if local.Mode() != sddruntime.StoreModeOpenSpec {
+			return Resolution{}, fmt.Errorf("%w: missing Hive hybrid mirror", ErrBindingCopiesDiverged)
+		}
+		return persistedResolution(sddruntime.StoreModeOpenSpec, local.Provenance()), nil
+	default:
+		return Resolution{}, fmt.Errorf("%w: no persisted binding", ErrUnsupportedStoredBinding)
+	}
+}
+
+// validateExistingChangeCoordinate rejects aliases before either persisted store is read.
+// The workspace exists even when a Hive-only change directory does not.
+func validateExistingChangeCoordinate(path, change string) error {
+	invalid := func() error {
+		return fmt.Errorf("%w: OpenSpec change directory does not match requested change", ErrInvalidBinding)
+	}
+	if change == "." || change == ".." || filepath.Base(change) != change || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return invalid()
+	}
+	workspace := filepath.Dir(filepath.Dir(filepath.Dir(path)))
+	if path != filepath.Join(workspace, "openspec", "changes", change) {
+		return invalid()
+	}
+	if _, err := os.Stat(workspace); err != nil {
+		return invalid()
+	}
+	// Walk existing components without creating missing change directories.
+	current := filepath.VolumeName(path) + string(filepath.Separator)
+	for _, component := range strings.Split(strings.TrimPrefix(path, current), string(filepath.Separator)) {
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			break
+		}
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return invalid()
+		}
+	}
+	return nil
+}
+
 // ResolveAndAdopt returns or establishes one immutable binding. It never
 // mutates protected progress and never changes an existing selection. The
 // OpenSpec directory lock serializes the read-decide-adopt transaction across

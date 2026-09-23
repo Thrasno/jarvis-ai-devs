@@ -118,6 +118,76 @@ func TestApplyProgressReceiptIdentityClientTreatsMissingReceiptAsUnused(t *testi
 	}
 }
 
+func TestGetApplyProgressSuccessorOccupancy(t *testing.T) {
+	for _, tc := range []struct {
+		name, response, category string
+		occupied                 bool
+	}{
+		{"free", `{"occupied":false,"category":""}`, "", false},
+		{"occupied memory", `{"occupied":true,"category":"memory"}`, "memory", true},
+		{"occupied head", `{"occupied":true,"category":"head"}`, "head", true},
+		{"occupied receipt", `{"occupied":true,"category":"receipt"}`, "receipt", true},
+		{"occupied binding", `{"occupied":true,"category":"binding"}`, "binding", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newSDDClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.EscapedPath() != "/sdd/changes/change%25_/successor-occupancy" || r.URL.RawQuery != "project=project+name" || r.ContentLength > 0 || r.Header.Get("Content-Type") != "" {
+					t.Errorf("unexpected request: %s %s?%s, length=%d", r.Method, r.URL.EscapedPath(), r.URL.RawQuery, r.ContentLength)
+				}
+				_, _ = w.Write([]byte(tc.response))
+			})
+			result, err := client.GetApplyProgressSuccessorOccupancy(context.Background(), "project name", "change%_")
+			if err != nil || result.Occupied != tc.occupied || result.Category != tc.category {
+				t.Fatalf("result=%#v, err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestGetApplyProgressSuccessorOccupancyRejectsInvalidAdvisory(t *testing.T) {
+	for _, tc := range []struct{ name, response string }{
+		{"empty", `{}`},
+		{"missing occupied", `{"category":""}`},
+		{"missing category", `{"occupied":false}`},
+		{"null occupied", `{"occupied":null,"category":""}`},
+		{"null category", `{"occupied":false,"category":null}`},
+		{"invalid category", `{"occupied":true,"category":"private server detail"}`},
+		{"occupied without category", `{"occupied":true,"category":""}`},
+		{"free with category", `{"occupied":false,"category":"memory"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newSDDClient(t, func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(tc.response))
+			})
+			result, err := client.GetApplyProgressSuccessorOccupancy(context.Background(), "project", "change")
+			if err == nil || result != (hiveclient.ApplyProgressSuccessorOccupancy{}) {
+				t.Fatalf("result=%#v, err=%v", result, err)
+			}
+			if strings.Contains(err.Error(), "private server detail") {
+				t.Fatalf("error leaks server detail: %v", err)
+			}
+		})
+	}
+}
+
+func TestGetApplyProgressSuccessorOccupancyErrors(t *testing.T) {
+	client := newSDDClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"coarse conflict"}`))
+	})
+	_, err := client.GetApplyProgressSuccessorOccupancy(context.Background(), "project", "change")
+	var apiErr *hiveclient.APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusConflict || apiErr.Message != "coarse conflict" {
+		t.Fatalf("error = %#v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = client.GetApplyProgressSuccessorOccupancy(ctx, "project", "change")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("transport error = %v", err)
+	}
+}
+
 func TestPublishApplyProgressSuccessor(t *testing.T) {
 	for _, tt := range []struct {
 		name      string

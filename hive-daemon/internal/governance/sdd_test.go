@@ -12,6 +12,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestServiceSuccessorOccupancy(t *testing.T) {
+	store, service := newSDDService(t)
+	saveSDDServiceMemory(t, store, "project", "sdd/existing/explore", "private")
+	for _, tt := range []struct {
+		name, project, change string
+		occupied              bool
+		category              string
+		want                  error
+	}{
+		{name: "free", project: "project", change: "free"},
+		{name: "occupied", project: "project", change: "existing", occupied: true, category: "memory"},
+		{name: "missing project", project: " ", change: "free", want: governance.ErrProjectRequired},
+		{name: "unknown project", project: "unknown", change: "free", want: governance.ErrProjectNotFound},
+		{name: "invalid change", project: "project", change: "a/b", want: governance.ErrSDDChangeInvalid},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := service.GetApplyProgressSuccessorOccupancy(context.Background(), tt.project, tt.change)
+			if tt.want != nil {
+				require.ErrorIs(t, err, tt.want)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.occupied, got.Occupied)
+			assert.Equal(t, tt.category, got.Category)
+		})
+	}
+}
+
 func TestServicePublishApplyProgressSuccessorValidation(t *testing.T) {
 	_, service := newSDDService(t)
 	for _, tt := range []struct {

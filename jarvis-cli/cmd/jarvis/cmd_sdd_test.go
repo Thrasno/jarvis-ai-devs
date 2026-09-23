@@ -21,6 +21,46 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
 )
 
+func TestSupersessionConsent(t *testing.T) {
+	base := applyprogress.Snapshot{Schema: applyprogress.SnapshotSchema, Project: "project", Change: "old", Generation: 1, Revision: 1, TaskManifestSHA256: strings.Repeat("a", 64), Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}}
+	seal := func(snapshot applyprogress.Snapshot) applyprogress.Snapshot {
+		t.Helper()
+		sealed, _, err := applyprogress.SealSnapshot(snapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sealed
+	}
+	zero := seal(base)
+	credited := base
+	credited.Coverage = []applyprogress.Coverage{{TaskID: "1.1", BatchID: "apb-" + strings.Repeat("a", 32), EntryID: "entry"}}
+	credited = seal(credited)
+	for _, tc := range []struct {
+		name                  string
+		snapshot              applyprogress.Snapshot
+		successor, answer     string
+		wantPrompt, wantError bool
+	}{
+		{"zero", zero, "new", "", false, false},
+		{"accepted", credited, "new", "new\n", true, false},
+		{"wrong", credited, "new", "other\n", true, true},
+		{"eof", credited, "new", "new", true, true},
+		{"oversized", credited, "new", strings.Repeat("x", 66) + "\n", true, true},
+		{"same", zero, "old", "", false, true},
+		{"invalid successor", zero, "bad name", "", false, true},
+		{"complete", seal(func() applyprogress.Snapshot { s := base; s.Status = applyprogress.StatusComplete; return s }()), "new", "", false, true},
+		{"tampered", func() applyprogress.Snapshot { s := zero; s.Digest = strings.Repeat("b", 64); return s }(), "new", "", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var output bytes.Buffer
+			err := requireSupersessionConsent(tc.snapshot, tc.successor, strings.NewReader(tc.answer), &output)
+			if (err != nil) != tc.wantError || (output.Len() > 0) != tc.wantPrompt {
+				t.Fatalf("err=%v prompt=%q", err, output.String())
+			}
+		})
+	}
+}
+
 func TestBuildStatusRoutesOnlyAuthenticatedCompletedSuccessor(t *testing.T) {
 	root := t.TempDir()
 	old := filepath.Join(root, "openspec", "changes", "old")
@@ -896,6 +936,74 @@ func TestSddArchiveCommandMovesValidatedTopology(t *testing.T) {
 	}
 }
 
+func TestSddArchiveCommandRefusesAuthenticatedSupersededSource(t *testing.T) {
+	workspace := canonicalSddTestPath(t, t.TempDir())
+	root := filepath.Join(workspace, "openspec", "changes", "old")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("- [ ] 1.1 original\n")
+	if err := os.WriteFile(filepath.Join(root, "tasks.md"), original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, manifest, err := applyprogress.TaskManifest([]applyprogress.Task{{ID: "1.1", Text: "original"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, _, err := applyprogress.SealSnapshot(applyprogress.Snapshot{Schema: applyprogress.SnapshotSchema, Project: "jarvis-dev", Change: "old", Generation: 1, Revision: 1, TaskManifestSHA256: manifest, Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := sddprogress.OpenSpec{Root: root}
+	if _, err := store.Advance(sddprogress.AdvanceRequest{RequestID: "initial", Snapshot: initial}); err != nil {
+		t.Fatal(err)
+	}
+	revised := []byte("- [ ] 1.1 revised\n")
+	if err := os.WriteFile(filepath.Join(root, "tasks.md"), revised, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, successorManifest, err := applyprogress.TaskManifest([]applyprogress.Task{{ID: "1.1", Text: "revised"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seal := initial
+	seal.Schema, seal.Status, seal.Revision, seal.PreviousDigest = applyprogress.SupersessionSnapshotSchema, applyprogress.StatusSuperseded, 2, initial.Digest
+	seal.SealIntent = &applyprogress.SealIntent{SuccessorProject: "jarvis-dev", SuccessorChange: "new", SuccessorManifestSHA256: successorManifest, Actor: "agent", Reason: "replanned", Timestamp: "2026-01-01T00:00:00Z", OperationID: "seal"}
+	seal, _, err = applyprogress.SealSnapshot(seal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(sddprogress.AdvanceRequest{RequestID: "seal", ExpectedGeneration: 1, ExpectedRevision: 1, ExpectedDigest: initial.Digest, Snapshot: seal}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PublishSuccessorGenesis(sddprogress.OpenSpec{Root: filepath.Join(filepath.Dir(root), "new")}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(root, "apply-progress.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(workspace, "openspec", "archive", "old")
+	command := newSddArchiveCommand(func(root string) sddArchiver { return sddprogress.OpenSpec{Root: root} }, archiveReadyStatus)
+	command.SetArgs([]string{"--root", root, "--destination", destination})
+	if err := command.Execute(); err == nil {
+		t.Fatal("archive accepted authenticated superseded source despite apparently ready status")
+	}
+	after, err := os.ReadFile(filepath.Join(root, "apply-progress.md"))
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("source head changed: %v", err)
+	}
+	if head, err := store.InspectPublication(); err != nil || head == nil || head.Digest != seal.Digest {
+		t.Fatalf("source publication changed: head=%+v err=%v", head, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".apply-progress-receipts", "seal.json")); err != nil {
+		t.Fatalf("source seal receipt missing: %v", err)
+	}
+	if _, err := os.Stat(destination); !os.IsNotExist(err) {
+		t.Fatalf("archive destination exists: %v", err)
+	}
+}
+
 func TestSddArchiveRevalidatesLifecycleReadinessUnderLock(t *testing.T) {
 	t.Setenv("JARVIS_SDD_STORE_MODE", "openspec")
 	workspace := canonicalSddTestPath(t, t.TempDir())
@@ -962,6 +1070,9 @@ func TestSddArchiveRevalidatesLifecycleReadinessUnderLock(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "apply-progress.md")); err != nil {
 		t.Fatalf("archive moved lifecycle after failed revalidation: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "openspec", "archive", "issue-653")); !os.IsNotExist(err) {
+		t.Fatalf("archive destination exists after failed revalidation: %v", err)
 	}
 }
 

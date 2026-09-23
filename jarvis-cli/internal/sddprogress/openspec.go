@@ -59,6 +59,54 @@ func (s OpenSpec) Current() (*applyprogress.Snapshot, error) {
 	return s.InspectPublication()
 }
 
+// InspectSealablePredecessor inspects a stored PARTIAL head without binding its
+// historical task manifest to the currently revised tasks. It never recovers
+// publication state or creates an authority target.
+func (s OpenSpec) InspectSealablePredecessor(project, change string) (*applyprogress.Snapshot, error) {
+	if err := s.validateRoot(); err != nil {
+		return nil, err
+	}
+	if err := s.validateStaging(nil); err != nil {
+		return nil, err
+	}
+	snapshot, raw, err := s.current()
+	if err != nil {
+		if !isV2(raw) {
+			if receiptErr := s.validateReceiptLineage(nil, false); receiptErr != nil {
+				return nil, receiptErr
+			}
+			return nil, ErrLegacyMigration
+		}
+		return nil, err
+	}
+	if snapshot == nil {
+		return nil, ErrConflict
+	}
+	if err := s.validateReceiptLineage(snapshot, true); err != nil {
+		return nil, err
+	}
+	if snapshot.Status != applyprogress.StatusPartial || (project != "" && snapshot.Project != project) || (change != "" && snapshot.Change != change) {
+		return nil, ErrConflict
+	}
+	receipts, err := s.committedReceiptSnapshots()
+	if err != nil {
+		return nil, err
+	}
+	found := false
+	for _, receipt := range receipts[snapshot.Digest] {
+		if sameSnapshot(receipt.Snapshot, *snapshot) {
+			found = true
+		}
+	}
+	if !found {
+		return nil, ErrConflict
+	}
+	if _, err := s.referencedBatches(*snapshot); err != nil {
+		return nil, err
+	}
+	return snapshot, nil
+}
+
 // InspectPublication resolves the authoritative publication topology without
 // acquiring a lock, cleaning staging residue, or mutating the filesystem. Status
 // readers use it so an interrupted receipt lineage remains observable.
@@ -95,6 +143,34 @@ func (s OpenSpec) InspectPublication() (*applyprogress.Snapshot, error) {
 		return nil, err
 	}
 	return snapshot, nil
+}
+
+// InspectSuccessorVacancy is an advisory, read-only preflight. The mutator must
+// recheck the target under its lock before creating a successor.
+func (s OpenSpec) InspectSuccessorVacancy(target OpenSpec, successor string) error {
+	if !filepath.IsAbs(s.Root) || !filepath.IsAbs(target.Root) ||
+		filepath.Clean(s.Root) != s.Root || filepath.Clean(target.Root) != target.Root ||
+		!applyprogress.ValidID(successor) || filepath.Base(successor) != successor ||
+		filepath.Base(s.Root) == successor ||
+		filepath.Base(filepath.Dir(s.Root)) != "changes" ||
+		filepath.Base(filepath.Dir(filepath.Dir(s.Root))) != "openspec" ||
+		target.Root != filepath.Join(filepath.Dir(s.Root), successor) {
+		return ErrInvalidChangeRoot
+	}
+	if err := validateRegularDirectory(s.Root); err != nil {
+		return err
+	}
+	if err := validateExistingPathComponents(filepath.Dir(target.Root)); err != nil {
+		return err
+	}
+	_, err := os.Lstat(target.Root)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return ErrConflict
 }
 
 // reserveSuccessor prepares a sibling change; genesis publication is a separate operation.

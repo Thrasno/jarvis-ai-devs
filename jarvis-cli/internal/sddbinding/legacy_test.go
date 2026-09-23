@@ -17,6 +17,74 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
 )
 
+func TestResolveExistingReadsOnlyPersistedCopies(t *testing.T) {
+	unavailable := errors.New("store unavailable")
+	for _, tt := range []struct {
+		name    string
+		hive    *hiveclient.SDDStoreBinding
+		local   *Binding
+		getErr  error
+		readErr error
+		want    error
+		mode    sddruntime.StoreMode
+	}{
+		{name: "absent", want: ErrUnsupportedStoredBinding},
+		{name: "Hive", hive: hiveBinding("hive", "selected"), mode: sddruntime.StoreModeHive},
+		{name: "OpenSpec", local: bindingPointer(t, sddruntime.StoreModeOpenSpec, "selected"), mode: sddruntime.StoreModeOpenSpec},
+		{name: "hybrid", hive: hiveBinding("hybrid", "selected"), local: bindingPointer(t, sddruntime.StoreModeHybrid, "selected"), mode: sddruntime.StoreModeHybrid},
+		{name: "missing local hybrid", hive: hiveBinding("hybrid", "selected"), want: ErrBindingCopiesDiverged},
+		{name: "missing Hive hybrid", local: bindingPointer(t, sddruntime.StoreModeHybrid, "selected"), want: ErrBindingCopiesDiverged},
+		{name: "diverged", hive: hiveBinding("hybrid", "one"), local: bindingPointer(t, sddruntime.StoreModeHybrid, "two"), want: ErrBindingCopiesDiverged},
+		{name: "malformed Hive", hive: hiveBinding("hive", " "), want: ErrUnsupportedStoredBinding},
+		{name: "invalid local mode", local: bindingPointer(t, sddruntime.StoreModeHive, "selected"), want: ErrUnsupportedStoredBinding},
+		{name: "Hive unavailable", getErr: unavailable, want: unavailable},
+		{name: "OpenSpec unavailable", readErr: unavailable, want: unavailable},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			hive := &fakeHiveBindingStore{binding: tt.hive, found: tt.hive != nil, getErr: tt.getErr}
+			local := &fakeOpenSpecBindingStore{binding: tt.local, readErr: tt.readErr}
+			hs, ls := &fakeLegacySource{}, &fakeLegacySource{}
+			r := LegacyResolver{HiveBindings: hive, OpenSpecBindings: local, HiveSource: hs, OpenSpecSource: ls, OpenSpecChangeDir: filepath.Join(t.TempDir(), "openspec", "changes", "change")}
+			got, err := r.ResolveExisting(context.Background(), "project", "change")
+			if tt.want != nil {
+				if !errors.Is(err, tt.want) {
+					t.Fatalf("error = %v, want %v", err, tt.want)
+				}
+			} else if err != nil || got.Mode != tt.mode || got.Provenance != "selected" || !got.Persisted {
+				t.Fatalf("resolution = %#v, error = %v", got, err)
+			}
+			if len(hive.adopted) != 0 || len(local.adopted) != 0 || hs.calls != 0 || ls.calls != 0 {
+				t.Fatalf("read-only resolver mutated or inspected progress")
+			}
+		})
+	}
+}
+
+func TestResolveExistingRejectsUnboundPathsBeforeReads(t *testing.T) {
+	root := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	for _, tt := range []struct{ name, path string }{
+		{"wrong change", filepath.Join(root, "openspec", "changes", "other")},
+		{"wrong location", filepath.Join(root, "other", "changes", "change")},
+		{"relative", filepath.Join("openspec", "changes", "change")},
+		{"unclean", filepath.Join(root, "openspec", "changes") + "/../changes/change"},
+		{"symlink ancestor", filepath.Join(alias, "openspec", "changes", "change")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			hive := &fakeHiveBindingStore{}
+			local := &fakeOpenSpecBindingStore{}
+			r := LegacyResolver{HiveBindings: hive, OpenSpecBindings: local, OpenSpecChangeDir: tt.path}
+			_, err := r.ResolveExisting(context.Background(), "project", "change")
+			if !errors.Is(err, ErrInvalidBinding) || hive.gets != 0 || local.reads != 0 {
+				t.Fatalf("error = %v; Hive reads = %d; local reads = %d", err, hive.gets, local.reads)
+			}
+		})
+	}
+}
+
 func TestLegacyBindingCanceledContextAvoidsReadsAndAdoptions(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
