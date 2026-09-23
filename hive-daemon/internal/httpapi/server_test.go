@@ -22,7 +22,102 @@ import (
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/httpapi"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/models"
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/project"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
+	"github.com/stretchr/testify/require"
 )
+
+func TestApplyProgressHTTPSupersessionSealAfterAuthoritativeTasksChange(t *testing.T) {
+	store, server := newSDDHTTPServer(t)
+	saveSDDHTTPMemory(t, store, "project", "sdd/change/explore", "explore")
+	oldTasks := "- [x] 1.1 implement original task\n- [ ] 1.2 verify original task\n"
+	saveSDDHTTPMemory(t, store, "project", "sdd/change/tasks", oldTasks)
+	var fixture struct {
+		State struct {
+			Snapshot applyprogress.Snapshot `json:"snapshot"`
+		} `json:"state"`
+	}
+	require.NoError(t, json.Unmarshal(sharedApplyProgressGetFixture(t), &fixture))
+	parsedOld, err := applyprogress.ParseTasksMarkdown(oldTasks)
+	require.NoError(t, err)
+	_, oldManifest, err := applyprogress.TaskManifest(parsedOld.Tasks)
+	require.NoError(t, err)
+	fixture.State.Snapshot.TaskManifestSHA256 = oldManifest
+	fixture.State.Snapshot, _, err = applyprogress.SealSnapshot(fixture.State.Snapshot)
+	require.NoError(t, err)
+	originalBatches := sharedApplyProgressBatches(t)
+	post := func(request map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		body, err := json.Marshal(request)
+		require.NoError(t, err)
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/sdd/changes/change/apply-progress/advance", bytes.NewReader(body)))
+		return response
+	}
+	base := post(map[string]any{"project": "project", "request_id": "seal-base-http", "snapshot": fixture.State.Snapshot, "batches": originalBatches})
+	require.Equal(t, http.StatusOK, base.Code, base.Body.String())
+	var baseResult governance.ApplyProgressAdvanceResult
+	require.NoError(t, json.Unmarshal(base.Body.Bytes(), &baseResult))
+
+	newTasks := "- [ ] 1.1 revised task\n- [ ] 1.2 verify revised task\n"
+	saveSDDHTTPMemory(t, store, "project", "sdd/change/tasks", newTasks)
+	parsedNew, err := applyprogress.ParseTasksMarkdown(newTasks)
+	require.NoError(t, err)
+	_, newManifest, err := applyprogress.TaskManifest(parsedNew.Tasks)
+	require.NoError(t, err)
+	require.NotEqual(t, oldManifest, newManifest)
+	seal := baseResult.State.Snapshot
+	seal.Schema = applyprogress.SupersessionSnapshotSchema
+	seal.Status = applyprogress.StatusSuperseded
+	seal.Revision++
+	seal.PreviousDigest = baseResult.State.Digest
+	seal.StreamSHA256, seal.NextEntryIndex, seal.NextEntryID = "", 0, ""
+	seal.SealIntent = &applyprogress.SealIntent{SuccessorProject: "project", SuccessorChange: "next", SuccessorManifestSHA256: newManifest, Actor: "agent", Reason: "replanned", Timestamp: "2026-01-01T00:00:00Z", OperationID: "seal-http"}
+	seal, _, err = applyprogress.SealSnapshot(seal)
+	require.NoError(t, err)
+	require.True(t, applyprogress.IsSupersessionSeal(baseResult.State.Snapshot, seal))
+	request := map[string]any{"project": "project", "request_id": "seal-http", "expected_generation": baseResult.State.Generation, "expected_revision": baseResult.State.Revision, "expected_digest": baseResult.State.Digest, "snapshot": seal, "batches": []applyprogress.Batch{}}
+	committed := post(request)
+	require.Equal(t, http.StatusOK, committed.Code, committed.Body.String())
+	var committedResult governance.ApplyProgressAdvanceResult
+	require.NoError(t, json.Unmarshal(committed.Body.Bytes(), &committedResult))
+	require.Equal(t, "committed", committedResult.Outcome)
+	require.Equal(t, seal.Digest, committedResult.State.Digest)
+	require.Equal(t, oldManifest, committedResult.State.Snapshot.TaskManifestSHA256)
+	require.Equal(t, baseResult.State.Snapshot.Batches, committedResult.State.Snapshot.Batches)
+	require.Equal(t, baseResult.State.Snapshot.Coverage, committedResult.State.Snapshot.Coverage)
+	require.Equal(t, baseResult.State.Batches, committedResult.State.Batches)
+
+	replayed := post(request)
+	require.Equal(t, http.StatusOK, replayed.Code, replayed.Body.String())
+	require.JSONEq(t, committed.Body.String(), replayed.Body.String())
+
+	changed := seal
+	changed.SealIntent = &applyprogress.SealIntent{SuccessorProject: "project", SuccessorChange: "different", SuccessorManifestSHA256: newManifest, Actor: "agent", Reason: "replanned", Timestamp: "2026-01-01T00:00:00Z", OperationID: "seal-http"}
+	request["snapshot"] = changed
+	conflictingReceipt := post(request)
+	require.Equal(t, http.StatusConflict, conflictingReceipt.Code, conflictingReceipt.Body.String())
+	require.JSONEq(t, `{"outcome":"invalid","code":"request_id_conflict","recovery":"use a new request ID for changed content"}`, conflictingReceipt.Body.String())
+	request["snapshot"] = seal
+	request["request_id"] = "seal-stale-http"
+	stale := post(request)
+	require.Equal(t, http.StatusConflict, stale.Code, stale.Body.String())
+	var staleResult governance.ApplyProgressAdvanceResult
+	require.NoError(t, json.Unmarshal(stale.Body.Bytes(), &staleResult))
+	require.Equal(t, "conflict", staleResult.Outcome)
+	require.Equal(t, committedResult.State.Digest, staleResult.State.Digest)
+
+	current := httptest.NewRecorder()
+	server.ServeHTTP(current, httptest.NewRequest(http.MethodGet, "/sdd/changes/change/apply-progress?project=project", nil))
+	require.Equal(t, http.StatusOK, current.Code, current.Body.String())
+	var head struct {
+		State governance.ApplyProgressState `json:"state"`
+	}
+	require.NoError(t, json.Unmarshal(current.Body.Bytes(), &head))
+	require.Equal(t, committedResult.State.Digest, head.State.Digest)
+	require.Equal(t, oldManifest, head.State.Snapshot.TaskManifestSHA256)
+	require.Equal(t, baseResult.State.Snapshot.Batches, head.State.Snapshot.Batches)
+	require.Equal(t, baseResult.State.Batches, head.State.Batches)
+}
 
 type mockPromptStore struct {
 	savePromptFn            func(ctx context.Context, project, content string) (*models.Prompt, error)

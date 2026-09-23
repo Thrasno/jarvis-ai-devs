@@ -23,6 +23,79 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestAdvanceApplyProgressSupersessionAfterHiveTasksChange(t *testing.T) {
+	store := openTestDB(t)
+	first := applyProgressRequest(t, "seal-first", 0, 0, "", "apb-91919191919191919191919191919191")
+	base, err := store.AdvanceApplyProgress(first)
+	require.NoError(t, err)
+	topic := "sdd/change/tasks"
+	insertSDDMemory(t, store, "project", &topic, "tasks", "- [ ] 1.1 new task\n", "2026-09-10 10:00:00", false)
+	seal := base.State.Snapshot
+	seal.Schema = applyprogress.SupersessionSnapshotSchema
+	seal.Status = applyprogress.StatusSuperseded
+	seal.Revision++
+	seal.PreviousDigest = base.State.Digest
+	seal.StreamSHA256, seal.NextEntryIndex, seal.NextEntryID = "", 0, ""
+	seal.SealIntent = &applyprogress.SealIntent{SuccessorProject: "project", SuccessorChange: "next", SuccessorManifestSHA256: strings.Repeat("c", 64), Actor: "agent", Reason: "replanned", Timestamp: "2026-01-01T00:00:00Z", OperationID: "seal-request"}
+	seal, _, err = applyprogress.SealSnapshot(seal)
+	require.NoError(t, err)
+	require.True(t, applyprogress.IsSupersessionSeal(base.State.Snapshot, seal))
+	request := ApplyProgressAdvance{Project: "project", Change: "change", RequestID: "seal-request", ExpectedGeneration: base.State.Generation, ExpectedRevision: base.State.Revision, ExpectedDigest: base.State.Digest, Snapshot: seal, Batches: []applyprogress.Batch{}}
+	committed, err := store.AdvanceApplyProgress(request)
+	require.NoError(t, err)
+	require.Equal(t, "committed", committed.Outcome)
+	replayed, err := store.AdvanceApplyProgress(request)
+	require.NoError(t, err)
+	require.Equal(t, committed, replayed)
+	current, err := store.GetApplyProgress("project", "change")
+	require.NoError(t, err)
+	require.Equal(t, seal.Digest, current.Digest)
+	changed := request
+	changed.Snapshot.SealIntent = &applyprogress.SealIntent{SuccessorProject: "project", SuccessorChange: "different", SuccessorManifestSHA256: strings.Repeat("c", 64), Actor: "agent", Reason: "replanned", Timestamp: "2026-01-01T00:00:00Z", OperationID: "seal-request"}
+	_, err = store.AdvanceApplyProgress(changed)
+	require.ErrorIs(t, err, ErrApplyProgressRequestConflict)
+	stale := request
+	stale.RequestID = "stale-seal"
+	conflict, err := store.AdvanceApplyProgress(stale)
+	require.NoError(t, err)
+	require.Equal(t, "conflict", conflict.Outcome)
+	require.Equal(t, committed.State, conflict.State)
+}
+
+func TestAdvanceApplyProgressSealRejectsCorruptOldEvidence(t *testing.T) {
+	store := openTestDB(t)
+	first := applyProgressRequest(t, "corrupt-seal-first", 0, 0, "", "apb-92929292929292929292929292929292")
+	base, err := store.AdvanceApplyProgress(first)
+	require.NoError(t, err)
+	allowApplyProgressCorruption(t, store)
+	_, err = store.RawDB().Exec(`UPDATE memories SET content = ? WHERE project = ? AND topic_key = ?`, `{"schema":`, "project", "sdd/change/apply-evidence/"+first.Batches[0].BatchID)
+	require.NoError(t, err)
+	candidate := base.State.Snapshot
+	candidate.Schema, candidate.Status = applyprogress.SupersessionSnapshotSchema, applyprogress.StatusSuperseded
+	candidate.Revision++
+	candidate.PreviousDigest = base.State.Digest
+	candidate.SealIntent = &applyprogress.SealIntent{SuccessorProject: "project", SuccessorChange: "next", SuccessorManifestSHA256: strings.Repeat("c", 64), Actor: "agent", Reason: "replanned", Timestamp: "2026-01-01T00:00:00Z", OperationID: "corrupt-seal"}
+	candidate, _, err = applyprogress.SealSnapshot(candidate)
+	require.NoError(t, err)
+	_, err = store.AdvanceApplyProgress(ApplyProgressAdvance{Project: "project", Change: "change", RequestID: "corrupt-seal", ExpectedGeneration: base.State.Generation, ExpectedRevision: base.State.Revision, ExpectedDigest: base.State.Digest, Snapshot: candidate, Batches: []applyprogress.Batch{}})
+	require.ErrorIs(t, err, ErrApplyProgressInvalid)
+}
+
+func TestAdvanceApplyProgressOrdinaryAdvanceChecksChangedTasks(t *testing.T) {
+	store := openTestDB(t)
+	first := applyProgressRequest(t, "ordinary-first", 0, 0, "", "apb-93939393939393939393939393939393")
+	base, err := store.AdvanceApplyProgress(first)
+	require.NoError(t, err)
+	topic := "sdd/change/tasks"
+	insertSDDMemory(t, store, "project", &topic, "tasks", "- [ ] 1.1 new task\n", "2026-09-10 10:00:00", false)
+	ordinary := applyProgressContinuationUpgrade(t, base.State, "ordinary-after-edit", "next-entry")
+	_, err = store.AdvanceApplyProgress(ordinary)
+	require.ErrorIs(t, err, ErrApplyProgressInvalid)
+	current, err := store.GetApplyProgress("project", "change")
+	require.NoError(t, err)
+	require.Equal(t, base.State.Digest, current.Digest)
+}
+
 func TestAdvanceApplyProgressRefusesOverCapacitySuccessorBeforeWriting(t *testing.T) {
 	store := openTestDB(t)
 	request := applyProgressRequest(t, "snapshot-capacity", 0, 0, "", "apb-00000000000000000000000000000001")
