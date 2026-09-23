@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +17,110 @@ import (
 	"testing"
 	"time"
 )
+
+func TestOpenCodeHiveTemplate_ReportsEarlyChildExit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestOpenCodeHiveTemplate_ChildExitFixture$")
+	cmd.Env = append(os.Environ(), "HIVE_TEST_CHILD_EXIT=1")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	finished := make(chan error, 1)
+	go func() { finished <- cmd.Run() }()
+	_, err := awaitHiveTemplateRequest(make(chan hiveTemplateRequest), finished, cancel, &stderr, "initial session start", hiveTemplateRequestWait)
+	if err == nil || !strings.Contains(err.Error(), "exit status 7") || !strings.Contains(err.Error(), "fixture failed before request") {
+		t.Fatalf("early exit diagnostic = %v, want exit status and stderr", err)
+	}
+}
+
+func TestOpenCodeHiveTemplate_AcceptsCompletedChild(t *testing.T) {
+	finished := make(chan error, 1)
+	finished <- nil
+	var stderr bytes.Buffer
+	_, err := awaitHiveTemplateRequest(nil, finished, func() {}, &stderr, "child completion", time.Second)
+	if err != nil {
+		t.Fatalf("completed child = %v, want success", err)
+	}
+}
+
+func TestOpenCodeHiveTemplate_BoundsFinalChildCompletion(t *testing.T) {
+	finished := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var stderr bytes.Buffer
+	go func() {
+		<-ctx.Done()
+		finished <- fmt.Errorf("canceled pending child")
+	}()
+	_, err := awaitHiveTemplateRequest(nil, finished, cancel, &stderr, "child completion", 10*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "timed out waiting for child completion") {
+		t.Fatalf("final completion = %v, want bounded cancellation", err)
+	}
+}
+
+func TestOpenCodeHiveTemplate_TimeoutBeforeChildStarts(t *testing.T) {
+	finished := make(chan error, 1)
+	var stderr bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, err := awaitHiveTemplateRequest(make(chan hiveTemplateRequest), finished, cancel, &stderr, "startup request", 0)
+	if ctx.Err() != context.Canceled {
+		t.Fatalf("startup context = %v, want cancellation", ctx.Err())
+	}
+	if err == nil || !strings.Contains(err.Error(), "startup request") {
+		t.Fatalf("startup timeout diagnostic = %v, want bounded error", err)
+	}
+}
+
+func TestOpenCodeHiveTemplate_TerminatesChildOnMissingRequest(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestOpenCodeHiveTemplate_ChildExitFixture$")
+	cmd.Env = append(os.Environ(), "HIVE_TEST_CHILD_WAIT=1")
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	cmd.Stdout = writer
+	ready := make(chan error, 1)
+	go func() {
+		var marker [1]byte
+		_, err := io.ReadFull(reader, marker[:])
+		ready <- err
+	}()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	finished := make(chan error, 1)
+	go func() { finished <- cmd.Run() }()
+	select {
+	case err := <-ready:
+		if err != nil {
+			t.Fatalf("fixture startup: %v", err)
+		}
+	case <-time.After(hiveTemplateRequestWait):
+		cancel()
+		t.Fatal("timed out waiting for fixture startup")
+	}
+	_, err = awaitHiveTemplateRequest(make(chan hiveTemplateRequest), finished, cancel, &stderr, "missing request", 200*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "timed out waiting for missing request") || !strings.Contains(err.Error(), "child terminated") {
+		t.Fatalf("missing request diagnostic = %v, want bounded timeout and child termination", err)
+	}
+}
+
+func TestOpenCodeHiveTemplate_ChildExitFixture(t *testing.T) {
+	if os.Getenv("HIVE_TEST_CHILD_WAIT") == "1" {
+		_, _ = os.Stdout.WriteString("R")
+		time.Sleep(5 * time.Second)
+		return
+	}
+	if os.Getenv("HIVE_TEST_CHILD_EXIT") != "1" {
+		return
+	}
+	_, _ = os.Stderr.WriteString("fixture failed before request\n")
+	os.Exit(7)
+}
 
 func TestOpenCodeHiveTemplate_DeclaresBoundedLifecycleContract(t *testing.T) {
 	source := readOpenCodeHiveTemplate(t)
@@ -147,17 +254,19 @@ if (unhandled.length !== 0) throw new Error("lifecycle callback produced an unha
 		t.Fatalf("write Node runner: %v", err)
 	}
 
-	cmd := exec.Command("node", "--experimental-strip-types", runner, filepath.Join("..", "..", "embed", "hooks", "opencode", "hive.ts"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "node", "--experimental-strip-types", runner, filepath.Join("..", "..", "embed", "hooks", "opencode", "hive.ts"))
 	cmd.Env = append(os.Environ(), "HIVE_HTTP_PORT="+port, "HIVE_OPENCODE_SESSION_ID=", "OPENCODE_SESSION_ID=", "SESSION_ID=", "HIVE_PROJECT=", "JARVIS_PROJECT=", "HIVE_PROJECT_DIRECTORY=", "JARVIS_WORKSPACE_DIRECTORY=", "PWD=")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	finished := make(chan error, 1)
 	go func() { finished <- cmd.Run() }()
 
 	var primaryStart, distinctStart, environmentStart hiveTemplateRequest
 	var primaryStartSeen, distinctStartSeen, environmentStartSeen bool
 	for range 3 {
-		request := waitHiveTemplateRequest(t, startRequests, "initial session start")
+		request := waitHiveTemplateChildRequest(t, startRequests, finished, cancel, &stderr, "initial session start")
 		switch hiveTemplateStartEvidence(t, request) {
 		case "session-42/jarvis-dev":
 			if primaryStartSeen {
@@ -181,18 +290,18 @@ if (unhandled.length !== 0) throw new Error("lifecycle callback produced an unha
 	if !primaryStartSeen || !distinctStartSeen || !environmentStartSeen {
 		t.Fatalf("initial session starts missing evidence: primary=%t distinct=%t environment=%t", primaryStartSeen, distinctStartSeen, environmentStartSeen)
 	}
-	prompt := waitHiveTemplateRequest(t, promptRequests, "prompt while the primary start request is held")
-	fallbackPrompt := waitHiveTemplateRequest(t, promptRequests, "prompt PID fallback")
-	numericPrompt := waitHiveTemplateRequest(t, promptRequests, "numeric text prompt")
+	prompt := waitHiveTemplateChildRequest(t, promptRequests, finished, cancel, &stderr, "prompt while the primary start request is held")
+	fallbackPrompt := waitHiveTemplateChildRequest(t, promptRequests, finished, cancel, &stderr, "prompt PID fallback")
+	numericPrompt := waitHiveTemplateChildRequest(t, promptRequests, finished, cancel, &stderr, "numeric text prompt")
 	assertNoHiveTemplateRequest(t, promptRequests, 200*time.Millisecond, "a malformed non-array prompt request")
 	assertNoHiveTemplateRequest(t, startRequests, 200*time.Millisecond, "an immediate duplicate or no-evidence session start")
 	primaryCanceled := waitHiveTemplateTime(t, primaryStartCanceled, "primary start timeout cancellation")
-	secondStart := waitHiveTemplateRequest(t, startRequests, "retry after primary start timeout")
+	secondStart := waitHiveTemplateChildRequest(t, startRequests, finished, cancel, &stderr, "retry after primary start timeout")
 	if secondStart.observedAt.Before(primaryCanceled) {
 		t.Fatalf("retry start observed at %s before primary timeout cleanup at %s", secondStart.observedAt, primaryCanceled)
 	}
-	if err := <-finished; err != nil {
-		t.Fatalf("execute OpenCode Hive template: %v", err)
+	if _, err := awaitHiveTemplateRequest(nil, finished, cancel, &stderr, "OpenCode Hive template completion", hiveTemplateRequestWait); err != nil {
+		t.Fatal(err)
 	}
 
 	if starts.Load() != 4 {
@@ -292,20 +401,24 @@ await new Promise((resolve) => setTimeout(resolve, 100));
 		t.Fatalf("write Node deletion runner: %v", err)
 	}
 
-	cmd := exec.Command("node", "--experimental-strip-types", runner, filepath.Join("..", "..", "embed", "hooks", "opencode", "hive.ts"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "node", "--experimental-strip-types", runner, filepath.Join("..", "..", "embed", "hooks", "opencode", "hive.ts"))
 	cmd.Env = append(os.Environ(), "HIVE_HTTP_PORT="+port, "HIVE_OPENCODE_SESSION_ID=", "OPENCODE_SESSION_ID=", "SESSION_ID=")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	finished := make(chan error, 1)
 	go func() { finished <- cmd.Run() }()
 
-	_ = waitHiveTemplateRequest(t, createdRequests, "pending session creation")
-	firstEnd := waitHiveTemplateRequest(t, endRequests, "first deleted-session end")
+	_ = waitHiveTemplateChildRequest(t, createdRequests, finished, cancel, &stderr, "pending session creation")
+	firstEnd := waitHiveTemplateChildRequest(t, endRequests, finished, cancel, &stderr, "first deleted-session end")
 	firstCanceled := waitHiveTemplateTime(t, firstEndCanceled, "first end timeout cancellation")
-	secondEnd := waitHiveTemplateRequest(t, endRequests, "repeat deleted-session end")
+	secondEnd := waitHiveTemplateChildRequest(t, endRequests, finished, cancel, &stderr, "repeat deleted-session end")
 	if secondEnd.observedAt.Before(firstCanceled) {
 		t.Fatalf("repeat end observed at %s before first timeout cleanup at %s", secondEnd.observedAt, firstCanceled)
 	}
-	if err := <-finished; err != nil {
-		t.Fatalf("execute OpenCode Hive deletion template: %v", err)
+	if _, err := awaitHiveTemplateRequest(nil, finished, cancel, &stderr, "OpenCode Hive deletion template completion", hiveTemplateRequestWait); err != nil {
+		t.Fatal(err)
 	}
 	assertNoHiveTemplateRequest(t, endRequests, 200*time.Millisecond, "session end without an event ID")
 
@@ -489,14 +602,35 @@ func hiveTemplateStartEvidence(t *testing.T, request hiveTemplateRequest) string
 
 const hiveTemplateRequestWait = 10 * time.Second
 
-func waitHiveTemplateRequest(t *testing.T, requests <-chan hiveTemplateRequest, description string) hiveTemplateRequest {
+func waitHiveTemplateChildRequest(t *testing.T, requests <-chan hiveTemplateRequest, finished <-chan error, cancel context.CancelFunc, stderr *bytes.Buffer, description string) hiveTemplateRequest {
 	t.Helper()
+	request, err := awaitHiveTemplateRequest(requests, finished, cancel, stderr, description, hiveTemplateRequestWait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return request
+}
+
+func awaitHiveTemplateRequest(requests <-chan hiveTemplateRequest, finished <-chan error, cancel context.CancelFunc, stderr *bytes.Buffer, description string, duration time.Duration) (hiveTemplateRequest, error) {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
 	select {
 	case request := <-requests:
-		return request
-	case <-time.After(hiveTemplateRequestWait):
-		t.Fatalf("timed out waiting for %s", description)
-		return hiveTemplateRequest{}
+		return request, nil
+	case err := <-finished:
+		if requests == nil && err == nil {
+			return hiveTemplateRequest{}, nil
+		}
+		return hiveTemplateRequest{}, fmt.Errorf("child exited before %s: %v; stderr: %s", description, err, stderr.String())
+	case <-timer.C:
+		cancel() // Safe before Start; CommandContext kills a started child.
+		select {
+		case err := <-finished:
+			return hiveTemplateRequest{}, fmt.Errorf("timed out waiting for %s (child terminated: %v; stderr: %s)", description, err, stderr.String())
+		case <-time.After(time.Second):
+			// Run may still be starting or waiting on OS process/pipe cleanup. Do not read stderr until it returns.
+			return hiveTemplateRequest{}, fmt.Errorf("timed out waiting for %s (child cancellation pending)", description)
+		}
 	}
 }
 
