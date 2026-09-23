@@ -368,6 +368,81 @@ func (d *DB) GetApplyProgressReceipt(project, change, requestID string) (ApplyPr
 	return receipt, nil
 }
 
+// ApplyProgressSuccessorOccupancy reports a coarse reservation category.
+type ApplyProgressSuccessorOccupancy struct {
+	Occupied bool
+	Category string
+}
+
+// GetApplyProgressSuccessorOccupancy checks a successor name without writing.
+func (d *DB) GetApplyProgressSuccessorOccupancy(project, change string) (ApplyProgressSuccessorOccupancy, error) {
+	project, change = canonicalProjectKey(project), strings.TrimSpace(change)
+	if project == "" || !applyprogress.ValidID(change) {
+		return ApplyProgressSuccessorOccupancy{}, ErrApplyProgressInvalid
+	}
+	tx, err := d.sqlDB.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return ApplyProgressSuccessorOccupancy{}, fmt.Errorf("begin successor occupancy: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	return applyProgressSuccessorOccupancy(tx, project, change)
+}
+
+type successorOccupancyQuery interface {
+	Query(string, ...any) (*sql.Rows, error)
+	QueryRow(string, ...any) *sql.Row
+}
+
+func applyProgressSuccessorOccupancy(q successorOccupancyQuery, project, change string) (ApplyProgressSuccessorOccupancy, error) {
+	// SQLite trim differs from Go Unicode whitespace handling. Include tombstones.
+	rows, err := q.Query(`SELECT topic_key, title FROM memories WHERE project = ?`, project)
+	if err != nil {
+		return ApplyProgressSuccessorOccupancy{}, fmt.Errorf("scan successor occupancy: %w", err)
+	}
+	prefix := "sdd/" + change
+	occupied := false
+	for rows.Next() {
+		var topic sql.NullString
+		var title string
+		if err = rows.Scan(&topic, &title); err != nil {
+			break
+		}
+		logical := strings.TrimSpace(topic.String)
+		if !topic.Valid || logical == "" {
+			logical = strings.TrimSpace(title)
+		}
+		if logical == prefix || strings.HasPrefix(logical, prefix+"/") {
+			occupied = true
+			break
+		}
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	_ = rows.Close()
+	if err != nil {
+		return ApplyProgressSuccessorOccupancy{}, fmt.Errorf("scan successor occupancy: %w", err)
+	}
+	if occupied {
+		return ApplyProgressSuccessorOccupancy{Occupied: true, Category: "memory"}, nil
+	}
+	for _, table := range []struct{ name, category string }{
+		{"sdd_apply_heads", "head"},
+		{"sdd_apply_receipts", "receipt"},
+		{"sdd_store_bindings", "binding"},
+	} {
+		var count int
+		query := "SELECT COUNT(*) FROM " + table.name + " WHERE project = ? AND change_name = ?"
+		if err := q.QueryRow(query, project, change).Scan(&count); err != nil {
+			return ApplyProgressSuccessorOccupancy{}, fmt.Errorf("check successor occupancy: %w", err)
+		}
+		if count != 0 {
+			return ApplyProgressSuccessorOccupancy{Occupied: true, Category: table.category}, nil
+		}
+	}
+	return ApplyProgressSuccessorOccupancy{}, nil
+}
+
 // PublishApplyProgressSuccessor publishes a new stream only after its predecessor
 // has been durably sealed. It never modifies predecessor authority.
 func (d *DB) PublishApplyProgressSuccessor(project, predecessorChange string) (ApplyProgressAdvanceResult, error) {
@@ -455,53 +530,12 @@ func (d *DB) PublishApplyProgressSuccessor(project, predecessorChange string) (A
 	if reconciled.Digest != seal.Digest || reconciled.Generation != seal.Generation || reconciled.Revision != seal.Revision {
 		return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
 	}
-	// SQLite trim does not implement Go's Unicode whitespace semantics. Include
-	// tombstones and historical title-only artifacts in the same name reservation.
-	rows, err := tx.Query(`SELECT topic_key, title FROM memories WHERE project = ?`, project)
+	occupancy, err := applyProgressSuccessorOccupancy(tx, project, change)
 	if err != nil {
-		return ApplyProgressAdvanceResult{}, fmt.Errorf("scan successor occupancy: %w", err)
+		return ApplyProgressAdvanceResult{}, err
 	}
-	prefix := "sdd/" + change
-	occupiedMemory := false
-	for rows.Next() {
-		var topic sql.NullString
-		var title string
-		if err = rows.Scan(&topic, &title); err != nil {
-			break
-		}
-		logical := strings.TrimSpace(topic.String)
-		if !topic.Valid || logical == "" {
-			logical = strings.TrimSpace(title)
-		}
-		if logical == prefix || strings.HasPrefix(logical, prefix+"/") {
-			occupiedMemory = true
-			break
-		}
-	}
-	if err == nil {
-		err = rows.Err()
-	}
-	_ = rows.Close()
-	if err != nil {
-		return ApplyProgressAdvanceResult{}, fmt.Errorf("scan successor occupancy: %w", err)
-	}
-	if occupiedMemory {
+	if occupancy.Occupied {
 		return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
-	}
-	var occupied int
-	for _, query := range []struct {
-		sql  string
-		args []any
-	}{
-		{`SELECT COUNT(*) FROM sdd_apply_heads WHERE project = ? AND change_name = ?`, []any{project, change}},
-		{`SELECT COUNT(*) FROM sdd_apply_receipts WHERE project = ? AND change_name = ?`, []any{project, change}},
-	} {
-		if err := tx.QueryRow(query.sql, query.args...).Scan(&occupied); err != nil {
-			return ApplyProgressAdvanceResult{}, fmt.Errorf("check successor occupancy: %w", err)
-		}
-		if occupied != 0 {
-			return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
-		}
 	}
 	if _, err := d.insertApplyProgressMemory(tx, project, change, "tasks", "Implementation tasks", []byte(content)); err != nil {
 		return ApplyProgressAdvanceResult{}, err

@@ -23,6 +23,86 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestApplyProgressSuccessorOccupancy(t *testing.T) {
+	cases := []struct {
+		name, category string
+		seed           func(*testing.T, *DB)
+	}{
+		{"free", "", nil},
+		{"memory", "memory", func(t *testing.T, d *DB) {
+			topic := " sdd/next/tasks\u2003"
+			insertSDDMemory(t, d, "project", &topic, "irrelevant", "content", "2026-01-01 00:00:00", true)
+		}},
+		{"legacy title", "memory", func(t *testing.T, d *DB) {
+			topic := "  "
+			insertSDDMemory(t, d, "project", &topic, "\u2003sdd/next/tasks\u2003", "content", "2026-01-01 00:00:00", false)
+		}},
+		{"head", "head", func(t *testing.T, d *DB) {
+			_, err := d.RawDB().Exec(`INSERT INTO sdd_apply_heads (project, change_name, snapshot_memory_id, generation, revision, digest) VALUES ('project', 'next', 1, 1, 1, 'digest')`)
+			require.NoError(t, err)
+		}},
+		{"receipt", "receipt", func(t *testing.T, d *DB) {
+			_, err := d.RawDB().Exec(`INSERT INTO sdd_apply_receipts (request_id, project, change_name, payload_sha256, response_json) VALUES ('occupied', 'project', 'next', 'hash', '{}')`)
+			require.NoError(t, err)
+		}},
+		{"binding", "binding", func(t *testing.T, d *DB) {
+			_, err := d.RawDB().Exec(`INSERT INTO sdd_store_bindings (project, change_name, schema_version, mode, provenance) VALUES ('project', 'next', '1', 'hive', 'test')`)
+			require.NoError(t, err)
+		}},
+		{"other project", "", func(t *testing.T, d *DB) {
+			topic := "sdd/next/tasks"
+			insertSDDMemory(t, d, "other", &topic, "other", "content", "2026-01-01 00:00:00", false)
+		}},
+		{"other project head", "", func(t *testing.T, d *DB) {
+			_, err := d.RawDB().Exec(`INSERT INTO sdd_apply_heads (project, change_name, snapshot_memory_id, generation, revision, digest) VALUES ('other', 'next', 1, 1, 1, 'digest')`)
+			require.NoError(t, err)
+		}},
+		{"other project receipt", "", func(t *testing.T, d *DB) {
+			_, err := d.RawDB().Exec(`INSERT INTO sdd_apply_receipts (request_id, project, change_name, payload_sha256, response_json) VALUES ('occupied', 'other', 'next', 'hash', '{}')`)
+			require.NoError(t, err)
+		}},
+		{"other project binding", "", func(t *testing.T, d *DB) {
+			_, err := d.RawDB().Exec(`INSERT INTO sdd_store_bindings (project, change_name, schema_version, mode, provenance) VALUES ('other', 'next', '1', 'hive', 'test')`)
+			require.NoError(t, err)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := openTestDB(t)
+			if tc.seed != nil {
+				tc.seed(t, d)
+			}
+			var before, after int
+			require.NoError(t, d.RawDB().QueryRow(`SELECT COUNT(*) FROM project_identities`).Scan(&before))
+			got, err := d.GetApplyProgressSuccessorOccupancy("project", "next")
+			require.NoError(t, err)
+			require.Equal(t, ApplyProgressSuccessorOccupancy{Occupied: tc.category != "", Category: tc.category}, got)
+			require.NoError(t, d.RawDB().QueryRow(`SELECT COUNT(*) FROM project_identities`).Scan(&after))
+			require.Equal(t, before, after)
+		})
+	}
+	d := openTestDB(t)
+	_, err := d.GetApplyProgressSuccessorOccupancy(" ", "next")
+	require.ErrorIs(t, err, ErrApplyProgressInvalid)
+	_, err = d.GetApplyProgressSuccessorOccupancy("project", " ")
+	require.ErrorIs(t, err, ErrApplyProgressInvalid)
+	for _, change := range []string{"next/part", ".", " next/part "} {
+		_, err = d.GetApplyProgressSuccessorOccupancy("project", change)
+		require.ErrorIs(t, err, ErrApplyProgressInvalid, "change %q", change)
+	}
+}
+
+func TestApplyProgressSuccessorOccupancyRejectsBindingPublication(t *testing.T) {
+	store, _ := sealedPublishFixture(t)
+	_, err := store.RawDB().Exec(`INSERT INTO sdd_store_bindings (project, change_name, schema_version, mode, provenance) VALUES ('project', 'next', '1', 'hive', 'test')`)
+	require.NoError(t, err)
+	_, err = store.PublishApplyProgressSuccessor("project", "change")
+	require.ErrorIs(t, err, ErrApplyProgressInvalid)
+	var count int
+	require.NoError(t, store.RawDB().QueryRow(`SELECT COUNT(*) FROM memories WHERE project = 'project' AND topic_key = 'sdd/next/tasks'`).Scan(&count))
+	require.Zero(t, count)
+}
+
 func TestPublishApplyProgressSuccessorRejectsUnsealedPredecessor(t *testing.T) {
 	store := openTestDB(t)
 	first := applyProgressRequest(t, "publish-first", 0, 0, "", "apb-91919191919191919191919191919191")
