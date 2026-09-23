@@ -3,6 +3,8 @@ package sddstatus
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +29,229 @@ type ArtifactSource interface {
 	FetchArtifacts(ctx context.Context, changeName string) (artifacts map[string]ArtifactState, contents map[string]string, err error)
 	// ListChanges returns the names of all SDD changes known to the backing store.
 	ListChanges(ctx context.Context) ([]string, error)
+}
+
+// SupersessionProjection is derived from an authenticated stored predecessor;
+// it is never published as an artifact.
+type SupersessionProjection struct {
+	State  string                  `json:"state"`
+	Change string                  `json:"change"`
+	Head   *applyprogress.Snapshot `json:"-"`
+}
+
+const (
+	SupersessionPending = "superseded_pending_successor"
+	SupersessionReady   = "superseded_successor"
+)
+
+// ResolveSupersession reads both changes without adopting an unbound target.
+// The caller must have obtained the seal from FetchArtifacts on this source.
+func resolveSuccessorPair(ctx context.Context, source ArtifactSource, change string, seal applyprogress.Snapshot) (SupersessionProjection, error) {
+	if seal.Status != applyprogress.StatusSuperseded || seal.SealIntent == nil || applyprogress.VerifySnapshot(seal) != nil || seal.Change != change {
+		return SupersessionProjection{}, errors.New("invalid stored predecessor seal")
+	}
+	artifacts, contents, err := source.FetchArtifacts(ctx, change)
+	if err != nil {
+		return SupersessionProjection{}, err
+	}
+	stored, err := applyprogress.DecodeCanonicalSnapshot([]byte(contents[ArtifactApplyProgress]))
+	if err != nil || artifacts[ArtifactApplyProgress] != ArtifactSuperseded || stored.Digest != seal.Digest || !sameArchivedSnapshot(stored, seal) {
+		return SupersessionProjection{}, errors.New("predecessor seal is not stored authority")
+	}
+	projection := SupersessionProjection{State: SupersessionPending, Change: seal.SealIntent.SuccessorChange}
+	artifacts, contents, err = source.FetchArtifacts(ctx, projection.Change)
+	if err != nil {
+		return SupersessionProjection{}, err
+	}
+	state, present := artifacts[ArtifactApplyProgress]
+	if !present && len(artifacts) == 0 {
+		return projection, nil
+	}
+	if state == ArtifactMissing || (!present && contents[ArtifactApplyProgress] == "") {
+		_, hive := source.(*HiveSource)
+		if hive && (len(artifacts) > 1 || len(artifacts) == 1 && !present) {
+			return SupersessionProjection{}, errors.New("successor artifacts exist without authenticated progress")
+		}
+		return projection, nil
+	}
+	if state == ArtifactBlockedPublicationInterrupted {
+		if _, ok := source.(*OpenSpecSource); ok {
+			// OpenSpec validates the claimed pending topology before returning this projection.
+			return projection, nil
+		}
+	}
+	if state != ArtifactPartial && state != ArtifactDone && state != ArtifactSuperseded {
+		return SupersessionProjection{}, fmt.Errorf("successor progress is not authenticated: %s", state)
+	}
+	successor, err := applyprogress.DecodeCanonicalSnapshot([]byte(contents[ArtifactApplyProgress]))
+	if err != nil || applyprogress.ValidateSuccessorHeadPair(stored, successor) != nil {
+		return SupersessionProjection{}, errors.New("successor pointer or manifest does not match stored predecessor seal")
+	}
+	projection.State = SupersessionReady
+	projection.Head = &successor
+	return projection, nil
+}
+
+func (h *HiveSource) ResolveSupersession(ctx context.Context, change string, seal applyprogress.Snapshot) (SupersessionProjection, error) {
+	return resolveSuccessorPair(ctx, h, change, seal)
+}
+
+func (o *OpenSpecSource) ResolveSupersession(ctx context.Context, change string, seal applyprogress.Snapshot) (SupersessionProjection, error) {
+	projection, err := resolveSuccessorPair(ctx, o, change, seal)
+	if err != nil {
+		return projection, err
+	}
+	dir := o.changeDir(projection.Change)
+	claim, err := readOpenSpecRegular(filepath.Join(dir, ".apply-progress-successor-seal-digest"))
+	if os.IsNotExist(err) {
+		if _, dirErr := readOpenSpecDir(dir); os.IsNotExist(dirErr) {
+			return projection, nil
+		}
+		return SupersessionProjection{}, errors.New("successor directory lacks authenticated seal claim")
+	}
+	if err != nil || string(claim) != seal.Digest {
+		return SupersessionProjection{}, errors.New("successor seal claim does not match predecessor")
+	}
+	marker, err := readOpenSpecRegular(filepath.Join(dir, ".apply-progress-successor-complete"))
+	if os.IsNotExist(err) {
+		if projection.Head == nil {
+			if _, statErr := readOpenSpecRegular(filepath.Join(dir, "apply-progress.md")); statErr == nil {
+				return SupersessionProjection{}, errors.New("successor has progress without authenticated genesis")
+			} else if !os.IsNotExist(statErr) {
+				return SupersessionProjection{}, statErr
+			}
+		}
+		if projection.Head == nil {
+			if err := validatePendingSuccessorTopology(dir, seal); err != nil {
+				return SupersessionProjection{}, err
+			}
+		}
+		projection.State = SupersessionPending
+		return projection, nil
+	}
+	if err != nil || projection.State != SupersessionReady {
+		return SupersessionProjection{}, errors.New("successor completion marker without valid genesis")
+	}
+	// The final marker names the immutable 1/1 genesis, never a later head.
+	pointer := &applyprogress.SupersedesPointer{Project: seal.Project, Change: seal.Change, SealDigest: seal.Digest, OriginalManifestSHA256: seal.TaskManifestSHA256, Actor: seal.SealIntent.Actor, Reason: seal.SealIntent.Reason, Timestamp: seal.SealIntent.Timestamp, OperationID: seal.SealIntent.OperationID}
+	genesis, _, err := applyprogress.SealSnapshot(applyprogress.Snapshot{Schema: applyprogress.SupersessionSnapshotSchema, Project: seal.SealIntent.SuccessorProject, Change: seal.SealIntent.SuccessorChange, Generation: 1, Revision: 1, TaskManifestSHA256: seal.SealIntent.SuccessorManifestSHA256, Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}, Supersedes: pointer})
+	if err != nil || applyprogress.ValidateSuccessorGenesisPair(seal, genesis) != nil || string(marker) != genesis.Digest {
+		return SupersessionProjection{}, errors.New("successor completion marker does not match genesis")
+	}
+	data, err := readOpenSpecRegular(filepath.Join(dir, ".apply-progress-receipts", seal.SealIntent.OperationID+".json"))
+	var receipt archivedReceipt
+	if err != nil || json.Unmarshal(data, &receipt) != nil || receipt.Snapshot.Digest != genesis.Digest || applyprogress.VerifySnapshot(receipt.Snapshot) != nil {
+		return SupersessionProjection{}, errors.New("successor genesis receipt missing or invalid")
+	}
+	canonical, err := json.Marshal(receipt)
+	if err != nil || !bytes.Equal(data, canonical) || !sameArchivedSnapshot(receipt.Snapshot, genesis) {
+		return SupersessionProjection{}, errors.New("successor genesis receipt differs from sealed intent")
+	}
+	if !(sddprogress.OpenSpec{Root: dir}).HasReceipt(sddprogress.AdvanceRequest{RequestID: seal.SealIntent.OperationID, Snapshot: genesis}) {
+		return SupersessionProjection{}, errors.New("successor genesis receipt payload differs from publication")
+	}
+	return projection, nil
+}
+
+// A reservation without genesis is not authority to adopt arbitrary target files.
+func validatePendingSuccessorTopology(dir string, seal applyprogress.Snapshot) error {
+	pointer := &applyprogress.SupersedesPointer{Project: seal.Project, Change: seal.Change, SealDigest: seal.Digest, OriginalManifestSHA256: seal.TaskManifestSHA256, Actor: seal.SealIntent.Actor, Reason: seal.SealIntent.Reason, Timestamp: seal.SealIntent.Timestamp, OperationID: seal.SealIntent.OperationID}
+	genesis, snapshotData, err := applyprogress.SealSnapshot(applyprogress.Snapshot{Schema: applyprogress.SupersessionSnapshotSchema, Project: seal.SealIntent.SuccessorProject, Change: seal.SealIntent.SuccessorChange, Generation: 1, Revision: 1, TaskManifestSHA256: seal.SealIntent.SuccessorManifestSHA256, Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}, Supersedes: pointer})
+	if err != nil || applyprogress.ValidateSuccessorGenesisPair(seal, genesis) != nil {
+		return errors.New("invalid sealed successor genesis")
+	}
+	payload := sha256.Sum256(append([]byte("0:0::"), snapshotData...))
+	receiptData, err := json.Marshal(archivedReceipt{Payload: hex.EncodeToString(payload[:]), Snapshot: genesis})
+	if err != nil {
+		return err
+	}
+	stageName := func(base string, data []byte) string {
+		h := sha256.New()
+		_, _ = h.Write([]byte(base))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write(data)
+		return ".apply-progress-stage-" + hex.EncodeToString(h.Sum(nil))
+	}
+	progressStage := stageName("apply-progress.md", snapshotData)
+	receiptStage := stageName(seal.SealIntent.OperationID+".json", receiptData)
+	entries, err := readOpenSpecDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		switch entry.Name() {
+		case ".apply-progress-successor-seal-digest":
+			continue
+		case ".apply-progress-receipts":
+			if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+				return errors.New("invalid successor receipts directory")
+			}
+			receipts, err := readOpenSpecDir(filepath.Join(dir, entry.Name()))
+			if err != nil {
+				return err
+			}
+			for _, receipt := range receipts {
+				if receipt.Name() != seal.SealIntent.OperationID+".json" && receipt.Name() != receiptStage {
+					return fmt.Errorf("unexpected pending successor receipt: %s", receipt.Name())
+				}
+				data, err := readOpenSpecRegular(filepath.Join(dir, entry.Name(), receipt.Name()))
+				if err != nil {
+					return err
+				}
+				if !bytes.Equal(data, receiptData) {
+					return errors.New("pending successor receipt differs from genesis")
+				}
+			}
+		case "tasks.md":
+			data, err := readOpenSpecRegular(filepath.Join(dir, entry.Name()))
+			if err != nil {
+				return err
+			}
+			parsed, err := applyprogress.ParseTasksMarkdown(string(data))
+			if err != nil || len(parsed.Tasks) == 0 {
+				return errors.New("successor tasks are invalid")
+			}
+			_, digest, err := applyprogress.TaskManifest(parsed.Tasks)
+			if err != nil || digest != seal.SealIntent.SuccessorManifestSHA256 {
+				return errors.New("successor tasks do not match sealed manifest")
+			}
+		default:
+			if entry.Name() == progressStage {
+				data, err := readOpenSpecRegular(filepath.Join(dir, entry.Name()))
+				if err != nil {
+					return err
+				}
+				if !bytes.Equal(data, snapshotData) {
+					return errors.New("pending successor stage differs from genesis")
+				}
+				continue
+			}
+			return fmt.Errorf("unexpected artifact in pending successor: %s", entry.Name())
+		}
+	}
+	return nil
+}
+
+func (h *HybridSource) ResolveSupersession(ctx context.Context, change string, seal applyprogress.Snapshot) (SupersessionProjection, error) {
+	left, err := h.openspec.ResolveSupersession(ctx, change, seal)
+	if err != nil {
+		return SupersessionProjection{}, err
+	}
+	right, err := h.hive.ResolveSupersession(ctx, change, seal)
+	if err != nil {
+		return SupersessionProjection{}, err
+	}
+	if left.Change != right.Change {
+		return SupersessionProjection{}, errors.New("successor identity diverges between stores")
+	}
+	if left.Head != nil && right.Head != nil && !sameArchivedSnapshot(*left.Head, *right.Head) {
+		return SupersessionProjection{}, errors.New("successor head diverges between stores")
+	}
+	if left.State != SupersessionReady || right.State != SupersessionReady {
+		left.State = SupersessionPending
+		return left, nil
+	}
+	return left, nil
 }
 
 // LegacyProgressObservation is the read-only protected progress found in one
@@ -108,7 +333,12 @@ func (h *HiveSource) FetchArtifacts(ctx context.Context, changeName string) (map
 	// projection exists. The old exact-topic row remains a compatibility fallback
 	// only when an older daemon cannot provide a typed head.
 	progress, progressErr := h.client.GetApplyProgress(ctx, h.project, changeName)
-	if progressErr == nil && progress.State.Snapshot.Schema == applyprogress.SnapshotSchema {
+	if progressErr == nil && isGuardedSchema(progress.State.Snapshot.Schema) {
+		if progress.State.Snapshot.Project != h.project || progress.State.Snapshot.Change != changeName {
+			artifacts[ArtifactApplyProgress] = ArtifactBlockedInvalid
+			delete(contents, ArtifactApplyProgress)
+			return artifacts, contents, nil
+		}
 		if len(progress.State.Batches) == 0 && len(progress.State.Snapshot.Batches) != 0 {
 			batches, err := h.fetchGuardedEvidence(ctx, changeName, progress.State.Snapshot)
 			if err != nil {
@@ -127,6 +357,11 @@ func (h *HiveSource) FetchArtifacts(ctx context.Context, changeName string) (map
 		return artifacts, contents, nil
 	}
 	if progressErr == nil {
+		if progress.State.Snapshot.Schema != "" {
+			artifacts[ArtifactApplyProgress] = ArtifactBlockedInvalid
+			delete(contents, ArtifactApplyProgress)
+			return artifacts, contents, nil
+		}
 		// A pre-v2 endpoint can return unrelated success JSON. It is not a head,
 		// so preserve only the exact-topic compatibility projection.
 		if content, ok := contents[ArtifactApplyProgress]; ok {
@@ -191,6 +426,31 @@ func guardedHiveProgressState(state hiveclient.ApplyProgressState, tasksContent 
 	if state.CoordinatesPresent && (state.Generation != snapshot.Generation || state.Revision != snapshot.Revision || state.Digest != snapshot.Digest) {
 		return ArtifactBlockedInvalid, nil
 	}
+	if snapshot.Schema == applyprogress.SupersessionSnapshotSchema && snapshot.Status == applyprogress.StatusSuperseded {
+		if applyprogress.VerifySnapshot(snapshot) != nil || snapshot.SealIntent == nil || len(snapshot.Batches) != len(state.Batches) {
+			return ArtifactBlockedInvalid, nil
+		}
+		batches := make(map[string]applyprogress.Batch, len(state.Batches))
+		for i, ref := range snapshot.Batches {
+			batch := state.Batches[i]
+			if batch.BatchID != ref.BatchID || batch.SHA256 != ref.SHA256 || batch.Project != snapshot.Project || batch.Change != snapshot.Change {
+				return ArtifactBlockedInvalid, nil
+			}
+			sealed, _, err := applyprogress.SealBatch(batch)
+			if err != nil || sealed.SHA256 != ref.SHA256 {
+				return ArtifactBlockedInvalid, nil
+			}
+			batches[ref.BatchID] = batch
+		}
+		if applyprogress.ValidateEvidenceCoverage(snapshot, batches) != nil {
+			return ArtifactBlockedInvalid, nil
+		}
+		data, err := json.Marshal(snapshot)
+		if err != nil {
+			return ArtifactBlockedInvalid, nil
+		}
+		return ArtifactSuperseded, data
+	}
 	strictTasks, strict := applyProgressTasks(tasksContent)
 	var normalized []applyprogress.Task
 	var ok bool
@@ -215,7 +475,7 @@ func guardedHiveProgressState(state hiveclient.ApplyProgressState, tasksContent 
 	batches := make(map[string][]byte, len(state.Batches))
 	for i, ref := range snapshot.Batches {
 		batch := state.Batches[i]
-		if batch.BatchID != ref.BatchID || batch.SHA256 != ref.SHA256 {
+		if batch.BatchID != ref.BatchID || batch.SHA256 != ref.SHA256 || batch.Project != snapshot.Project || batch.Change != snapshot.Change {
 			return ArtifactBlockedInvalid, nil
 		}
 		_, batchData, err := applyprogress.SealBatch(batch)
@@ -360,12 +620,18 @@ func (h *HiveSource) ListChanges(ctx context.Context) ([]string, error) {
 // OpenSpecSource reads SDD artifacts from an openspec directory layout:
 // openspec/changes/{change}/{artifact}.md
 type OpenSpecSource struct {
-	root string // project root; openspec/ is resolved relative to this
+	root    string // project root; openspec/ is resolved relative to this
+	project string // optional expected project identity
 }
 
 // NewOpenSpecSource returns an ArtifactSource backed by the openspec filesystem layout.
 func NewOpenSpecSource(projectRoot string) *OpenSpecSource {
 	return &OpenSpecSource{root: projectRoot}
+}
+
+// NewOpenSpecSourceForProject binds guarded progress to an expected project.
+func NewOpenSpecSourceForProject(projectRoot, project string) *OpenSpecSource {
+	return &OpenSpecSource{root: projectRoot, project: project}
 }
 
 func (o *OpenSpecSource) changeDir(changeName string) string {
@@ -449,15 +715,41 @@ func (o *OpenSpecSource) FetchArtifacts(_ context.Context, changeName string) (m
 		contents[ArtifactSpec] = deltaSpecs
 	}
 	var inspectionErr error
+	var inspected *applyprogress.Snapshot
 	if _, dirErr := readOpenSpecDir(dir); dirErr == nil {
-		_, inspectionErr = (sddprogress.OpenSpec{Root: dir}).InspectPublication()
+		inspected, inspectionErr = (sddprogress.OpenSpec{Root: dir}).InspectPublication()
 	} else if !os.IsNotExist(dirErr) {
 		return nil, nil, dirErr
 	}
+	if inspected != nil {
+		if inspected.Change != changeName || (o.project != "" && inspected.Project != o.project) {
+			artifacts[ArtifactApplyProgress] = ArtifactBlockedInvalid
+			delete(contents, ArtifactApplyProgress)
+			return artifacts, contents, nil
+		}
+		canonical, err := json.Marshal(inspected)
+		if err != nil {
+			artifacts[ArtifactApplyProgress] = ArtifactBlockedInvalid
+			delete(contents, ArtifactApplyProgress)
+			return artifacts, contents, nil
+		}
+		// Reject a changed head rather than comparing bytes from different reads.
+		readback, err := readOpenSpecRegular(filepath.Join(dir, "apply-progress.md"))
+		if err != nil || !bytes.Equal(readback, canonical) {
+			artifacts[ArtifactApplyProgress] = ArtifactBlockedInvalid
+			delete(contents, ArtifactApplyProgress)
+			return artifacts, contents, nil
+		}
+		contents[ArtifactApplyProgress] = string(canonical)
+		artifacts[ArtifactApplyProgress] = ArtifactDone
+	}
 	if state := inspectionErrorState(inspectionErr); state != "" {
 		artifacts[ArtifactApplyProgress] = state
+		delete(contents, ArtifactApplyProgress)
 	} else if data, ok := contents[ArtifactApplyProgress]; ok {
-		if isV2Progress(data) {
+		if inspected != nil && inspected.Schema == applyprogress.SupersessionSnapshotSchema && inspected.Status == applyprogress.StatusSuperseded && inspected.SealIntent != nil {
+			artifacts[ArtifactApplyProgress] = ArtifactSuperseded
+		} else if isV2Progress(data) {
 			artifacts[ArtifactApplyProgress] = openSpecV2ProgressState(dir, []byte(data), contents[ArtifactTasks])
 		} else {
 			artifacts[ArtifactApplyProgress] = applyProgressState(data, contents[ArtifactTasks])
@@ -533,6 +825,9 @@ func openSpecV2ProgressState(dir string, data []byte, tasksContent string) Artif
 	if err != nil {
 		return ArtifactBlockedInvalid
 	}
+	if snapshot.Status == applyprogress.StatusSuperseded {
+		return ArtifactBlockedInvalid
+	}
 	// A phase-style tasks.md has no strict v2 IDs. It remains readable only when
 	// the immutable snapshot proves the deterministic legacy manifest; ordinary
 	// v2 manifests still fail closed through authoritativeHiveSnapshotTasks.
@@ -563,6 +858,9 @@ func openSpecV2ProgressState(dir string, data []byte, tasksContent string) Artif
 // all-complete evidence. Unknown, malformed, and conflicting markers fail closed
 // as partial so incomplete work cannot enable verification.
 func applyProgressState(progressContent, tasksContent string) ArtifactState {
+	if isV2Progress(progressContent) {
+		return ArtifactBlockedInvalid
+	}
 	hasCompleteMarker := false
 	hasPartialMarker := false
 	for _, line := range strings.Split(progressContent, "\n") {
@@ -675,7 +973,9 @@ func (h *HybridSource) FetchArtifacts(ctx context.Context, changeName string) (m
 		} else if h.archivedHybridOpenSpec(changeName, osArtifacts, osContents, hiveArtifacts, hiveContents) {
 			merged[ArtifactApplyProgress] = hiveArtifacts[ArtifactApplyProgress]
 			merged[ArtifactArchiveReport] = ArtifactDone
-		} else if osErr != nil || hiveErr != nil || osArtifacts[ArtifactApplyProgress] == "" || hiveArtifacts[ArtifactApplyProgress] == "" || isBlockedApplyProgress(osArtifacts[ArtifactApplyProgress]) || isBlockedApplyProgress(hiveArtifacts[ArtifactApplyProgress]) || !sameV2Progress(osContents[ArtifactApplyProgress], hiveContents[ArtifactApplyProgress]) {
+		} else if osErr == nil && hiveErr == nil && osArtifacts[ArtifactApplyProgress] == ArtifactSuperseded && hiveArtifacts[ArtifactApplyProgress] == ArtifactSuperseded && sameV2Progress(osContents[ArtifactApplyProgress], hiveContents[ArtifactApplyProgress]) {
+			merged[ArtifactApplyProgress] = ArtifactSuperseded
+		} else if osErr != nil || hiveErr != nil || osArtifacts[ArtifactApplyProgress] == "" || hiveArtifacts[ArtifactApplyProgress] == "" || isBlockedApplyProgress(osArtifacts[ArtifactApplyProgress]) || isBlockedApplyProgress(hiveArtifacts[ArtifactApplyProgress]) || osArtifacts[ArtifactApplyProgress] == ArtifactSuperseded || hiveArtifacts[ArtifactApplyProgress] == ArtifactSuperseded || !sameV2Progress(osContents[ArtifactApplyProgress], hiveContents[ArtifactApplyProgress]) {
 			merged[ArtifactApplyProgress] = ArtifactBlockedBackendDiverged
 			delete(mergedContents, ArtifactApplyProgress)
 		}
@@ -880,8 +1180,13 @@ func validArchivedDeltaSpecs(path string) bool {
 	return err == nil && found
 }
 
+func isGuardedSchema(schema string) bool {
+	return schema == applyprogress.SnapshotSchema || schema == applyprogress.SupersessionSnapshotSchema
+}
+
 func isV2Progress(data string) bool {
-	return strings.HasPrefix(data, `{"schema":"jarvis.sdd-apply-progress/v2"`)
+	trimmed := strings.TrimSpace(data)
+	return strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")
 }
 
 func sameV2Progress(left, right string) bool {

@@ -18,6 +18,7 @@ const (
 	ArtifactMissing                       ArtifactState = "missing"
 	ArtifactPartial                       ArtifactState = "partial"
 	ArtifactDone                          ArtifactState = "done"
+	ArtifactSuperseded                    ArtifactState = "superseded"
 	ArtifactBlockedContinuation           ArtifactState = "blocked:continuation_required"
 	ArtifactBlockedConflict               ArtifactState = "blocked:conflict"
 	ArtifactBlockedManifestMismatch       ArtifactState = "blocked:task_manifest_mismatch"
@@ -187,6 +188,7 @@ type ChangeStatus struct {
 	ChangeName        string                     `json:"changeName"`
 	ArtifactStore     string                     `json:"artifactStore"`
 	StoreBinding      *StoreBindingStatus        `json:"storeBinding,omitempty"`
+	Supersession      *SupersessionProjection    `json:"supersession,omitempty"`
 	PlanningHome      string                     `json:"planningHome"`
 	ChangeRoot        string                     `json:"changeRoot"`
 	ArtifactPaths     map[string]string          `json:"artifactPaths"`
@@ -607,6 +609,9 @@ func hasWorkspaceEditAuthority(actionContext ActionContext) bool {
 }
 
 func phaseSpecificBlocker(phase string, artifacts map[string]ArtifactState, tp *TaskProgress, ad *ApplyDecision, verifyContent string) []string {
+	if artifacts[ArtifactApplyProgress] == ArtifactSuperseded && (phase == PhaseApply || phase == PhaseVerify || phase == PhaseArchive) {
+		return []string{fmt.Sprintf("phase %s blocked — apply-progress is superseded; use the successor change", phase)}
+	}
 	if outcome := applyProgressOutcome(artifacts[ArtifactApplyProgress]); outcome != "" && (phase == PhaseApply || phase == PhaseVerify || phase == PhaseArchive) {
 		return []string{fmt.Sprintf("phase %s blocked — apply-progress outcome %s requires recovery", phase, outcome)}
 	}
@@ -642,7 +647,7 @@ func phaseSpecificBlocker(phase string, artifacts map[string]ArtifactState, tp *
 }
 
 func isBlockedApplyProgress(state ArtifactState) bool {
-	return applyProgressOutcome(state) != ""
+	return state == ArtifactSuperseded || applyProgressOutcome(state) != ""
 }
 
 func applyProgressOutcome(state ArtifactState) string {

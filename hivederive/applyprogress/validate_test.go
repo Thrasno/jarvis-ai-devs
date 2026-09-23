@@ -150,6 +150,49 @@ func TestValidateSuccessorGenesisPairShape(t *testing.T) {
 	check("same change remains strict", predecessor, predecessor, false)
 }
 
+func TestValidateSuccessorHeadPairAllowsAdvancedAndSealedSuccessors(t *testing.T) {
+	old, _, err := SealSnapshot(Snapshot{Schema: SupersessionSnapshotSchema, Project: "project", Change: "old", Generation: 1, Revision: 2, TaskManifestSHA256: strings.Repeat("a", 64), Status: StatusSuperseded, Coverage: []Coverage{}, Batches: []BatchRef{}, SealIntent: &SealIntent{SuccessorProject: "project", SuccessorChange: "new", SuccessorManifestSHA256: strings.Repeat("b", 64), Actor: "agent", Reason: "replanned", Timestamp: "2026-01-01T00:00:00Z", OperationID: "request-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pointer := &SupersedesPointer{Project: old.Project, Change: old.Change, SealDigest: old.Digest, OriginalManifestSHA256: old.TaskManifestSHA256, Actor: old.SealIntent.Actor, Reason: old.SealIntent.Reason, Timestamp: old.SealIntent.Timestamp, OperationID: old.SealIntent.OperationID}
+	for _, status := range []Status{StatusPartial, StatusComplete, StatusSuperseded} {
+		t.Run(string(status), func(t *testing.T) {
+			head := Snapshot{Schema: SupersessionSnapshotSchema, Project: "project", Change: "new", Generation: 1, Revision: 3, PreviousDigest: strings.Repeat("c", 64), TaskManifestSHA256: strings.Repeat("b", 64), Status: status, Coverage: []Coverage{}, Batches: []BatchRef{}, Supersedes: pointer}
+			if status == StatusSuperseded {
+				head.SealIntent = &SealIntent{SuccessorProject: "project", SuccessorChange: "third", SuccessorManifestSHA256: strings.Repeat("d", 64), Actor: "agent", Reason: "again", Timestamp: "2026-01-01T00:00:00Z", OperationID: "request-2"}
+			}
+			head, _, err := SealSnapshot(head)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := ValidateSuccessorHeadPair(old, head); err != nil {
+				t.Fatal(err)
+			}
+			bad := head
+			p := *pointer
+			p.Change = "foreign"
+			bad.Supersedes = &p
+			bad, _, err = SealSnapshot(bad)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ValidateSuccessorHeadPair(old, bad) == nil {
+				t.Fatal("accepted foreign pointer")
+			}
+			bad = head
+			bad.TaskManifestSHA256 = strings.Repeat("e", 64)
+			bad, _, err = SealSnapshot(bad)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ValidateSuccessorHeadPair(old, bad) == nil {
+				t.Fatal("accepted foreign manifest")
+			}
+		})
+	}
+}
+
 func TestSuccessorPointerLocalShape(t *testing.T) {
 	root := Snapshot{Schema: SupersessionSnapshotSchema, Project: "project", Change: "new", Generation: 1, Revision: 1, TaskManifestSHA256: strings.Repeat("c", 64), Status: StatusPartial, Coverage: []Coverage{}, Batches: []BatchRef{}, Supersedes: &SupersedesPointer{Project: "project", Change: "old", SealDigest: strings.Repeat("d", 64), OriginalManifestSHA256: strings.Repeat("a", 64), Actor: "agent", Reason: "replanned", OperationID: "request-1", Timestamp: "2026-01-01T00:00:00Z"}}
 	sealed, raw, err := SealSnapshot(root)
