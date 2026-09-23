@@ -7,6 +7,141 @@ import (
 	"testing"
 )
 
+func TestSupersessionSealTransition(t *testing.T) {
+	previous := Snapshot{Schema: SnapshotSchema, Project: "project", Change: "old", Generation: 1, Revision: 1, TaskManifestSHA256: strings.Repeat("a", 64), Status: StatusPartial, Coverage: []Coverage{}, Batches: []BatchRef{}, StreamSHA256: strings.Repeat("b", 64), NextEntryID: "next"}
+	previous, _, err := SealSnapshot(previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := &SealIntent{SuccessorProject: "project", SuccessorChange: "new", SuccessorManifestSHA256: strings.Repeat("c", 64), Actor: "agent", Reason: "replanned", Timestamp: "2026-01-01T00:00:00Z", OperationID: "request-1"}
+	candidate := previous
+	candidate.Schema = SupersessionSnapshotSchema
+	candidate.Revision++
+	candidate.PreviousDigest = previous.Digest
+	candidate.Status = StatusSuperseded
+	candidate.StreamSHA256, candidate.NextEntryIndex, candidate.NextEntryID = "", 0, ""
+	candidate.SealIntent = intent
+	candidate, raw, err := SealSnapshot(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsSupersessionSeal(previous, candidate) {
+		t.Fatal("expected exact seal shape")
+	}
+	if err := ValidateSuccessor(previous, candidate, nil); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "next_entry_") || strings.Contains(string(raw), "stream_sha256") {
+		t.Fatalf("terminal seal retained continuation: %s", raw)
+	}
+	if _, err := DecodeCanonicalSnapshot(raw); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*Snapshot){
+		"new evidence": func(s *Snapshot) {
+			s.Batches = append(s.Batches, BatchRef{BatchID: "apb-0123456789abcdef0123456789abcdef", SHA256: strings.Repeat("d", 64)})
+		},
+		"changed coverage": func(s *Snapshot) {
+			s.Coverage = append(s.Coverage, Coverage{TaskID: "task", BatchID: "apb-0123456789abcdef0123456789abcdef", EntryID: "entry"})
+		},
+		"changed manifest":      func(s *Snapshot) { s.TaskManifestSHA256 = strings.Repeat("d", 64) },
+		"retained continuation": func(s *Snapshot) { s.StreamSHA256, s.NextEntryID = previous.StreamSHA256, previous.NextEntryID },
+		"changed epoch":         func(s *Snapshot) { s.Generation++ },
+	} {
+		t.Run(name, func(t *testing.T) {
+			altered := candidate
+			mutate(&altered)
+			altered, _, err := SealSnapshot(altered)
+			if err == nil && (IsSupersessionSeal(previous, altered) || ValidateSuccessor(previous, altered, nil) == nil) {
+				t.Fatal("accepted altered seal")
+			}
+		})
+	}
+	badIntent := candidate
+	badIntent.SealIntent = &SealIntent{SuccessorProject: "project", SuccessorChange: "new", SuccessorManifestSHA256: strings.Repeat("c", 64), Actor: "agent", Reason: "replanned", Timestamp: "not-a-timestamp", OperationID: "request-1"}
+	if _, _, err := SealSnapshot(badIntent); err == nil {
+		t.Fatal("accepted malformed intent timestamp")
+	}
+	if err := ValidateSuccessor(candidate, candidate, nil); err == nil {
+		t.Fatal("extended superseded head")
+	}
+	ordinary := candidate
+	ordinary.Schema = SnapshotSchema
+	ordinary.Status = StatusPartial
+	ordinary.SealIntent = nil
+	ordinary, _, err = SealSnapshot(ordinary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSuccessor(previous, ordinary, nil); err == nil {
+		t.Fatal("ordinary advance discarded continuation")
+	}
+}
+
+func TestSuccessorPointerLocalShape(t *testing.T) {
+	root := Snapshot{Schema: SupersessionSnapshotSchema, Project: "project", Change: "new", Generation: 1, Revision: 1, TaskManifestSHA256: strings.Repeat("c", 64), Status: StatusPartial, Coverage: []Coverage{}, Batches: []BatchRef{}, Supersedes: &SupersedesPointer{Project: "project", Change: "old", SealDigest: strings.Repeat("d", 64), OriginalManifestSHA256: strings.Repeat("a", 64), Actor: "agent", Reason: "replanned", OperationID: "request-1", Timestamp: "2026-01-01T00:00:00Z"}}
+	sealed, raw, err := SealSnapshot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded, err := DecodeCanonicalSnapshot(raw); err != nil || decoded.Supersedes == nil || *decoded.Supersedes != *sealed.Supersedes {
+		t.Fatalf("pointer roundtrip: %v", err)
+	}
+	for name, mutate := range map[string]func(*SupersedesPointer){
+		"missing original manifest":   func(p *SupersedesPointer) { p.OriginalManifestSHA256 = "" },
+		"malformed original manifest": func(p *SupersedesPointer) { p.OriginalManifestSHA256 = "invalid" },
+		"missing actor":               func(p *SupersedesPointer) { p.Actor = "" },
+		"missing reason":              func(p *SupersedesPointer) { p.Reason = "" },
+		"missing request identity":    func(p *SupersedesPointer) { p.OperationID = "" },
+		"invalid request identity":    func(p *SupersedesPointer) { p.OperationID = "not valid" },
+		"missing timestamp":           func(p *SupersedesPointer) { p.Timestamp = "" },
+		"malformed timestamp":         func(p *SupersedesPointer) { p.Timestamp = "tomorrow" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			broken := root
+			pointer := *root.Supersedes
+			mutate(&pointer)
+			broken.Supersedes = &pointer
+			if _, _, err := SealSnapshot(broken); err == nil {
+				t.Fatal("accepted malformed successor pointer")
+			}
+		})
+	}
+	root.Supersedes.SealDigest = "invalid"
+	if _, _, err := SealSnapshot(root); err == nil {
+		t.Fatal("accepted invalid signed pointer")
+	}
+	root.Supersedes.SealDigest = strings.Repeat("d", 64)
+	root.Schema = SnapshotSchema
+	if _, _, err := SealSnapshot(root); err == nil {
+		t.Fatal("accepted pointer on v2")
+	}
+	root.Schema = SupersessionSnapshotSchema
+	root, _, err = SealSnapshot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	advance := root
+	advance.Revision++
+	advance.PreviousDigest = root.Digest
+	advance.Supersedes = &SupersedesPointer{Project: "project", Change: "other", SealDigest: strings.Repeat("d", 64), OriginalManifestSHA256: strings.Repeat("a", 64), Actor: "agent", Reason: "replanned", OperationID: "request-1", Timestamp: "2026-01-01T00:00:00Z"}
+	advance, _, err = SealSnapshot(advance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSuccessor(root, advance, nil); err == nil {
+		t.Fatal("accepted pointer rewrite")
+	}
+	advance.Supersedes = root.Supersedes
+	advance, _, err = SealSnapshot(advance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSuccessor(root, advance, nil); err == nil {
+		t.Fatal("accepted empty ordinary advance")
+	}
+}
+
 func TestTaskManifestNormalizesAndDerivesLegacyIDs(t *testing.T) {
 	input := []Task{{ID: "1.1", Text: "  RED\r\n test\tcase  "}, {Path: "1.2", Text: "cafe\u0301"}}
 	tasks, digest, err := TaskManifest(input)

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 	"unicode/utf8"
 )
 
@@ -177,19 +178,21 @@ func payloadForBatch(batch Batch) batchPayload {
 }
 
 type snapshotPayload struct {
-	Schema             string     `json:"schema"`
-	Project            string     `json:"project"`
-	Change             string     `json:"change"`
-	Generation         uint64     `json:"generation"`
-	Revision           uint64     `json:"revision"`
-	PreviousDigest     string     `json:"previous_digest"`
-	TaskManifestSHA256 string     `json:"task_manifest_sha256"`
-	Status             Status     `json:"status"`
-	Coverage           []Coverage `json:"coverage"`
-	Batches            []BatchRef `json:"batches"`
-	StreamSHA256       *string    `json:"stream_sha256,omitempty"`
-	NextEntryIndex     *int       `json:"next_entry_index,omitempty"`
-	NextEntryID        *string    `json:"next_entry_id,omitempty"`
+	Schema             string             `json:"schema"`
+	Project            string             `json:"project"`
+	Change             string             `json:"change"`
+	Generation         uint64             `json:"generation"`
+	Revision           uint64             `json:"revision"`
+	PreviousDigest     string             `json:"previous_digest"`
+	TaskManifestSHA256 string             `json:"task_manifest_sha256"`
+	Status             Status             `json:"status"`
+	Coverage           []Coverage         `json:"coverage"`
+	Batches            []BatchRef         `json:"batches"`
+	StreamSHA256       *string            `json:"stream_sha256,omitempty"`
+	NextEntryIndex     *int               `json:"next_entry_index,omitempty"`
+	NextEntryID        *string            `json:"next_entry_id,omitempty"`
+	SealIntent         *SealIntent        `json:"seal_intent,omitempty"`
+	Supersedes         *SupersedesPointer `json:"supersedes,omitempty"`
 }
 
 func payloadForSnapshot(snapshot Snapshot) snapshotPayload {
@@ -200,6 +203,9 @@ func payloadForSnapshot(snapshot Snapshot) snapshotPayload {
 	}
 	if snapshot.hasContinuation() {
 		payload.StreamSHA256, payload.NextEntryIndex, payload.NextEntryID = &snapshot.StreamSHA256, &snapshot.NextEntryIndex, &snapshot.NextEntryID
+	}
+	if snapshot.Schema == SupersessionSnapshotSchema {
+		payload.SealIntent, payload.Supersedes = snapshot.SealIntent, snapshot.Supersedes
 	}
 	return payload
 }
@@ -262,20 +268,22 @@ func (snapshot Snapshot) MarshalJSON() ([]byte, error) {
 // guarded continuation upgrade.
 func (snapshot *Snapshot) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		Schema             string     `json:"schema"`
-		Project            string     `json:"project"`
-		Change             string     `json:"change"`
-		Generation         uint64     `json:"generation"`
-		Revision           uint64     `json:"revision"`
-		PreviousDigest     string     `json:"previous_digest"`
-		TaskManifestSHA256 string     `json:"task_manifest_sha256"`
-		Status             Status     `json:"status"`
-		Coverage           []Coverage `json:"coverage"`
-		Batches            []BatchRef `json:"batches"`
-		StreamSHA256       *string    `json:"stream_sha256"`
-		NextEntryIndex     *int       `json:"next_entry_index"`
-		NextEntryID        *string    `json:"next_entry_id"`
-		Digest             string     `json:"digest"`
+		Schema             string             `json:"schema"`
+		Project            string             `json:"project"`
+		Change             string             `json:"change"`
+		Generation         uint64             `json:"generation"`
+		Revision           uint64             `json:"revision"`
+		PreviousDigest     string             `json:"previous_digest"`
+		TaskManifestSHA256 string             `json:"task_manifest_sha256"`
+		Status             Status             `json:"status"`
+		Coverage           []Coverage         `json:"coverage"`
+		Batches            []BatchRef         `json:"batches"`
+		StreamSHA256       *string            `json:"stream_sha256"`
+		NextEntryIndex     *int               `json:"next_entry_index"`
+		NextEntryID        *string            `json:"next_entry_id"`
+		SealIntent         *SealIntent        `json:"seal_intent"`
+		Supersedes         *SupersedesPointer `json:"supersedes"`
+		Digest             string             `json:"digest"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -289,6 +297,7 @@ func (snapshot *Snapshot) UnmarshalJSON(data []byte) error {
 	snapshot.Generation, snapshot.Revision, snapshot.PreviousDigest = wire.Generation, wire.Revision, wire.PreviousDigest
 	snapshot.TaskManifestSHA256, snapshot.Status, snapshot.Coverage, snapshot.Batches, snapshot.Digest = wire.TaskManifestSHA256, wire.Status, wire.Coverage, wire.Batches, wire.Digest
 	snapshot.StreamSHA256, snapshot.NextEntryIndex, snapshot.NextEntryID = "", 0, ""
+	snapshot.SealIntent, snapshot.Supersedes = wire.SealIntent, wire.Supersedes
 	snapshot.historicalZeroContinuation = false
 	if wire.StreamSHA256 != nil || wire.NextEntryIndex != nil || wire.NextEntryID != nil {
 		if wire.StreamSHA256 == nil || wire.NextEntryIndex == nil || wire.NextEntryID == nil {
@@ -331,13 +340,39 @@ func validateSnapshot(snapshot Snapshot) error {
 	if !validSnapshotText(snapshot) {
 		return ErrInvalidValue
 	}
-	if snapshot.Schema != SnapshotSchema {
+	if snapshot.Schema != SnapshotSchema && snapshot.Schema != SupersessionSnapshotSchema {
 		return ErrInvalidSchema
+	}
+	if snapshot.Schema == SnapshotSchema && (snapshot.SealIntent != nil || snapshot.Supersedes != nil) {
+		return ErrInvalidValue
+	}
+	if snapshot.Schema == SupersessionSnapshotSchema {
+		if snapshot.SealIntent != nil {
+			i := snapshot.SealIntent
+			if snapshot.Status != StatusSuperseded || !validID(i.SuccessorProject) || !validID(i.SuccessorChange) || i.SuccessorProject != snapshot.Project || i.SuccessorChange == snapshot.Change || !validDigest(i.SuccessorManifestSHA256) || i.Actor == "" || !validText(i.Actor) || !validID(i.OperationID) || i.Reason == "" || !validText(i.Reason) || !validTimestamp(i.Timestamp) {
+				return ErrInvalidValue
+			}
+		}
+		if snapshot.Supersedes != nil {
+			p := snapshot.Supersedes
+			if !validID(p.Project) || !validID(p.Change) || p.Project != snapshot.Project || p.Change == snapshot.Change || !validDigest(p.SealDigest) || !validDigest(p.OriginalManifestSHA256) || p.Actor == "" || !validText(p.Actor) || p.Reason == "" || !validText(p.Reason) || !validID(p.OperationID) || !validTimestamp(p.Timestamp) {
+				return ErrInvalidValue
+			}
+		}
+		if snapshot.Status == StatusSuperseded && snapshot.SealIntent == nil {
+			return ErrInvalidValue
+		}
+		if snapshot.Status != StatusSuperseded && snapshot.Supersedes == nil {
+			return ErrInvalidValue
+		}
+	}
+	if snapshot.Status == StatusSuperseded && snapshot.Schema != SupersessionSnapshotSchema {
+		return ErrInvalidValue
 	}
 	if !hasValidSnapshotIdentity(snapshot) {
 		return ErrInvalidID
 	}
-	if snapshot.Status != StatusPartial && snapshot.Status != StatusComplete {
+	if snapshot.Status != StatusPartial && snapshot.Status != StatusComplete && snapshot.Status != StatusSuperseded {
 		return ErrInvalidValue
 	}
 	if (snapshot.PreviousDigest != "" && !validDigest(snapshot.PreviousDigest)) || !validDigest(snapshot.TaskManifestSHA256) {
@@ -424,8 +459,13 @@ func validateEvidenceEntry(entry EvidenceEntry) error {
 	return nil
 }
 
+func validTimestamp(value string) bool {
+	_, err := time.Parse(time.RFC3339Nano, value)
+	return err == nil
+}
+
 func validSnapshotContinuation(snapshot Snapshot) bool {
-	if snapshot.Status == StatusComplete {
+	if snapshot.Status == StatusComplete || snapshot.Status == StatusSuperseded {
 		return !snapshot.hasContinuation()
 	}
 	// A missing group is a valid current unbound partial snapshot. Only the

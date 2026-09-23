@@ -243,6 +243,48 @@ func TestDecodeCanonicalSnapshotAcceptsLiteralHistoricalZeroContinuationFields(t
 	}
 }
 
+func TestSupersessionPreservesHistoricalV2RootBytesAndDigest(t *testing.T) {
+	const historical = `{"schema":"jarvis.sdd-apply-progress/v2","project":"jarvis-dev","change":"issue-653","generation":0,"revision":0,"previous_digest":"","task_manifest_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"partial","coverage":[],"batches":[{"batch_id":"apb-0123456789abcdef0123456789abcdef","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}],"stream_sha256":"","next_entry_index":0,"next_entry_id":"","digest":"52eee8a57760f4b7a4423d1834f94f662bdff65a57602635b97ae7154b2aca73"}`
+	previous, err := DecodeCanonicalSnapshot([]byte(historical))
+	if err != nil || !previous.RequiresContinuationUpgrade() {
+		t.Fatalf("historical root decode = %v, upgrade = %v", err, previous.RequiresContinuationUpgrade())
+	}
+	seal := previous
+	seal.Schema = SupersessionSnapshotSchema
+	seal.Revision++
+	seal.PreviousDigest = previous.Digest
+	seal.Status = StatusSuperseded
+	seal.SealIntent = &SealIntent{SuccessorProject: "jarvis-dev", SuccessorChange: "issue-724", SuccessorManifestSHA256: strings.Repeat("c", 64), Actor: "agent", Reason: "replanned", OperationID: "request-1", Timestamp: "2026-01-01T00:00:00Z"}
+	seal, _, err = SealSnapshot(seal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if IsSupersessionSeal(previous, seal) {
+		t.Fatal("accepted direct seal from generation-zero root")
+	}
+	if err := ValidateSuccessor(previous, seal, nil); err == nil {
+		t.Fatal("accepted generation-zero seal transition")
+	}
+	if err := ValidateHistoricalZeroRootUpgrade(previous, seal, nil); err == nil {
+		t.Fatal("accepted seal as historical continuation upgrade")
+	}
+	upgrade := previous
+	upgrade.Revision++
+	upgrade.PreviousDigest = previous.Digest
+	upgrade.StreamSHA256, upgrade.NextEntryID = strings.Repeat("c", 64), "next"
+	upgrade, _, err = SealSnapshot(upgrade)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateHistoricalZeroRootUpgrade(previous, upgrade, nil); err != nil {
+		t.Fatalf("historical continuation upgrade rejected: %v", err)
+	}
+	unchanged, err := json.Marshal(previous)
+	if err != nil || string(unchanged) != historical || previous.Digest != "52eee8a57760f4b7a4423d1834f94f662bdff65a57602635b97ae7154b2aca73" {
+		t.Fatalf("historical root changed: %v, %s", err, unchanged)
+	}
+}
+
 func TestSnapshotRequiresContinuationUpgradeOnlyForHistoricalWireShape(t *testing.T) {
 	ordinary, _, err := SealSnapshot(validSnapshot(""))
 	if err != nil {
