@@ -389,7 +389,9 @@ func (s OpenSpec) syncExistingSuccessorFile(path string, expected []byte) error 
 	if err != nil || !info.Mode().IsRegular() {
 		return ErrConflict
 	}
-	file, err := os.Open(path)
+	// Windows requires a writable handle for FlushFileBuffers (File.Sync),
+	// even though the retry only validates and syncs the existing bytes.
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		return err
 	}
