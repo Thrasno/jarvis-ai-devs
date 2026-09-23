@@ -79,6 +79,15 @@ func (r *ProjectMigrationRunner) ExecuteMigration(ctx context.Context, req proje
 	if r.gate == nil || r.gate.Status().State != project.MigrationStatePendingOperatorReview {
 		return ErrProjectMigrationNotPending
 	}
+	// Refused from memory, never from the database: a running fold holds the
+	// single pooled connection inside its transaction, so a plan read here would
+	// block until the fold finished instead of answering "already running".
+	r.mu.Lock()
+	running := r.live != nil
+	r.mu.Unlock()
+	if running {
+		return ErrProjectMigrationAlreadyRunning
+	}
 	preflight, err := r.MigrationPlan(ctx)
 	if err != nil {
 		return err

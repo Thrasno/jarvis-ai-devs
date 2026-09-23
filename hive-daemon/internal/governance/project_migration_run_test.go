@@ -147,11 +147,17 @@ func TestExecutingAFoldWithTheWrongConfirmationIsRefused(t *testing.T) {
 // TestASecondConcurrentFoldIsRefusedAsAlreadyRunning distinguishes "your click
 // arrived twice" from "the fold failed". Both would otherwise surface as one
 // generic error and send the operator looking for a rollback that is not needed.
+//
+// The second call is issued only once the fold is inside its transaction, where
+// it holds the single pooled connection: the refusal must come from memory, and
+// a runner that read the database first would block here instead of answering.
 func TestASecondConcurrentFoldIsRefusedAsAlreadyRunning(t *testing.T) {
 	_, store, backups, gate := pendingFoldFixture(t)
 	runner := NewProjectMigrationRunner(store, backups, gate)
+	reached := make(chan struct{})
 	release := make(chan struct{})
 	runner.failpoint = func() error {
+		close(reached)
 		<-release
 		return nil
 	}
@@ -159,9 +165,23 @@ func TestASecondConcurrentFoldIsRefusedAsAlreadyRunning(t *testing.T) {
 	if err := runner.ExecuteMigration(context.Background(), request); err != nil {
 		t.Fatalf("first execute = %v, want accepted", err)
 	}
-	if err := runner.ExecuteMigration(context.Background(), request); !errors.Is(err, ErrProjectMigrationAlreadyRunning) {
+	select {
+	case <-reached:
+	case <-time.After(30 * time.Second):
 		close(release)
-		t.Fatalf("second execute = %v, want ErrProjectMigrationAlreadyRunning", err)
+		t.Fatal("fold never reached the failpoint")
+	}
+	second := make(chan error, 1)
+	go func() { second <- runner.ExecuteMigration(context.Background(), request) }()
+	select {
+	case err := <-second:
+		if !errors.Is(err, ErrProjectMigrationAlreadyRunning) {
+			close(release)
+			t.Fatalf("second execute = %v, want ErrProjectMigrationAlreadyRunning", err)
+		}
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("second execute blocked on the database while the fold held the connection")
 	}
 	close(release)
 	awaitTerminalRun(t, runner)
