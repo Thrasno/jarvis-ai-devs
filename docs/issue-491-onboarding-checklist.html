@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Jarvis · Checklist de onboarding · Issue #491</title>
+<style>
+:root{color-scheme:dark;--bg:#080a10;--panel:#0e1320;--raised:#121a2b;--line:#34415a;--text:#e6edf3;--muted:#bbc7d8;--blue:#8dbbfa;--pink:#e0246f;--gold:#e0a22e}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}a{color:var(--blue);text-underline-offset:3px}a:hover{color:#d0e3ff}a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid var(--gold);outline-offset:3px}.skip{position:absolute;top:-100px;left:1rem;background:var(--raised);padding:.7rem;z-index:2}.skip:focus{top:1rem}.wrap{max-width:1000px;margin:auto;padding:2rem 1rem}.hero{background:linear-gradient(120deg,var(--raised),var(--panel));border:1px solid var(--line);border-top:4px solid var(--pink);border-radius:18px;padding:2rem}.brand{display:flex;align-items:center;gap:.5rem;font-weight:800;letter-spacing:.12em}.brand svg{width:26px;height:32px}.eyebrow{color:var(--muted);font-size:.85rem;text-transform:uppercase;letter-spacing:.12em}h1{font-size:clamp(2rem,5vw,3.2rem);line-height:1.15;margin:.7rem 0}h2{font-size:1.45rem;margin:0 0 .7rem}h3{font-size:1.1rem;margin:1.3rem 0 .5rem}p{margin:.6rem 0 1rem}.notice{background:#241c13;border-left:4px solid var(--gold);padding:1rem;margin:1rem 0}.toolbar{display:flex;gap:1rem;align-items:center;flex-wrap:wrap;margin:1rem 0}.toolbar button{background:var(--raised);color:var(--text);border:1px solid var(--blue);border-radius:8px;padding:.55rem 1rem;font:inherit;cursor:pointer}.toolbar button:hover{background:#233252}.storage{color:var(--muted)}.section{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:1.5rem;margin:1.25rem 0}ul.tasks{list-style:none;padding:0;margin:.5rem 0}li.task{padding:.65rem 0;border-bottom:1px solid var(--line)}li.task:last-child{border:0}label{display:flex;gap:.8rem;align-items:flex-start;cursor:pointer}input[type=checkbox]{width:1.25rem;height:1.25rem;flex:none;margin:.25rem 0;accent-color:#78bdff}small{display:block;color:var(--muted);margin-left:2.05rem}.links{display:flex;flex-wrap:wrap;gap:.5rem 1.5rem}footer{color:var(--muted);padding:1rem 0 2rem}@media(max-width:600px){.wrap{padding:1rem .7rem}.hero,.section{padding:1.1rem}}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media print{:root{color-scheme:light;--bg:white;--panel:white;--raised:#f3f7fb;--line:#bbc7d8;--text:#172d43;--muted:#34465b;--blue:#1555a0}.wrap{max-width:none;padding:0}.hero,.section{break-inside:avoid;box-shadow:none}.toolbar button,.skip{display:none}.notice{background:#fff3da}a{color:#1555a0}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style>
+</head>
+<body>
+<a href="#contenido" class="skip">Saltar al contenido</a>
+<main class="wrap" id="contenido">
+<header class="hero">
+<div class="brand"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" aria-hidden="true" focusable="false"><polygon points="9,11 30,11 30,89 9,89" fill="#22B85C"/><polygon points="70,11 91,11 91,89 70,89" fill="#E0246F"/><polygon points="30,11 49,11 70,89 51,89" fill="#3B82E8"/></svg>NEXUS HIVE</div>
+<p class="eyebrow">Jarvis · Plan de trabajo · GitHub issue #491</p>
+<h1>Checklist de onboarding y evidencias</h1>
+<p>Un mapa de entregables y observaciones pendientes, no el tutorial terminado. La issue sigue pendiente de revisión; marcar tareas solo refleja seguimiento local, nunca acredita que se haya observado o aceptado un resultado.</p>
+<div class="notice"><strong>Privacidad:</strong> no introduzcas nombres, tokens, capturas ni datos de participantes en esta página. Guarda las evidencias exclusivamente en un espacio privado autorizado, saneadas antes de compartirlas. La página almacena solo identificadores de casillas.</div>
+<div class="toolbar"><strong id="progress" role="status" aria-live="polite">Progreso: 0 tareas marcadas (activa JavaScript para contar).</strong><button type="button" id="reset">Desmarcar todas las tareas</button></div>
+<p id="storage" class="storage" role="status" aria-live="polite">Sin JavaScript: checklist estático; las marcas no se conservan.</p>
+</header>
+<section class="section" aria-labelledby="primeros"><h2 id="primeros">01 · Primeros 15 minutos</h2><ul class="tasks">
+<li class="task"><label><input type="checkbox" data-task="path"><span>Redactar ruta de los primeros 15 minutos con hitos y criterio de éxito verificable.</span></label></li>
+<li class="task"><label><input type="checkbox" data-task="prerequisites"><span>Documentar prerrequisitos, instalación, primer lanzamiento y decisiones del asistente inicial, con capturas saneadas y salida esperada saneada.</span></label></li>
+<li class="task"><label><input type="checkbox" data-task="platforms"><span>Crear tutorial PowerShell para Windows y distinguir Ubuntu nativo de Ubuntu en WSL (entorno, comandos y límites).</span></label></li>
+<li class="task"><label><input type="checkbox" data-task="memory"><span>Guiar primer guardado y recuperación de una memoria, y comprobar su resultado observable.</span></label></li>
+<li class="task"><label><input type="checkbox" data-task="next-step"><span>Indicar siguiente paso según rol y cómo saber si se completó el inicio.</span></label></li>
+</ul></section>
+<section class="section" aria-labelledby="conceptos"><h2 id="conceptos">02 · Conceptos y práctica</h2><ul class="tasks">
+<li class="task"><label><input type="checkbox" data-task="glossary"><span>Preparar glosario: Jarvis, Hive, Hive API, memoria local/compartida, sincronización de memoria, SDD, contenido gestionado, estado deseado, reconcile, persona, skill y rol; distinguir <code>jarvis sync</code> de la sincronización de memoria.</span></label></li>
+<li class="task"><label><input type="checkbox" data-task="sdd"><span>Enseñar un cambio SDD real de principio a fin con artefactos y evidencia verificable, sin inventar una ejecución.</span></label></li>
+<li class="task"><label><input type="checkbox" data-task="troubleshooting"><span>Crear resolución visual por síntoma para instalación, configuración, daemon, API, sincronización, login, dashboard y recuperación; incluir comprobación y salida esperada saneada.</span></label></li>
+<li class="task"><label><input type="checkbox" data-task="role-guides"><span>Preparar guías distintas para desarrollador, responsable de equipo, administrador de Hive, evaluador y formador.</span></label></li>
+<li class="task"><label><input type="checkbox" data-task="training"><span>Preparar materiales de sesión, ejercicios, evaluación y seguimiento para formación.</span></label></li>
+</ul></section>
+<section class="section" aria-labelledby="evidencias"><h2 id="evidencias">03 · Andrés: siete casos observados obligatorios</h2>
+<p>Para <strong>cada caso</strong>: registrar hora inicial, hora final y tiempo transcurrido; dudas y preguntas del participante; errores; pasos inesperados o no documentados; salida de comandos/interfaz saneada; capturas saneadas; resultado final; si alcanzó el objetivo; y valor percibido en palabras del participante. No guardes esos datos aquí.</p>
+<ul class="tasks">
+<li class="task"><label><input type="checkbox" data-task="case-win"><span>Andrés: observar instalación limpia en Windows (PowerShell).</span></label></li>
+<li class="task"><label><input type="checkbox" data-task="case-linux"><span>Andrés: observar instalación limpia en Ubuntu/WSL; registrar qué variante se utilizó.</span></label></li>
+<li class="task"><label><input type="checkbox" data-task="case-setup"><span>Andrés: observar primera configuración del asistente.</span></label></li>
+<li class="task"><label><input type="checkbox" data-task="case-memory"><span>Andrés: observar guardado y recuperación de memoria.</span></label></li>
+<li class="task"><label><input type="checkbox" data-task="case-sdd"><span>Andrés: observar un cambio SDD real con evidencia.</span></label></li>
+<li class="task"><label><input type="checkbox" data-task="case-failure"><span>Andrés: observar un fallo controlado y su recuperación.</span></label></li>
+<li class="task"><label><input type="checkbox" data-task="case-novice"><span>Andrés: observar una sesión con persona novata autorizada.</span></label></li>
+</ul></section>
+<section class="section" aria-labelledby="preparacion"><h2 id="preparacion">04 · Preparación y custodia (Andrés)</h2><ul class="tasks">
+<li class="task"><label><input type="checkbox" data-task="access"><span>Facilitar acceso a entornos limpios Windows y Ubuntu/WSL para las observaciones.</span></label></li>
+<li class="task"><label><input type="checkbox" data-task="consent"><span>Conseguir persona novata autorizada y consentimiento para observar la sesión y tratar las evidencias.</span></label></li>
+<li class="task"><label><input type="checkbox" data-task="candidate"><span>Congelar una versión candidata para que las capturas correspondan al mismo producto.</span></label></li>
+<li class="task"><label><input type="checkbox" data-task="evidence-space"><span>Disponer de espacio privado de evidencias y procedimiento de saneamiento de salidas y capturas antes de compartirlas.</span></label></li>
+</ul></section>
+<section class="section" aria-labelledby="fuentes"><h2 id="fuentes">Fuentes existentes para empezar</h2><p>Estos documentos son referencias de trabajo, no sustituyen las siete observaciones ni validan la issue.</p><nav class="links" aria-label="Documentación relacionada"><a href="getting-started.md">Inicio rápido</a><a href="installation.md">Instalación</a><a href="configuration.md">Configuración</a><a href="setup-recovery.md">Recuperación</a><a href="troubleshooting.md">Diagnóstico</a><a href="hive-api-dashboard.md">Dashboard</a><a href="teams/adoption-guide.md">Adopción de equipos</a><a href="teams/evaluator-guide.md">Evaluación</a><a href="public/jarvis-sync-explained.md">Sync explicado</a><a href="sdd-workflows/spec.md">SDD</a></nav></section>
+<footer>Checklist local para planificar la issue #491. Desmarcar tareas no borra evidencias externas.</footer>
+</main>
+<script>
+(() => {
+  'use strict';
+  const key = 'jarvis_issue491_checklist_v1';
+  const boxes = Array.from(document.querySelectorAll('input[data-task]'));
+  const ids = new Set(boxes.map(box => box.dataset.task));
+  const progress = document.getElementById('progress');
+  const storage = document.getElementById('storage');
+  const lifetime = 365 * 24 * 60 * 60;
+  let mode = 'session';
+  const cookieValue = () => document.cookie.split('; ').find(part => part.startsWith(key + '='))?.slice(key.length + 1);
+  const cookieWrite = value => {
+    document.cookie = `${key}=${encodeURIComponent(value)}; Max-Age=${lifetime}; SameSite=Lax; Path=/`;
+    return cookieValue() === encodeURIComponent(value);
+  };
+  const localWrite = value => {
+    try { localStorage.setItem(key, value); return localStorage.getItem(key) === value; }
+    catch { return false; }
+  };
+  const parse = value => {
+    try {
+      const decoded = JSON.parse(value);
+      return Array.isArray(decoded) ? decoded.filter(id => ids.has(id)) : [];
+    } catch { return []; }
+  };
+  const update = () => {
+    progress.textContent = `Progreso: ${boxes.filter(box => box.checked).length} de ${boxes.length} tareas marcadas (seguimiento, no evidencia).`;
+    storage.textContent = mode === 'cookie' ? 'Estado guardado en una cookie local de un año (SameSite=Lax).' : mode === 'local' ? 'Cookie no disponible; estado guardado en el almacenamiento local de este navegador.' : 'Aviso: ni cookies ni almacenamiento local disponibles; marcas solo durante esta sesión abierta.';
+  };
+  const persist = () => {
+    const value = JSON.stringify(boxes.filter(box => box.checked).map(box => box.dataset.task));
+    let written = false;
+    if (location.protocol !== 'file:') {
+      try { written = cookieWrite(value); } catch { /* Cookies disabled. */ }
+    }
+    // Mirror cookie state so a later cookie rejection cannot revive stale local state.
+    const localWritten = localWrite(value);
+    if (written) mode = 'cookie';
+    else if (localWritten) mode = 'local';
+    else mode = 'session';
+    update();
+  };
+  let saved;
+  if (location.protocol !== 'file:') {
+    try { saved = cookieValue(); } catch { /* Cookies disabled. */ }
+  }
+  if (saved !== undefined) mode = 'cookie';
+  else {
+    try { saved = localStorage.getItem(key); if (saved !== null) mode = 'local'; }
+    catch { /* Local storage disabled. */ }
+  }
+  let restored = saved;
+  if (mode === 'cookie') {
+    try { restored = decodeURIComponent(saved); } catch { restored = undefined; }
+  }
+  for (const id of parse(restored)) {
+    const box = boxes.find(item => item.dataset.task === id);
+    if (box) box.checked = true;
+  }
+  // Verify persistence even on a fresh page, where neither store has been written yet.
+  persist();
+  boxes.forEach(box => box.addEventListener('change', persist));
+  document.getElementById('reset').addEventListener('click', () => {
+    if (!window.confirm('¿Desmarcar todas las tareas de este navegador? No se borrarán archivos ni evidencias.')) return;
+    boxes.forEach(box => { box.checked = false; });
+    persist();
+  });
+})();
+</script>
+</body>
+</html>
