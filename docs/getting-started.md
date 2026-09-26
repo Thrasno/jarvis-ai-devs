@@ -57,14 +57,30 @@ Everything else in those files and directories — other MCP servers, themes,
 keybinds, your own hooks and permissions, and content outside the Jarvis
 marker blocks — is preserved either way.
 
-**What accepting replaces entirely.** Two surfaces are entirely Jarvis-owned
-rather than partially managed: Claude's whole `agents/` directory and
-OpenCode's `agent` section of `opencode.json`. Accepting the reset removes
-these completely, including any agent file or entry you added there
-yourself — that content is not recoverable from the running configuration
-afterward. The wizard's completion summary names the durable backup snapshot
-ID it took before making any change, so a user who needs to recover something
-can restore that snapshot by hand.
+**What accepting replaces entirely.** Some surfaces are entirely Jarvis-owned
+rather than partially managed, and accepting the reset removes them
+completely — including any agent file or entry you added there yourself —
+exactly as the wizard's own step describes them:
+
+- Claude Code: `agents/: entire directory (SDD phase agents, Judgment Day
+  agents, retired review-* agents, and any user-added agent files)`.
+- OpenCode: `opencode.json: default_agent, permission, agent (entirely
+  Jarvis-owned keys, removed whole)`.
+
+That content is not recoverable from the running configuration afterward.
+The wizard's completion summary names the durable backup snapshot ID it took
+before making any change, so a user who needs to recover something can
+restore that snapshot by hand.
+
+**What the durable snapshot does not cover.** A symlinked top-level surface
+(for example, `~/.claude/settings.json` symlinked into a dotfile manager) and
+an edit-in-place surface whose real target lies outside Jarvis's own config
+roots are recorded in a sidecar file next to the snapshot manifest, but their
+content is not archived into it. The wizard's plan view names any such path
+before you answer, and the only way to get it back is the in-process
+rollback of that same run — not a restore of the durable snapshot afterward.
+This is rare in practice: it only applies to a machine where Jarvis's config
+files are themselves symlinks, most often through a dotfile manager.
 
 **What declining does.** Declining keeps your current configuration exactly
 as it is; nothing described above is touched, and the rest of setup proceeds

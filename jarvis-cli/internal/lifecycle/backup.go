@@ -300,6 +300,30 @@ func (s BackupStore) allowedRoots() []string {
 	}
 }
 
+// AllowedRoots exports allowedRoots so another package that must decide,
+// before ever calling this store, whether a path it holds (e.g. a resolved
+// symlink target) would fall outside this store's own confinement can derive
+// that answer directly from the store instead of keeping a second,
+// hand-copied list that could silently drift out of sync with this one
+// (issue #767 hardening R2-004).
+func (s BackupStore) AllowedRoots() []string {
+	return s.allowedRoots()
+}
+
+// CanonicalizePath exports canonicalizePath so a caller outside this package
+// can canonicalize a path (or one of this store's own AllowedRoots) exactly
+// as this store canonicalizes a snapshot target before its confinement
+// check, so the two comparisons can never disagree over a symlinked
+// ancestor. ErrPathAbsent marks the ordinary case of a path (or its parent)
+// that is simply not on this machine.
+func CanonicalizePath(path string) (string, error) {
+	return canonicalizePath(path)
+}
+
+// ErrPathAbsent is the exported form of the sentinel canonicalizePath
+// returns for a path, or its parent, that does not exist on this machine.
+var ErrPathAbsent = errPathAbsent
+
 // isLexicallyAllowedRoot answers confinement without touching the filesystem,
 // for a path that is not there to be touched. Clean collapses every ".." the
 // caller wrote, so a path that climbs out of a root cannot climb back in on

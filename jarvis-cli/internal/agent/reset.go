@@ -41,6 +41,18 @@ type ResetPlan struct {
 	Platform  sddruntime.Platform
 	ConfigDir string
 	Changes   []ResetChange
+
+	// NotInDurableSnapshot lists every path PlanReset would touch that
+	// ApplyReset cannot cover in its durable lifecycle.BackupStore snapshot:
+	// a symlinked surface, or a resolved edit-in-place target that falls
+	// outside that store's allowed roots. These paths are recoverable only
+	// through this run's own in-process rollback while ApplyReset is still
+	// executing (or its returned ResetResult.Rollback immediately after),
+	// never from the durable snapshot an operator could restore by hand
+	// later (issue #767 hardening R1-001/R4-002/R3-001/R2-004). The wizard
+	// surfaces this list before consent so a human can decide with that
+	// limit in view, not discover it after the fact.
+	NotInDurableSnapshot []string
 }
 
 // ResetResult reports what ApplyReset actually removed.
@@ -48,6 +60,10 @@ type ResetResult struct {
 	Platform   sddruntime.Platform
 	SnapshotID string
 	Changes    []ResetChange
+
+	// NotInDurableSnapshot mirrors ResetPlan.NotInDurableSnapshot for the
+	// mutations this exact ApplyReset call actually applied.
+	NotInDurableSnapshot []string
 
 	// Rollback, when non-nil, undoes this exact successful reset: it restores
 	// every mutation ApplyReset applied back to its pre-reset state, using
@@ -249,13 +265,20 @@ type resetFileMutation struct {
 }
 
 // PlanReset computes, without mutating anything, exactly what ApplyReset
-// would remove for one platform's config directory.
-func PlanReset(platform sddruntime.Platform, configDir string) (ResetPlan, error) {
+// would remove for one platform's config directory. homeDir is the same
+// home directory ApplyReset would receive; it is only used to classify which
+// planned mutations ApplyReset's durable snapshot would not cover (see
+// ResetPlan.NotInDurableSnapshot), never to read or write anything.
+func PlanReset(platform sddruntime.Platform, configDir, homeDir string) (ResetPlan, error) {
 	mutations, err := computeResetMutations(platform, configDir, defaultResetFileOps())
 	if err != nil {
 		return ResetPlan{}, err
 	}
-	return ResetPlan{Platform: platform, ConfigDir: configDir, Changes: collectResetChanges(mutations)}, nil
+	_, excluded, err := partitionDurableSnapshotTargets(homeDir, mutations)
+	if err != nil {
+		return ResetPlan{}, err
+	}
+	return ResetPlan{Platform: platform, ConfigDir: configDir, Changes: collectResetChanges(mutations), NotInDurableSnapshot: excluded}, nil
 }
 
 // ApplyReset performs a consented, backed-up, all-or-restore configuration
@@ -302,16 +325,9 @@ func applyResetWithOps(platform sddruntime.Platform, configDir, homeDir string, 
 	// protects that mutation for THIS run; only the separate, durable
 	// snapshot an operator could restore by hand afterward does not cover
 	// it, exactly as already documented for a symlink mutation above.
-	backupTargets := make([]lifecycle.BackupTarget, 0, len(mutations))
-	seen := make(map[string]bool, len(mutations))
-	for _, m := range mutations {
-		if m.isSymlink || !withinBackupAllowedRoots(homeDir, m.Path) {
-			continue
-		}
-		if !seen[m.Path] {
-			seen[m.Path] = true
-			backupTargets = append(backupTargets, lifecycle.BackupTarget{Path: m.Path})
-		}
+	backupTargets, excluded, err := partitionDurableSnapshotTargets(homeDir, mutations)
+	if err != nil {
+		return ResetResult{}, err
 	}
 	store := lifecycle.NewBackupStore(homeDir)
 	manifest, err := store.CreateSnapshotOfTargets("agent-reset", backupTargets)
@@ -345,16 +361,17 @@ func applyResetWithOps(platform sddruntime.Platform, configDir, homeDir string, 
 	}
 
 	// The durable snapshot and every mutation already succeeded; the sidecar
-	// is auxiliary recovery metadata for a symlink an operator might restore
-	// by hand from the snapshot, not part of the reset's own rollback path.
-	// Losing it must never fail an otherwise successful reset, so its error
-	// is deliberately discarded.
-	_ = writeResetSymlinkSidecar(homeDir, manifest.SnapshotID, mutations)
+	// is auxiliary recovery metadata for a path an operator might otherwise
+	// have no record of restoring by hand from the snapshot, not part of the
+	// reset's own rollback path. Losing it must never fail an otherwise
+	// successful reset, so its error is deliberately discarded.
+	_ = writeResetSnapshotExclusionSidecar(homeDir, manifest.SnapshotID, mutations, excluded)
 
 	return ResetResult{
-		Platform:   platform,
-		SnapshotID: manifest.SnapshotID,
-		Changes:    collectResetChanges(mutations),
+		Platform:             platform,
+		SnapshotID:           manifest.SnapshotID,
+		Changes:              collectResetChanges(mutations),
+		NotInDurableSnapshot: excluded,
 		Rollback: func() error {
 			unrecovered := rollbackResetMutations(mutations, ops)
 			if len(unrecovered) > 0 {
@@ -369,28 +386,38 @@ func applyResetWithOps(platform sddruntime.Platform, configDir, homeDir string, 
 	}, nil
 }
 
-// resetSymlinkSidecarEntry records one symlink mutation's path and prior
-// target, so an operator restoring the durable lifecycle.BackupStore snapshot
-// by hand (rather than through ApplyReset's own in-process rollback) can
-// still recreate a symlink the snapshot's file archive cannot carry (issue
-// #767 hardening R4-003: that archive reads content via os.ReadFile, which a
-// symlink mutation is deliberately excluded from).
+// resetSymlinkSidecarEntry records one mutation's path that the durable
+// lifecycle.BackupStore snapshot does not cover, so an operator restoring
+// that snapshot by hand (rather than through ApplyReset's own in-process
+// rollback) knows this path needs separate attention. Reason is "symlink"
+// (Target names its prior link target, recreatable with the same
+// content-carrying archive cannot restore, issue #767 hardening R4-003) or
+// "outside_backup_roots" (an edit-in-place surface resolved, through a
+// symlink, to a target BackupStore refuses to snapshot; Target is empty
+// because the file's own content is not what is missing -- only the
+// durable copy of it is, issue #767 hardening R2-004/R4-003).
 type resetSymlinkSidecarEntry struct {
 	Path   string `json:"path"`
-	Target string `json:"target"`
+	Reason string `json:"reason"`
+	Target string `json:"target,omitempty"`
 }
 
-// writeResetSymlinkSidecar writes the symlink inventory for one snapshot next
-// to that snapshot's manifest, under the same ~/.jarvis/backups directory
-// lifecycle.BackupStore uses. It writes nothing when there are no symlink
-// mutations to record.
-func writeResetSymlinkSidecar(homeDir, snapshotID string, mutations []resetFileMutation) error {
+// writeResetSnapshotExclusionSidecar writes, next to the durable snapshot's
+// manifest under the same ~/.jarvis/backups directory lifecycle.BackupStore
+// uses, the inventory of every mutation excluded from that snapshot:
+// symlink mutations (with their prior target) and any other mutation whose
+// resolved path fell outside BackupStore's allowed roots (path only). It
+// writes nothing when nothing was excluded.
+func writeResetSnapshotExclusionSidecar(homeDir, snapshotID string, mutations []resetFileMutation, notInDurableSnapshot []string) error {
+	excludedPaths := stringSet(notInDurableSnapshot)
 	var entries []resetSymlinkSidecarEntry
 	for _, m := range mutations {
-		if !m.isSymlink {
-			continue
+		switch {
+		case m.isSymlink:
+			entries = append(entries, resetSymlinkSidecarEntry{Path: m.Path, Reason: "symlink", Target: m.linkTarget})
+		case excludedPaths[m.Path]:
+			entries = append(entries, resetSymlinkSidecarEntry{Path: m.Path, Reason: "outside_backup_roots"})
 		}
-		entries = append(entries, resetSymlinkSidecarEntry{Path: m.Path, Target: m.linkTarget})
 	}
 	if len(entries) == 0 {
 		return nil
@@ -451,25 +478,122 @@ func computeResetMutations(platform sddruntime.Platform, configDir string, ops r
 }
 
 // withinBackupAllowedRoots reports whether path falls under one of the
-// config roots lifecycle.BackupStore allows itself to snapshot. It mirrors
-// that store's own root list on purpose: the two must agree, because this
-// function exists only to decide, before calling BackupStore, which resolved
-// paths it would refuse. path must already be an absolute, resolved
-// (non-symlink) path; no further symlink resolution happens here.
-func withinBackupAllowedRoots(homeDir, path string) bool {
-	roots := []string{
-		filepath.Join(homeDir, ".claude"),
-		filepath.Join(homeDir, ".config", "opencode"),
-		filepath.Join(homeDir, ".jarvis"),
+// config roots lifecycle.BackupStore allows itself to snapshot for homeDir.
+// The root list itself comes directly from lifecycle.NewBackupStore(homeDir)
+// .AllowedRoots(): there is no second, hand-copied list to drift out of sync
+// with that store's own confinement (issue #767 hardening R2-004).
+//
+// Both path and each root are canonicalized through lifecycle.CanonicalizePath
+// before comparing, exactly as BackupStore itself canonicalizes a snapshot
+// target before its own confinement check. A plain filepath.Clean string
+// comparison (the prior implementation) agrees with BackupStore only when
+// neither path nor $HOME is reached through a symlink; it silently reports
+// "outside" for a top-level surface whose resolved target lies outside the
+// allowed roots through one symlink hop, and for an otherwise in-root target
+// reached through a symlinked home directory, because EvalSymlinks
+// canonicalizes the home prefix on one side of the comparison but not the
+// other (issue #767 hardening R1-001/R4-002/R3-001). Canonicalizing both
+// sides here removes that mismatch.
+//
+// A root absent from this machine (e.g. no ~/.config/opencode) is skipped,
+// matching BackupStore.isAllowedRoot's own tolerance for that case: an
+// absent root can only narrow what is allowed, never widen it.
+func withinBackupAllowedRoots(homeDir, path string) (bool, error) {
+	canonPath, err := lifecycle.CanonicalizePath(path)
+	if err != nil {
+		if errors.Is(err, lifecycle.ErrPathAbsent) {
+			return false, nil
+		}
+		return false, fmt.Errorf("canonicalize %s: %w", path, err)
 	}
-	cleaned := filepath.Clean(path)
-	for _, root := range roots {
-		canonRoot := filepath.Clean(root)
-		if cleaned == canonRoot || strings.HasPrefix(cleaned, canonRoot+string(os.PathSeparator)) {
-			return true
+	for _, root := range lifecycle.NewBackupStore(homeDir).AllowedRoots() {
+		canonRoot, err := lifecycle.CanonicalizePath(root)
+		if errors.Is(err, lifecycle.ErrPathAbsent) {
+			continue
+		}
+		if err != nil {
+			return false, fmt.Errorf("canonicalize allowed root %s: %w", root, err)
+		}
+		if canonPath == canonRoot || strings.HasPrefix(canonPath, canonRoot+string(os.PathSeparator)) {
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
+}
+
+// partitionDurableSnapshotTargets splits mutations into what ApplyReset's
+// durable lifecycle.BackupStore snapshot can cover (backupTargets) and what
+// it cannot (notInDurableSnapshot, sorted, deduplicated by path): a symlink
+// mutation (that store archives content via os.ReadFile, which must never
+// read through a link, and would fail outright for a dangling one) or a
+// resolved edit-in-place target outside that store's allowed roots. It never
+// touches the filesystem beyond the lstat/EvalSymlinks calls
+// withinBackupAllowedRoots already performs, so PlanReset can call it too.
+func partitionDurableSnapshotTargets(homeDir string, mutations []resetFileMutation) ([]lifecycle.BackupTarget, []string, error) {
+	backupTargets := make([]lifecycle.BackupTarget, 0, len(mutations))
+	var notInDurableSnapshot []string
+	seen := make(map[string]bool, len(mutations))
+	for _, m := range mutations {
+		if seen[m.Path] {
+			continue
+		}
+		seen[m.Path] = true
+		if m.isSymlink {
+			notInDurableSnapshot = append(notInDurableSnapshot, m.Path)
+			continue
+		}
+		within, err := withinBackupAllowedRoots(homeDir, m.Path)
+		if err != nil {
+			return nil, nil, fmt.Errorf("check backup confinement for %s: %w", m.Path, err)
+		}
+		if !within {
+			notInDurableSnapshot = append(notInDurableSnapshot, m.Path)
+			continue
+		}
+		backupTargets = append(backupTargets, lifecycle.BackupTarget{Path: m.Path})
+	}
+	sort.Strings(notInDurableSnapshot)
+	return backupTargets, notInDurableSnapshot, nil
+}
+
+// ResetManagedDirectories lists the directories a reset for platform may
+// remove content from: every whole_directory surface's RelativePath, plus
+// the parent directory of any whole_file surface nested under one (e.g.
+// "plugins/hive.ts" contributes "plugins"). A top-level whole_file surface
+// (e.g. "sdd-orchestrator.md") contributes nothing, since its parent is the
+// platform's config directory itself, not a directory the reset owns.
+//
+// A subsequent install that runs after ApplyReset and then fails may still
+// leave NEW files under these same directories: ApplyReset's rollback only
+// restores paths its own in-process journal recorded (what existed before
+// the reset ran), and a file the install wrote afterward never existed
+// before, so rollback never removes it. A caller reporting a rolled-back
+// reset uses this list to name where such a leftover file might remain,
+// rather than silently implying rollback fully undid the whole sequence
+// (issue #767 hardening R3-003; extending the journal to snapshot and
+// restore these directories wholesale was the alternative considered and
+// rejected as a larger change than this advisory warrants).
+func ResetManagedDirectories(platform sddruntime.Platform) []string {
+	seen := make(map[string]bool)
+	var dirs []string
+	for _, s := range sddruntime.ResetInventory(platform) {
+		var dir string
+		switch s.Kind {
+		case sddruntime.ResetSurfaceWholeDirectory:
+			dir = strings.TrimSuffix(s.RelativePath, "/")
+		case sddruntime.ResetSurfaceWholeFile:
+			if d := filepath.Dir(s.RelativePath); d != "." {
+				dir = d
+			}
+		}
+		if dir == "" || seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+	return dirs
 }
 
 // resolveEditableSurfacePath resolves path to the real file a reset must

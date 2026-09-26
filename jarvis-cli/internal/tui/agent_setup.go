@@ -27,15 +27,78 @@ type AgentApplyResult struct {
 	ResetApplied    bool
 	ResetSnapshotID string
 
+	// ResetNotInDurableSnapshot mirrors agent.ResetResult.NotInDurableSnapshot
+	// for the reset this agent ran: paths recoverable only through
+	// resetRollback below while this wizard run is still active (or its own
+	// mid-apply rollback while ApplyReset itself was running), never from
+	// the durable snapshot named by ResetSnapshotID afterward (issue #767
+	// hardening R1-001/R4-002/R3-001/R2-004).
+	ResetNotInDurableSnapshot []string
+
 	// ResetRolledBack and ResetRollbackErr report what happened to an already
-	// -applied reset when this same agent's subsequent install failed
-	// (issue #767 hardening R4-002): ResetRolledBack is true only when the
-	// reset's rollback fully restored the pre-reset configuration.
+	// -applied reset when a later stage of this same agent's setup failed:
+	// either this agent's own subsequent install (issue #767 hardening
+	// R4-002), or the shared persona profile apply step that runs only after
+	// every agent's install already succeeded. ResetRolledBack is true only
+	// when the reset's rollback fully restored the pre-reset configuration.
 	// ResetRollbackErr carries the rollback failure otherwise (which may be a
 	// *agent.ResetRestoreError naming unrecovered paths); it is folded into
 	// Err's text too, so every surface that already reports Err shows it.
+	//
+	// A runtime-verification failure after a complete reinstall (the loop
+	// below, after every install and the profile apply already succeeded)
+	// deliberately does NOT roll back: the reinstall is complete, so
+	// ResetRolledBack stays false and ResetRollbackErr stays nil for that
+	// case, and configResetSummaryLines still reports the reset ran.
 	ResetRolledBack  bool
 	ResetRollbackErr error
+
+	// resetRollback undoes this exact agent's already-applied reset. It
+	// stays set after a successful install so a LATER shared-step failure
+	// (persona profile apply) can still roll this agent's reset back; it is
+	// cleared to nil once invoked.
+	resetRollback func() error
+}
+
+// managedDirectoryRollbackWarning names the directories a's reset may have
+// emptied and its subsequent install may have then written fresh content
+// into, for a rollback report to warn that rolling back the reset's own
+// journaled mutations does not remove files the install wrote afterward
+// (issue #767 hardening R3-003). It returns "" when the platform cannot be
+// resolved or the platform's reset owns no directories.
+func managedDirectoryRollbackWarning(a agent.Agent) string {
+	platform, err := agent.PlatformForAgentName(a.Name())
+	if err != nil {
+		return ""
+	}
+	dirs := agent.ResetManagedDirectories(platform)
+	if len(dirs) == 0 {
+		return ""
+	}
+	full := make([]string, 0, len(dirs))
+	for _, d := range dirs {
+		full = append(full, filepath.Join(a.ConfigDir(), d))
+	}
+	return "files written by the install attempt may remain under: " + strings.Join(full, ", ")
+}
+
+// rollbackAgentReset invokes res.resetRollback for one agent whose reset was
+// applied and not yet rolled back, recording the outcome (rolled back, or a
+// rollback failure) on res and returning a description of what happened
+// (including the managed-directory residual-file warning) for the caller to
+// fold into whatever error message reports the triggering failure.
+func rollbackAgentReset(a agent.Agent, res *AgentApplyResult) string {
+	if res.resetRollback == nil {
+		return ""
+	}
+	rollback := res.resetRollback
+	res.resetRollback = nil
+	if rbErr := rollback(); rbErr != nil {
+		res.ResetRollbackErr = rbErr
+		return fmt.Sprintf("configuration reset rollback also failed, snapshot %s: %v (%s)", res.ResetSnapshotID, rbErr, managedDirectoryRollbackWarning(a))
+	}
+	res.ResetRolledBack = true
+	return fmt.Sprintf("configuration reset (snapshot %s) rolled back (%s)", res.ResetSnapshotID, managedDirectoryRollbackWarning(a))
 }
 
 type wizardPresetApplyContext struct {
@@ -161,15 +224,15 @@ func configureWizardAgents(agents []agent.Agent, opts WizardAgentApplyOptions) [
 			return results
 		}
 
-		// rollbackReset, when non-nil, undoes an already-applied reset for
-		// THIS agent. It is called below only if this same agent's
-		// subsequent install fails, so a consented reset never leaves an
-		// agent's configuration deleted without either a working
-		// reinstall or a restored prior state (issue #767 hardening
-		// R4-002). An earlier agent that was reset and reinstalled
-		// successfully is untouched: only the agent whose install just
-		// failed is rolled back.
-		var rollbackReset func() error
+		// res.resetRollback, when non-nil, undoes an already-applied reset for
+		// THIS agent. It is invoked below immediately if this same agent's
+		// subsequent install fails (issue #767 hardening R4-002), so a
+		// consented reset never leaves an agent's configuration deleted
+		// without either a working reinstall or a restored prior state. It
+		// stays set on success, though, because a LATER shared failure
+		// (persona profile apply, below) can still need to undo this
+		// agent's reset even though this agent's own install succeeded; an
+		// agent whose install failed is rolled back here and only here.
 		if opts.ResetConsented {
 			platform, platformErr := agent.PlatformForAgentName(a.Name())
 			if platformErr != nil {
@@ -185,19 +248,15 @@ func configureWizardAgents(agents []agent.Agent, opts WizardAgentApplyOptions) [
 			}
 			res.ResetApplied = true
 			res.ResetSnapshotID = resetResult.SnapshotID
-			rollbackReset = resetResult.Rollback
+			res.ResetNotInDurableSnapshot = resetResult.NotInDurableSnapshot
+			res.resetRollback = resetResult.Rollback
 		}
 
 		warnings, err := configureWizardAgent(a, opts.PhaseModels, opts.HiveEntry, opts.Context7Entry, opts.SkillsSubFS, opts.SelectedIDs, opts.AgentsSubFS, opts.StatuslineConfirm)
 		res.Warnings = append(res.Warnings, warnings...)
 		if err != nil {
-			if rollbackReset != nil {
-				if rbErr := rollbackReset(); rbErr != nil {
-					res.ResetRollbackErr = rbErr
-					err = fmt.Errorf("%w (configuration reset rollback also failed, snapshot %s: %v)", err, res.ResetSnapshotID, rbErr)
-				} else {
-					res.ResetRolledBack = true
-				}
+			if outcome := rollbackAgentReset(a, &res); outcome != "" {
+				err = fmt.Errorf("%w (%s)", err, outcome)
 			}
 			res.Err = err
 			results = append(results, res)
@@ -207,6 +266,17 @@ func configureWizardAgents(agents []agent.Agent, opts WizardAgentApplyOptions) [
 		results = append(results, res)
 	}
 
+	// A shared persona profile-apply failure runs only after every agent's
+	// own install already succeeded, so any agent whose reset is still
+	// pending rollback (res.resetRollback non-nil: this agent's own install
+	// did not fail, or this is the first shared-step failure it hit) would
+	// otherwise be left with its configuration reset and reinstalled but the
+	// wizard reporting overall failure -- neither the pre-reset state nor a
+	// complete, working setup. Roll every such agent's reset back here
+	// (issue #767 hardening R4-001/R2-002/R2-003): a runtime-verification
+	// failure below, by contrast, runs after this same profile apply already
+	// succeeded, so the reinstall is genuinely complete and is deliberately
+	// left in place instead.
 	if opts.Resolved != nil {
 		if err := applyWizardProfile(agents, opts.Resolved, wizardPresetApplyContext{
 			Layer1:               opts.PresetCtx.Layer1,
@@ -214,16 +284,30 @@ func configureWizardAgents(agents []agent.Agent, opts WizardAgentApplyOptions) [
 			PreviousPresetSlug:   opts.PresetCtx.PreviousPresetSlug,
 			PreviousPresetSource: opts.PresetCtx.PreviousPresetSource,
 		}); err != nil {
-			if len(results) == 0 {
-				return []AgentApplyResult{{AgentName: "persona-apply", Err: fmt.Errorf("apply preset pipeline: %w", err)}}
+			profileErr := fmt.Errorf("apply preset pipeline: %w", err)
+			for i, a := range agents {
+				if i >= len(results) {
+					break
+				}
+				rollbackAgentReset(a, &results[i])
 			}
-			results[len(results)-1].Err = fmt.Errorf("apply preset pipeline: %w", err)
+			if len(results) == 0 {
+				return []AgentApplyResult{{AgentName: "persona-apply", Err: profileErr}}
+			}
+			results[len(results)-1].Err = profileErr
 			return results
 		}
 	}
 
 	for i, a := range agents {
 		if err := verifyConfiguredAgentRuntime(a, &opts.PhaseModels); err != nil {
+			// A runtime-verification failure after a complete reinstall does
+			// NOT roll the reset back: the reinstall itself finished, so
+			// undoing the reset here would leave a worse state (no
+			// configuration at all) than the one that actually failed
+			// (configuration installed, but not yet verified). Every
+			// results[i].ResetApplied still reports its snapshot ID, and
+			// configResetSummaryLines keeps the reset line for it.
 			results[i].State.Configured = false
 			results[i].Err = err
 			return results

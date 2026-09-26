@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/state"
 )
@@ -507,5 +508,167 @@ func TestConfigureWizardAgents_TwoAgents_EarlierResetAgentStaysAppliedWhenLaterA
 	}
 	if string(got) != openCodeResidueContent {
 		t.Fatalf("opencode residue content = %q, want restored %q", got, openCodeResidueContent)
+	}
+}
+
+// --- Hardening R4-001/R2-002/R2-003: a shared post-install failure (persona
+// profile apply) rolls back every agent's already-applied reset; a
+// runtime-verification failure after a complete reinstall does not roll
+// back, and the reset line is never dropped from the summary either way ---
+
+func TestConfigureWizardAgents_ProfileApplyFailure_RollsBackSucceededAgentsReset(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+	residuePath := filepath.Join(configDir, "agents", "review-risk.md")
+	if err := os.MkdirAll(filepath.Dir(residuePath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	const residueContent = "legacy 4R agent"
+	if err := os.WriteFile(residuePath, []byte(residueContent), 0o644); err != nil {
+		t.Fatalf("seed residue: %v", err)
+	}
+
+	assignments, err := sddruntime.DefaultAssignmentsForPlatform(sddruntime.PlatformClaude)
+	if err != nil {
+		t.Fatalf("resolve default assignments: %v", err)
+	}
+	// setupAgentStub does not implement persona.ProfileAgent, so a non-nil
+	// Resolved makes applyWizardProfile fail for it -- every agent's own
+	// install/merge step already succeeded by the time this runs.
+	a := &setupAgentStub{name: "claude", configDir: configDir, observeRuntime: passingRuntimeObservation(t, "claude", assignments, nil)}
+
+	results := configureWizardAgents([]agent.Agent{a}, WizardAgentApplyOptions{
+		PhaseModels:       state.PhaseModels{},
+		HiveEntry:         agent.MCPEntry{Name: "hive"},
+		Context7Entry:     agent.MCPEntry{Name: "context7"},
+		Resolved:          &persona.ResolvedProfile{},
+		PresetCtx:         wizardPresetApplyContext{},
+		SkillsSubFS:       testSkillsFS,
+		StatuslineConfirm: func() bool { return true },
+		ResetConsented:    true,
+		Home:              home,
+	})
+	if len(results) != 1 {
+		t.Fatalf("results = %+v, want exactly one result", results)
+	}
+	res := results[0]
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "apply preset pipeline") {
+		t.Fatalf("res.Err = %v, want it to name the preset pipeline failure", res.Err)
+	}
+	if !res.ResetApplied {
+		t.Fatalf("res.ResetApplied = false, want true")
+	}
+	if !res.ResetRolledBack {
+		t.Fatalf("res.ResetRolledBack = false, want true: a shared post-install failure must roll back this agent's reset")
+	}
+	if res.ResetRollbackErr != nil {
+		t.Fatalf("res.ResetRollbackErr = %v, want nil on a successful rollback", res.ResetRollbackErr)
+	}
+	got, err := os.ReadFile(residuePath)
+	if err != nil {
+		t.Fatalf("residue file missing after rollback, want it restored: %v", err)
+	}
+	if string(got) != residueContent {
+		t.Fatalf("residue content = %q, want restored %q", got, residueContent)
+	}
+
+	lines := configResetSummaryLines(results)
+	if len(lines) != 1 {
+		t.Fatalf("configResetSummaryLines = %v, want exactly one line even though this agent's overall setup failed", lines)
+	}
+	if !strings.Contains(lines[0], res.ResetSnapshotID) {
+		t.Fatalf("configResetSummaryLines[0] = %q, want it to still name the snapshot ID %q", lines[0], res.ResetSnapshotID)
+	}
+	if !strings.Contains(lines[0], "rolled it back") {
+		t.Fatalf("configResetSummaryLines[0] = %q, want it to report the rollback", lines[0])
+	}
+}
+
+func TestConfigureWizardAgents_RuntimeVerificationFailure_DoesNotRollBackReset(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+	residuePath := filepath.Join(configDir, "agents", "review-risk.md")
+	if err := os.MkdirAll(filepath.Dir(residuePath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(residuePath, []byte("legacy 4R agent"), 0o644); err != nil {
+		t.Fatalf("seed residue: %v", err)
+	}
+
+	a := &setupAgentStub{name: "claude", configDir: configDir, observeRuntimeErr: errors.New("injected runtime observe failure")}
+
+	results := configureWizardAgents([]agent.Agent{a}, WizardAgentApplyOptions{
+		PhaseModels:       state.PhaseModels{},
+		HiveEntry:         agent.MCPEntry{Name: "hive"},
+		Context7Entry:     agent.MCPEntry{Name: "context7"},
+		PresetCtx:         wizardPresetApplyContext{},
+		SkillsSubFS:       testSkillsFS,
+		StatuslineConfirm: func() bool { return true },
+		ResetConsented:    true,
+		Home:              home,
+	})
+	if len(results) != 1 {
+		t.Fatalf("results = %+v, want exactly one result", results)
+	}
+	res := results[0]
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "runtime verification") {
+		t.Fatalf("res.Err = %v, want it to name the runtime verification failure", res.Err)
+	}
+	if !res.ResetApplied {
+		t.Fatalf("res.ResetApplied = false, want true")
+	}
+	if res.ResetRolledBack {
+		t.Fatalf("res.ResetRolledBack = true, want false: a runtime-verification failure after a complete reinstall must not roll back")
+	}
+	if res.ResetRollbackErr != nil {
+		t.Fatalf("res.ResetRollbackErr = %v, want nil: rollback was never attempted", res.ResetRollbackErr)
+	}
+	if _, err := os.Stat(residuePath); !os.IsNotExist(err) {
+		t.Fatalf("residue file still present, want it removed by the reset that ran and was kept")
+	}
+
+	lines := configResetSummaryLines(results)
+	if len(lines) != 1 {
+		t.Fatalf("configResetSummaryLines = %v, want exactly one line: the reset ran and must still be reported", lines)
+	}
+	if !strings.Contains(lines[0], res.ResetSnapshotID) {
+		t.Fatalf("configResetSummaryLines[0] = %q, want it to still name the snapshot ID %q", lines[0], res.ResetSnapshotID)
+	}
+	if !strings.Contains(lines[0], "kept") {
+		t.Fatalf("configResetSummaryLines[0] = %q, want it to report the reset was kept despite the later failure", lines[0])
+	}
+}
+
+// --- Hardening R1-001/R4-002/R2-004: NotInDurableSnapshot is surfaced in the
+// plan view before consent ---
+
+func TestViewConfigReset_ShowsNotInDurableSnapshotWarning(t *testing.T) {
+	home := isolateTestHome(t)
+	t.Setenv("PATH", "")
+	configDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	realOrchestratorPath := filepath.Join(home, "dotfiles", "sdd-orchestrator.md")
+	if err := os.MkdirAll(filepath.Dir(realOrchestratorPath), 0o755); err != nil {
+		t.Fatalf("mkdir dotfiles: %v", err)
+	}
+	if err := os.WriteFile(realOrchestratorPath, []byte("shared orchestrator content"), 0o644); err != nil {
+		t.Fatalf("seed orchestrator: %v", err)
+	}
+	orchestratorLink := filepath.Join(configDir, "sdd-orchestrator.md")
+	if err := os.Symlink(realOrchestratorPath, orchestratorLink); err != nil {
+		t.Fatalf("symlink orchestrator: %v", err)
+	}
+
+	m := Model{Agents: agent.Detect(embed.FS{}), width: 120}
+	m = initializeConfigResetStep(m)
+	view := viewConfigReset(m)
+
+	if !strings.Contains(view, "only be recoverable through the in-process rollback") {
+		t.Fatalf("view does not warn about durable-snapshot exclusions:\n%s", view)
+	}
+	if !strings.Contains(view, orchestratorLink) {
+		t.Fatalf("view does not name the excluded path %s:\n%s", orchestratorLink, view)
 	}
 }

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -52,6 +53,12 @@ func initializeConfigResetStep(m Model) Model {
 		return m
 	}
 
+	// The reset's durable-snapshot exclusion check is confinement-derived
+	// (internal/agent.withinBackupAllowedRoots), so it needs the same home
+	// directory ApplyReset later receives (opts.Home), computed the same way
+	// every other wizard call site resolves it.
+	home, _ := os.UserHomeDir()
+
 	inventories := make([]resetAgentInventory, 0, len(m.Agents))
 	for _, a := range m.Agents {
 		inv := resetAgentInventory{AgentName: a.Name(), ConfigDir: a.ConfigDir()}
@@ -65,7 +72,7 @@ func initializeConfigResetStep(m Model) Model {
 		for _, surface := range sddruntime.ResetInventory(platform) {
 			inv.DisplayLines = append(inv.DisplayLines, surface.Display)
 		}
-		plan, planErr := agent.PlanReset(platform, a.ConfigDir())
+		plan, planErr := agent.PlanReset(platform, a.ConfigDir(), home)
 		if planErr != nil {
 			inv.PlanErr = planErr
 		} else {
@@ -143,32 +150,55 @@ func replacedEntirelySurfaceDisplays(platform sddruntime.Platform) []string {
 
 // configResetSummaryLines projects the per-agent apply results into the
 // final apply summary's reset section: one line per agent the reset
-// actually ran for, naming its durable snapshot ID and exactly what its
-// platform's contract marks ReplacedEntirely, and nothing at all when no
-// agent had a reset applied (the wizard's decline path, or a machine with
-// nothing to reset, says nothing about a reset -- matching the summary's
-// tone before issue #767 introduced this step). A reset that failed and
-// rolled back, or failed and left unrecovered paths, is not summarized here
-// at all: that agent's res.Err already carries the full outcome and is
-// reported through the ordinary failure path instead.
+// actually ran for, and nothing at all when no agent had a reset applied
+// (the wizard's decline path, or a machine with nothing to reset, says
+// nothing about a reset -- matching the summary's tone before issue #767
+// introduced this step).
+//
+// Every agent whose reset ran gets a line here, whether or not that agent's
+// overall setup went on to fail: the snapshot ID is exactly what a human
+// would need to find a durable backup by hand, so it must never disappear
+// just because a later, unrelated step also failed (issue #767 hardening
+// R4-001/R2-002/R2-003 -- the previous version silently dropped this line
+// whenever res.Err was set, hiding the snapshot ID along with it).
 func configResetSummaryLines(results []AgentApplyResult) []string {
 	var lines []string
 	for _, res := range results {
-		if !res.ResetApplied || res.Err != nil {
+		if !res.ResetApplied {
 			continue
 		}
+		lines = append(lines, fmt.Sprintf("[%s] configuration reset applied before install (snapshot %s)%s",
+			res.AgentName, res.ResetSnapshotID, configResetOutcomeSuffix(res)))
+	}
+	return lines
+}
+
+// configResetOutcomeSuffix reports, for one agent whose reset ran, exactly
+// what happened to it afterward: rolled back (a later step failed and this
+// reset was undone), left in place after a rollback could not fully restore
+// it, kept because a later failure deliberately did not roll it back (the
+// runtime-verification-after-complete-reinstall case), or the ordinary
+// entirely-replaced description when nothing downstream failed.
+func configResetOutcomeSuffix(res AgentApplyResult) string {
+	switch {
+	case res.ResetRollbackErr != nil:
+		return fmt.Sprintf(
+			"; a later failure rolled it back, but rollback could not fully restore it: %v",
+			res.ResetRollbackErr,
+		)
+	case res.ResetRolledBack:
+		return "; a later failure rolled it back to its pre-reset configuration"
+	case res.Err != nil:
+		return "; the reinstall completed, so it was kept even though a later step failed"
+	default:
 		replaced := "every contract-owned surface listed in the reset step"
 		if platform, err := agent.PlatformForAgentName(res.AgentName); err == nil {
 			if displays := replacedEntirelySurfaceDisplays(platform); len(displays) > 0 {
 				replaced = strings.Join(displays, "; ")
 			}
 		}
-		lines = append(lines, fmt.Sprintf(
-			"[%s] configuration reset applied before install (snapshot %s): entirely replaced %s",
-			res.AgentName, res.ResetSnapshotID, replaced,
-		))
+		return ": entirely replaced " + replaced
 	}
-	return lines
 }
 
 func viewConfigReset(m Model) string {
@@ -220,6 +250,15 @@ func viewConfigReset(m Model) string {
 			contentSB.WriteString(terminalui.DimTextStyle.Render("  Found on this machine:") + "\n")
 			for _, c := range inv.Plan.Changes {
 				contentSB.WriteString(terminalui.DimTextStyle.Render("    - "+c.Path+": "+c.Detail) + "\n")
+			}
+		}
+		if len(inv.Plan.NotInDurableSnapshot) > 0 {
+			contentSB.WriteString(errorStyle.Render(
+				"  These files will only be recoverable through the in-process rollback of this run, "+
+					"not from the durable backup afterward:",
+			) + "\n")
+			for _, path := range inv.Plan.NotInDurableSnapshot {
+				contentSB.WriteString(errorStyle.Render("    - "+path) + "\n")
 			}
 		}
 		contentSB.WriteString("\n")
