@@ -179,14 +179,15 @@ func observeRuntimeWithConfig(configDir string, plan sddruntime.RuntimePlan, mod
 // retired from Jarvis-issued Claude configuration. installAgentsFromFS only
 // copies files and never deletes them (see internal/agent/install.go), so a
 // machine that installed an earlier Jarvis release keeps these files until an
-// explicit, consented reset removes them.
+// explicit, consented reset removes them. The base names are the single
+// source shared with the reset inventory (sddruntime.RetiredClaudeReviewAgentBaseNames).
 func retiredClaudeAgentFilenames() []string {
-	return []string{
-		"review-risk.md",
-		"review-readability.md",
-		"review-reliability.md",
-		"review-resilience.md",
+	names := sddruntime.RetiredClaudeReviewAgentBaseNames()
+	filenames := make([]string, 0, len(names))
+	for _, name := range names {
+		filenames = append(filenames, name+".md")
 	}
+	return filenames
 }
 
 // observeClaudeLegacy4RResidue reports, without mutating anything, which
