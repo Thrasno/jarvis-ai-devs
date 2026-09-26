@@ -94,6 +94,7 @@ func (e *Engine) verify(provider string, bootstrapLedger bool) (VerifyResult, er
 		RegistryQuality:            registryQuality,
 		OpenCode:                   observed.OpenCode,
 		ClaudeSDDSubagentHiveTools: observed.ClaudeSDDSubagentHiveTools,
+		ClaudeLegacy4RResidue:      observed.ClaudeLegacy4RResidue,
 	})
 	return VerifyResult{Status: report.Status, Report: report}, nil
 }
@@ -323,6 +324,13 @@ func doctorStepFromCheck(check sddruntime.CheckResult) DoctorStep {
 	if strings.HasPrefix(check.Key, "registry.quality.") {
 		step.ReasonCode = "registry_quality_warning"
 		step.NextAction = "run jarvis skill-registry refresh from the project worktree and inspect any remaining registry warnings"
+		return step
+	}
+	if check.Key == "invariant.claude.legacy_4r_residue" || check.Key == "invariant.opencode.legacy_4r_residue" {
+		step.Class = "informational"
+		step.SafetyClass = "informational"
+		step.ReasonCode = "legacy_4r_residue"
+		step.NextAction = "run the installation wizard (jarvis) and accept the consented configuration reset to remove legacy 4R residue; doctor and reconcile never delete it automatically"
 		return step
 	}
 
