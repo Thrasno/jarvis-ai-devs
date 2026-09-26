@@ -627,6 +627,10 @@ func TestApplyReset_RollbackRestoresOriginalExecutableBit(t *testing.T) {
 	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0o755); err != nil {
 		t.Fatalf("write script: %v", err)
 	}
+	originalInfo, err := os.Stat(scriptPath)
+	if err != nil {
+		t.Fatalf("stat original script: %v", err)
+	}
 
 	base := defaultResetFileOps()
 	origRemove := base.removeFile
@@ -637,7 +641,7 @@ func TestApplyReset_RollbackRestoresOriginalExecutableBit(t *testing.T) {
 		return origRemove(path)
 	}
 
-	_, err := applyResetWithOps(sddruntime.PlatformClaude, configDir, home, base)
+	_, err = applyResetWithOps(sddruntime.PlatformClaude, configDir, home, base)
 	if err == nil {
 		t.Fatalf("expected an error from the injected failure")
 	}
@@ -646,8 +650,13 @@ func TestApplyReset_RollbackRestoresOriginalExecutableBit(t *testing.T) {
 	if statErr != nil {
 		t.Fatalf("statusline-command.sh was not restored: %v", statErr)
 	}
-	if info.Mode().Perm() != 0o755 {
-		t.Fatalf("statusline-command.sh mode = %o, want 0755 (executable bit preserved)", info.Mode().Perm())
+	wantMode := os.FileMode(0o755)
+	if runtime.GOOS == "windows" {
+		// Windows does not expose Unix executable bits; compare the observed mode instead.
+		wantMode = originalInfo.Mode().Perm()
+	}
+	if info.Mode().Perm() != wantMode {
+		t.Fatalf("statusline-command.sh mode = %o, want %o", info.Mode().Perm(), wantMode)
 	}
 	if got := mustReadFile(t, scriptPath); got != scriptContent {
 		t.Fatalf("statusline-command.sh content = %q, want %q", got, scriptContent)
