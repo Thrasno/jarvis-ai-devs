@@ -1438,12 +1438,24 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		}
 
 		// Configure each detected agent and collect structured outcomes.
-		results := configureWizardAgents(m.Agents, wizardPhaseModels(m.manifest), agent.MCPEntry{}, agent.MCPEntry{}, resolvedPreset, wizardPresetApplyContext{
-			Layer1:               config.Layer1Content(),
-			Skills:               skillInfos,
-			PreviousPresetSlug:   previousSlug,
-			PreviousPresetSource: previousSource,
-		}, skillsSubFS, selectedIDs, agentsSubFS, statuslineConfirm, m.resetConsented, home)
+		results := configureWizardAgents(m.Agents, WizardAgentApplyOptions{
+			PhaseModels:   wizardPhaseModels(m.manifest),
+			HiveEntry:     agent.MCPEntry{},
+			Context7Entry: agent.MCPEntry{},
+			Resolved:      resolvedPreset,
+			PresetCtx: wizardPresetApplyContext{
+				Layer1:               config.Layer1Content(),
+				Skills:               skillInfos,
+				PreviousPresetSlug:   previousSlug,
+				PreviousPresetSource: previousSource,
+			},
+			SkillsSubFS:       skillsSubFS,
+			SelectedIDs:       selectedIDs,
+			AgentsSubFS:       agentsSubFS,
+			StatuslineConfirm: statuslineConfirm,
+			ResetConsented:    m.resetConsented,
+			Home:              home,
+		})
 		var configuredAgents []string
 		var automationWarnings []string
 		for _, res := range results {

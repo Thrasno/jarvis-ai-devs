@@ -26,6 +26,16 @@ type AgentApplyResult struct {
 	// install/merge steps, if the wizard's reset step was accepted.
 	ResetApplied    bool
 	ResetSnapshotID string
+
+	// ResetRolledBack and ResetRollbackErr report what happened to an already
+	// -applied reset when this same agent's subsequent install failed
+	// (issue #767 hardening R4-002): ResetRolledBack is true only when the
+	// reset's rollback fully restored the pre-reset configuration.
+	// ResetRollbackErr carries the rollback failure otherwise (which may be a
+	// *agent.ResetRestoreError naming unrecovered paths); it is folded into
+	// Err's text too, so every surface that already reports Err shows it.
+	ResetRolledBack  bool
+	ResetRollbackErr error
 }
 
 type wizardPresetApplyContext struct {
@@ -96,32 +106,40 @@ func reconcileWizardMCPs(agents []agent.Agent, home string) error {
 	})
 }
 
+// WizardAgentApplyOptions bundles the setup context configureWizardAgents
+// applies uniformly to every detected agent. Grouping these fields (rather
+// than passing them as positional parameters) keeps call sites readable as
+// the reset step (issue #767 T7) and its hardening added more shared context.
+type WizardAgentApplyOptions struct {
+	PhaseModels   state.PhaseModels
+	HiveEntry     agent.MCPEntry
+	Context7Entry agent.MCPEntry
+	Resolved      *persona.ResolvedProfile
+	PresetCtx     wizardPresetApplyContext
+	// SkillsSubFS is the sub-FS rooted at embed/skills for InstallSkills.
+	SkillsSubFS fs.FS
+	SelectedIDs []string
+	// AgentsSubFS is the sub-FS rooted at embed/agents/<platform> for
+	// file-based agent install (ClaudeAgent). nil for platforms that use the
+	// JSON config builder path instead (OpenCodeAgent).
+	AgentsSubFS       fs.FS
+	StatuslineConfirm func() bool
+
+	// ResetConsented is the human's explicit answer to the wizard's
+	// configuration reset step (issue #767 T7): only when true does this run
+	// agent.ApplyReset for each agent, BEFORE that agent's normal
+	// install/merge steps, so the subsequent install regenerates managed
+	// configuration from scratch exactly as a fresh install would.
+	ResetConsented bool
+	// Home is the home directory the reset's durable snapshot is stored
+	// under.
+	Home string
+}
+
 // configureWizardAgents applies setup to all detected agents and returns
 // per-agent structured outcomes. If one agent fails, callers can abort before
 // committing canonical config and still report the failing agent explicitly.
-// agentsSubFS is the sub-FS rooted at embed/agents/<platform> passed through to
-// configureWizardAgent for file-based agent install (ClaudeAgent).
-//
-// resetConsented is the human's explicit answer to the wizard's configuration
-// reset step (issue #767 T7): only when true does this run agent.ApplyReset
-// for each agent, BEFORE that agent's normal install/merge steps, so the
-// subsequent install regenerates managed configuration from scratch exactly
-// as a fresh install would. home is the home directory the reset's durable
-// snapshot is stored under.
-func configureWizardAgents(
-	agents []agent.Agent,
-	phaseModels state.PhaseModels,
-	hiveEntry agent.MCPEntry,
-	context7Entry agent.MCPEntry,
-	resolved *persona.ResolvedProfile,
-	presetCtx wizardPresetApplyContext,
-	skillsSubFS fs.FS,
-	selectedIDs []string,
-	agentsSubFS fs.FS,
-	statuslineConfirm func() bool,
-	resetConsented bool,
-	home string,
-) []AgentApplyResult {
+func configureWizardAgents(agents []agent.Agent, opts WizardAgentApplyOptions) []AgentApplyResult {
 	results := make([]AgentApplyResult, 0, len(agents))
 	for _, a := range agents {
 		configPath, err := wizardAgentConfigPath(a)
@@ -143,14 +161,23 @@ func configureWizardAgents(
 			return results
 		}
 
-		if resetConsented {
+		// rollbackReset, when non-nil, undoes an already-applied reset for
+		// THIS agent. It is called below only if this same agent's
+		// subsequent install fails, so a consented reset never leaves an
+		// agent's configuration deleted without either a working
+		// reinstall or a restored prior state (issue #767 hardening
+		// R4-002). An earlier agent that was reset and reinstalled
+		// successfully is untouched: only the agent whose install just
+		// failed is rolled back.
+		var rollbackReset func() error
+		if opts.ResetConsented {
 			platform, platformErr := agent.PlatformForAgentName(a.Name())
 			if platformErr != nil {
 				res.Err = fmt.Errorf("resolve reset platform: %w", platformErr)
 				results = append(results, res)
 				return results
 			}
-			resetResult, resetErr := agent.ApplyReset(platform, a.ConfigDir(), home)
+			resetResult, resetErr := agent.ApplyReset(platform, a.ConfigDir(), opts.Home)
 			if resetErr != nil {
 				res.Err = fmt.Errorf("configuration reset: %w", resetErr)
 				results = append(results, res)
@@ -158,11 +185,20 @@ func configureWizardAgents(
 			}
 			res.ResetApplied = true
 			res.ResetSnapshotID = resetResult.SnapshotID
+			rollbackReset = resetResult.Rollback
 		}
 
-		warnings, err := configureWizardAgent(a, phaseModels, hiveEntry, context7Entry, skillsSubFS, selectedIDs, agentsSubFS, statuslineConfirm)
+		warnings, err := configureWizardAgent(a, opts.PhaseModels, opts.HiveEntry, opts.Context7Entry, opts.SkillsSubFS, opts.SelectedIDs, opts.AgentsSubFS, opts.StatuslineConfirm)
 		res.Warnings = append(res.Warnings, warnings...)
 		if err != nil {
+			if rollbackReset != nil {
+				if rbErr := rollbackReset(); rbErr != nil {
+					res.ResetRollbackErr = rbErr
+					err = fmt.Errorf("%w (configuration reset rollback also failed, snapshot %s: %v)", err, res.ResetSnapshotID, rbErr)
+				} else {
+					res.ResetRolledBack = true
+				}
+			}
 			res.Err = err
 			results = append(results, res)
 			return results
@@ -171,12 +207,12 @@ func configureWizardAgents(
 		results = append(results, res)
 	}
 
-	if resolved != nil {
-		if err := applyWizardProfile(agents, resolved, wizardPresetApplyContext{
-			Layer1:               presetCtx.Layer1,
-			Skills:               presetCtx.Skills,
-			PreviousPresetSlug:   presetCtx.PreviousPresetSlug,
-			PreviousPresetSource: presetCtx.PreviousPresetSource,
+	if opts.Resolved != nil {
+		if err := applyWizardProfile(agents, opts.Resolved, wizardPresetApplyContext{
+			Layer1:               opts.PresetCtx.Layer1,
+			Skills:               opts.PresetCtx.Skills,
+			PreviousPresetSlug:   opts.PresetCtx.PreviousPresetSlug,
+			PreviousPresetSource: opts.PresetCtx.PreviousPresetSource,
 		}); err != nil {
 			if len(results) == 0 {
 				return []AgentApplyResult{{AgentName: "persona-apply", Err: fmt.Errorf("apply preset pipeline: %w", err)}}
@@ -187,7 +223,7 @@ func configureWizardAgents(
 	}
 
 	for i, a := range agents {
-		if err := verifyConfiguredAgentRuntime(a, &phaseModels); err != nil {
+		if err := verifyConfiguredAgentRuntime(a, &opts.PhaseModels); err != nil {
 			results[i].State.Configured = false
 			results[i].Err = err
 			return results

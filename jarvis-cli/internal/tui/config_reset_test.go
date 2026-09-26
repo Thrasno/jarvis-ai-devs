@@ -2,6 +2,7 @@ package tui
 
 import (
 	"embed"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -293,7 +294,7 @@ func TestConfigureWizardAgents_DeclinedReset_LeavesResidueUntouched(t *testing.T
 	}
 	a := &setupAgentStub{name: "claude", configDir: configDir, observeRuntime: passingRuntimeObservation(t, "claude", assignments, nil)}
 
-	results := configureWizardAgents([]agent.Agent{a}, state.PhaseModels{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true }, false, "")
+	results := configureWizardAgents([]agent.Agent{a}, WizardAgentApplyOptions{PhaseModels: state.PhaseModels{}, HiveEntry: agent.MCPEntry{Name: "hive"}, Context7Entry: agent.MCPEntry{Name: "context7"}, PresetCtx: wizardPresetApplyContext{}, SkillsSubFS: testSkillsFS, StatuslineConfirm: func() bool { return true }})
 	if len(results) != 1 || results[0].Err != nil {
 		t.Fatalf("results = %+v", results)
 	}
@@ -328,7 +329,7 @@ func TestConfigureWizardAgents_AcceptedReset_AppliesBeforeInstallAndSummarizes(t
 	}
 	a := &setupAgentStub{name: "claude", configDir: configDir, observeRuntime: passingRuntimeObservation(t, "claude", assignments, nil)}
 
-	results := configureWizardAgents([]agent.Agent{a}, state.PhaseModels{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true }, true, home)
+	results := configureWizardAgents([]agent.Agent{a}, WizardAgentApplyOptions{PhaseModels: state.PhaseModels{}, HiveEntry: agent.MCPEntry{Name: "hive"}, Context7Entry: agent.MCPEntry{Name: "context7"}, PresetCtx: wizardPresetApplyContext{}, SkillsSubFS: testSkillsFS, StatuslineConfirm: func() bool { return true }, ResetConsented: true, Home: home})
 	if len(results) != 1 || results[0].Err != nil {
 		t.Fatalf("results = %+v", results)
 	}
@@ -348,9 +349,163 @@ func TestConfigureWizardAgents_AcceptedReset_AppliesBeforeInstallAndSummarizes(t
 	}
 }
 
+// --- Hardening R2-002/R2-003: the "entirely replaced" wording is derived
+// per platform from the contract, not a hand-written Claude-only paragraph ---
+
+func TestViewConfigReset_OpenCodeOnly_WarningNamesOpenCodeSurfacesNotClaudeAgentsDir(t *testing.T) {
+	home := isolateTestHome(t)
+	t.Setenv("PATH", "")
+	if err := os.MkdirAll(filepath.Join(home, ".config", "opencode"), 0o755); err != nil {
+		t.Fatalf("mkdir opencode: %v", err)
+	}
+
+	m := Model{Agents: agent.Detect(embed.FS{}), width: 120}
+	m = initializeConfigResetStep(m)
+	view := viewConfigReset(m)
+
+	if strings.Contains(view, "~/.claude/agents/") {
+		t.Fatalf("view names Claude's agents/ directory for an OpenCode-only machine:\n%s", view)
+	}
+	const openCodeCoreKeysDisplay = "opencode.json: default_agent, permission, agent (entirely Jarvis-owned keys, removed whole)"
+	if !strings.Contains(view, openCodeCoreKeysDisplay) {
+		t.Fatalf("view does not derive the warning from opencode.settings.core_keys' contract Display text:\n%s", view)
+	}
+}
+
+func TestConfigResetSummaryLines_OpenCode_NamesOpenCodeSurfacesNotAgentsDirectory(t *testing.T) {
+	results := []AgentApplyResult{{AgentName: "opencode", ResetApplied: true, ResetSnapshotID: "snap-123"}}
+	lines := configResetSummaryLines(results)
+	if len(lines) != 1 {
+		t.Fatalf("configResetSummaryLines = %v, want exactly one line", lines)
+	}
+	if strings.Contains(lines[0], "agents/ directory") {
+		t.Fatalf("configResetSummaryLines[0] = %q, want no mention of Claude's agents/ directory for opencode", lines[0])
+	}
+	if !strings.Contains(lines[0], "default_agent") {
+		t.Fatalf("configResetSummaryLines[0] = %q, want it to name opencode's ReplacedEntirely surfaces", lines[0])
+	}
+}
+
 func TestConfigResetSummaryLines_EmptyWhenNothingWasReset(t *testing.T) {
 	results := []AgentApplyResult{{AgentName: "claude"}, {AgentName: "opencode"}}
 	if lines := configResetSummaryLines(results); len(lines) != 0 {
 		t.Fatalf("configResetSummaryLines = %v, want empty when nothing was reset", lines)
+	}
+}
+
+// --- Hardening R4-002: a reset applied for an agent whose install then
+// fails is rolled back, not left deleted with nothing reinstalled ---
+
+func TestConfigureWizardAgents_ResetAppliedThenInstallFails_RollsBackThatAgent(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+	residuePath := filepath.Join(configDir, "agents", "review-risk.md")
+	if err := os.MkdirAll(filepath.Dir(residuePath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	const residueContent = "legacy 4R agent"
+	if err := os.WriteFile(residuePath, []byte(residueContent), 0o644); err != nil {
+		t.Fatalf("seed residue: %v", err)
+	}
+
+	failing := &setupAgentStub{name: "claude", configDir: configDir, installOrchErr: errors.New("install orchestrator fail")}
+
+	results := configureWizardAgents([]agent.Agent{failing}, WizardAgentApplyOptions{
+		PhaseModels:       state.PhaseModels{},
+		HiveEntry:         agent.MCPEntry{Name: "hive"},
+		Context7Entry:     agent.MCPEntry{Name: "context7"},
+		PresetCtx:         wizardPresetApplyContext{},
+		SkillsSubFS:       testSkillsFS,
+		StatuslineConfirm: func() bool { return true },
+		ResetConsented:    true,
+		Home:              home,
+	})
+	if len(results) != 1 {
+		t.Fatalf("results = %+v, want exactly one result", results)
+	}
+	res := results[0]
+	if res.Err == nil {
+		t.Fatalf("expected the install failure to surface as an error")
+	}
+	if !strings.Contains(res.Err.Error(), "install orchestrator fail") {
+		t.Fatalf("res.Err = %v, want it to still name the install failure", res.Err)
+	}
+	if !res.ResetApplied {
+		t.Fatalf("res.ResetApplied = false, want true: the reset ran before the failing install step")
+	}
+	if !res.ResetRolledBack {
+		t.Fatalf("res.ResetRolledBack = false, want true: rollback should have fully restored the residue")
+	}
+	if res.ResetRollbackErr != nil {
+		t.Fatalf("res.ResetRollbackErr = %v, want nil on a successful rollback", res.ResetRollbackErr)
+	}
+	got, err := os.ReadFile(residuePath)
+	if err != nil {
+		t.Fatalf("residue file missing after rollback, want it restored: %v", err)
+	}
+	if string(got) != residueContent {
+		t.Fatalf("residue content = %q, want restored %q", got, residueContent)
+	}
+}
+
+func TestConfigureWizardAgents_TwoAgents_EarlierResetAgentStaysAppliedWhenLaterAgentFails(t *testing.T) {
+	home := t.TempDir()
+	claudeConfigDir := filepath.Join(home, ".claude")
+	residuePath := filepath.Join(claudeConfigDir, "agents", "review-risk.md")
+	if err := os.MkdirAll(filepath.Dir(residuePath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(residuePath, []byte("legacy 4R agent"), 0o644); err != nil {
+		t.Fatalf("seed residue: %v", err)
+	}
+
+	assignments, err := sddruntime.DefaultAssignmentsForPlatform(sddruntime.PlatformClaude)
+	if err != nil {
+		t.Fatalf("resolve default assignments: %v", err)
+	}
+	succeeding := &setupAgentStub{name: "claude", configDir: claudeConfigDir, observeRuntime: passingRuntimeObservation(t, "claude", assignments, nil)}
+
+	openCodeConfigDir := filepath.Join(home, ".config", "opencode")
+	openCodeResidue := filepath.Join(openCodeConfigDir, "sdd-orchestrator.md")
+	if err := os.MkdirAll(openCodeConfigDir, 0o755); err != nil {
+		t.Fatalf("mkdir opencode config dir: %v", err)
+	}
+	const openCodeResidueContent = "opencode orchestrator content"
+	if err := os.WriteFile(openCodeResidue, []byte(openCodeResidueContent), 0o644); err != nil {
+		t.Fatalf("seed opencode residue: %v", err)
+	}
+	failing := &setupAgentStub{name: "opencode", configDir: openCodeConfigDir, installOrchErr: errors.New("opencode install fail")}
+
+	results := configureWizardAgents([]agent.Agent{succeeding, failing}, WizardAgentApplyOptions{
+		PhaseModels:       state.PhaseModels{},
+		HiveEntry:         agent.MCPEntry{Name: "hive"},
+		Context7Entry:     agent.MCPEntry{Name: "context7"},
+		PresetCtx:         wizardPresetApplyContext{},
+		SkillsSubFS:       testSkillsFS,
+		StatuslineConfirm: func() bool { return true },
+		ResetConsented:    true,
+		Home:              home,
+	})
+	if len(results) != 2 {
+		t.Fatalf("results = %+v, want exactly two results (one per agent)", results)
+	}
+	if results[0].Err != nil {
+		t.Fatalf("first (claude) result = %+v, want no error: it installed successfully after its own reset", results[0])
+	}
+	if !results[0].ResetApplied || results[0].ResetRolledBack {
+		t.Fatalf("first (claude) result = %+v, want ResetApplied=true and ResetRolledBack=false: it must stay as-is", results[0])
+	}
+	if _, err := os.Stat(residuePath); !os.IsNotExist(err) {
+		t.Fatalf("claude residue still present, want it removed by its own successful reset+reinstall")
+	}
+	if results[1].Err == nil || !results[1].ResetRolledBack {
+		t.Fatalf("second (opencode) result = %+v, want an error and ResetRolledBack=true", results[1])
+	}
+	got, err := os.ReadFile(openCodeResidue)
+	if err != nil {
+		t.Fatalf("opencode residue missing after rollback, want it restored: %v", err)
+	}
+	if string(got) != openCodeResidueContent {
+		t.Fatalf("opencode residue content = %q, want restored %q", got, openCodeResidueContent)
 	}
 }

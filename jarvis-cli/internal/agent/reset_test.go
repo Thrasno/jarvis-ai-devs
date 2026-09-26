@@ -850,3 +850,286 @@ func hasChangeSurface(changes []ResetChange, surfaceID string) bool {
 	}
 	return false
 }
+
+// --- Hardening: top-level surfaces that are themselves symlinks ---
+//
+// R3-002 covered a symlink found while enumerating a whole-directory surface
+// (agents/, skills/, ...). These tests cover the surfaces read directly by
+// path -- settings.json, CLAUDE.md, and a whole-file surface -- where a
+// dotfile manager is most likely to place the symlink itself.
+
+func TestApplyReset_Claude_SymlinkedSettingsJSON_EditedInPlaceLinkPreserved(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks on Windows needs elevated privileges")
+	}
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	names, err := claudeManagedOutputStyleNames()
+	if err != nil || len(names) == 0 {
+		t.Fatalf("claudeManagedOutputStyleNames() = %v, %v, want at least one built-in name", names, err)
+	}
+	managedStyle := names[0]
+
+	realDir := filepath.Join(home, "dotfiles")
+	realPath := filepath.Join(realDir, "claude-settings.json")
+	original := fmt.Sprintf(`{"outputStyle": %q, "permissions": {"allow": ["Bash(git status:*)"]}}`, managedStyle)
+	mustWriteFile(t, realPath, original)
+	if err := os.Chmod(realPath, 0o640); err != nil {
+		t.Fatalf("chmod real target: %v", err)
+	}
+
+	linkPath := filepath.Join(configDir, "settings.json")
+	if err := os.Symlink(realPath, linkPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	result, err := ApplyReset(sddruntime.PlatformClaude, configDir, home)
+	if err != nil {
+		t.Fatalf("ApplyReset: %v", err)
+	}
+
+	linkInfo, err := os.Lstat(linkPath)
+	if err != nil {
+		t.Fatalf("lstat link: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("settings.json is no longer a symlink; the reset replaced the link with a regular file")
+	}
+	target, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("readlink: %v", err)
+	}
+	if target != realPath {
+		t.Fatalf("symlink target = %q, want %q (unchanged)", target, realPath)
+	}
+
+	realInfo, err := os.Lstat(realPath)
+	if err != nil {
+		t.Fatalf("lstat real target: %v", err)
+	}
+	if realInfo.Mode().Perm() != 0o640 {
+		t.Fatalf("real target mode = %v, want 0640 preserved (not the symlink's own Lstat mode)", realInfo.Mode().Perm())
+	}
+
+	after := mustReadFile(t, realPath)
+	if strings.Contains(after, managedStyle) {
+		t.Fatalf("outputStyle was not reset in the real target: %s", after)
+	}
+	if !hasChangeSurface(result.Changes, "claude.settings.output_style") {
+		t.Fatalf("expected claude.settings.output_style change, got %+v", result.Changes)
+	}
+}
+
+func TestApplyReset_Claude_SymlinkedWholeFileSurface_LinkRemovedTargetUntouched(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks on Windows needs elevated privileges")
+	}
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+
+	realPath := filepath.Join(home, "dotfiles", "sdd-orchestrator.md")
+	mustWriteFile(t, realPath, "shared orchestrator content")
+
+	linkPath := filepath.Join(configDir, "sdd-orchestrator.md")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Symlink(realPath, linkPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	result, err := ApplyReset(sddruntime.PlatformClaude, configDir, home)
+	if err != nil {
+		t.Fatalf("ApplyReset: %v", err)
+	}
+
+	if _, err := os.Lstat(linkPath); !os.IsNotExist(err) {
+		t.Fatalf("symlink still present after reset, lstat err = %v", err)
+	}
+	if got := mustReadFile(t, realPath); got != "shared orchestrator content" {
+		t.Fatalf("real target was mutated through the link: %q", got)
+	}
+	var detail string
+	for _, c := range result.Changes {
+		if c.SurfaceID == "claude.orchestrator.file" {
+			detail = c.Detail
+		}
+	}
+	if !strings.Contains(detail, "symlink") {
+		t.Fatalf("expected the whole-file symlink flagged as a symlink, got %q", detail)
+	}
+}
+
+func TestApplyReset_Claude_SymlinkedTopLevelSurfaces_MidApplyFailureRollsBack(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks on Windows needs elevated privileges")
+	}
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+
+	realSettingsPath := filepath.Join(home, "dotfiles", "claude-settings.json")
+	originalSettings := `{"outputStyle": "Gentleman"}`
+	mustWriteFile(t, realSettingsPath, originalSettings)
+	settingsLink := filepath.Join(configDir, "settings.json")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Symlink(realSettingsPath, settingsLink); err != nil {
+		t.Fatalf("symlink settings: %v", err)
+	}
+
+	realOrchestratorPath := filepath.Join(home, "dotfiles", "sdd-orchestrator.md")
+	mustWriteFile(t, realOrchestratorPath, "shared orchestrator content")
+	orchestratorLink := filepath.Join(configDir, "sdd-orchestrator.md")
+	if err := os.Symlink(realOrchestratorPath, orchestratorLink); err != nil {
+		t.Fatalf("symlink orchestrator: %v", err)
+	}
+
+	mustWriteFile(t, filepath.Join(configDir, "CLAUDE.md"), sampleClaudeMD)
+	claudeMDPath := filepath.Join(configDir, "CLAUDE.md")
+
+	base := defaultResetFileOps()
+	origWrite := base.writeFile
+	base.writeFile = func(path string, data []byte, mode os.FileMode) error {
+		if path == claudeMDPath {
+			return fmt.Errorf("injected apply failure")
+		}
+		return origWrite(path, data, mode)
+	}
+
+	_, err := applyResetWithOps(sddruntime.PlatformClaude, configDir, home, base)
+	if err == nil {
+		t.Fatalf("expected an error from the injected failure")
+	}
+	var restoreErr *ResetRestoreError
+	if errors.As(err, &restoreErr) {
+		t.Fatalf("error = %v (*ResetRestoreError), want a plain wrapped error since rollback fully succeeded", err)
+	}
+
+	// The settings symlink mutation edited the real target in place: rollback
+	// must restore its prior bytes, and the link itself must still exist.
+	if got := mustReadFile(t, realSettingsPath); got != originalSettings {
+		t.Fatalf("real settings target = %q, want original restored: %q", got, originalSettings)
+	}
+	if _, err := os.Lstat(settingsLink); err != nil {
+		t.Fatalf("settings symlink missing after rollback: %v", err)
+	}
+
+	// The orchestrator symlink mutation deleted the link itself: rollback
+	// must recreate the link pointing at the same target.
+	linkInfo, err := os.Lstat(orchestratorLink)
+	if err != nil {
+		t.Fatalf("orchestrator symlink missing after rollback: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("orchestrator path was recreated as a regular file, not a symlink")
+	}
+	target, err := os.Readlink(orchestratorLink)
+	if err != nil {
+		t.Fatalf("readlink orchestrator after rollback: %v", err)
+	}
+	if target != realOrchestratorPath {
+		t.Fatalf("orchestrator symlink target after rollback = %q, want %q", target, realOrchestratorPath)
+	}
+}
+
+// --- Hardening R4-002: ApplyReset.Rollback undoes an already-applied reset ---
+
+func TestApplyReset_Rollback_UndoesASuccessfulReset(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+	mustWriteFile(t, filepath.Join(configDir, "CLAUDE.md"), sampleClaudeMD)
+	mustWriteFile(t, filepath.Join(configDir, "agents", "sdd-init.md"), "agent content")
+
+	result, err := ApplyReset(sddruntime.PlatformClaude, configDir, home)
+	if err != nil {
+		t.Fatalf("ApplyReset: %v", err)
+	}
+	if result.Rollback == nil {
+		t.Fatalf("expected a non-nil Rollback for a reset that applied mutations")
+	}
+	if _, err := os.Stat(filepath.Join(configDir, "agents", "sdd-init.md")); !os.IsNotExist(err) {
+		t.Fatalf("expected agents/sdd-init.md removed by the reset before rollback")
+	}
+
+	if err := result.Rollback(); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+
+	if got := mustReadFile(t, filepath.Join(configDir, "CLAUDE.md")); got != sampleClaudeMD {
+		t.Fatalf("CLAUDE.md = %q, want original content restored by Rollback", got)
+	}
+	if got := mustReadFile(t, filepath.Join(configDir, "agents", "sdd-init.md")); got != "agent content" {
+		t.Fatalf("agents/sdd-init.md = %q, want restored by Rollback", got)
+	}
+}
+
+func TestApplyReset_Rollback_NilWhenNothingToReset(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+
+	result, err := ApplyReset(sddruntime.PlatformClaude, configDir, home)
+	if err != nil {
+		t.Fatalf("ApplyReset: %v", err)
+	}
+	if result.Rollback != nil {
+		t.Fatalf("expected a nil Rollback when there were no mutations to apply")
+	}
+}
+
+// --- Hardening R4-003: symlink inventory sidecar next to the durable snapshot ---
+
+func TestApplyReset_WritesSymlinkSidecarForDurableSnapshot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks on Windows needs elevated privileges")
+	}
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+
+	realPath := filepath.Join(home, "dotfiles", "sdd-orchestrator.md")
+	mustWriteFile(t, realPath, "shared orchestrator content")
+	linkPath := filepath.Join(configDir, "sdd-orchestrator.md")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Symlink(realPath, linkPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	result, err := ApplyReset(sddruntime.PlatformClaude, configDir, home)
+	if err != nil {
+		t.Fatalf("ApplyReset: %v", err)
+	}
+
+	sidecarPath := filepath.Join(home, ".jarvis", "backups", result.SnapshotID+".symlinks.json")
+	raw, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		t.Fatalf("read symlink sidecar: %v", err)
+	}
+	var entries []resetSymlinkSidecarEntry
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		t.Fatalf("unmarshal symlink sidecar: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Path != linkPath || entries[0].Target != realPath {
+		t.Fatalf("sidecar entries = %+v, want exactly one {%s, %s}", entries, linkPath, realPath)
+	}
+}
+
+func TestApplyReset_NoSymlinkSidecarWhenNoSymlinkMutations(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+	mustWriteFile(t, filepath.Join(configDir, "CLAUDE.md"), sampleClaudeMD)
+
+	result, err := ApplyReset(sddruntime.PlatformClaude, configDir, home)
+	if err != nil {
+		t.Fatalf("ApplyReset: %v", err)
+	}
+	sidecarPath := filepath.Join(home, ".jarvis", "backups", result.SnapshotID+".symlinks.json")
+	if _, err := os.Stat(sidecarPath); !os.IsNotExist(err) {
+		t.Fatalf("did not expect a symlink sidecar when no symlink mutations occurred, stat err = %v", err)
+	}
+}

@@ -1263,7 +1263,7 @@ func TestConfigureWizardAgents_AddsClaudeRestartGuidanceOnlyForClaude(t *testing
 	claudeHome := t.TempDir()
 	claude := &sddInstallingMockAgent{mockAgent: mockAgent{name: "claude", configDir: filepath.Join(claudeHome, ".claude")}, home: claudeHome}
 	opencode := &mockAgent{name: "opencode", configDir: t.TempDir()}
-	results := configureWizardAgents([]agent.Agent{claude, opencode}, state.New().PhaseModels, agent.MCPEntry{Name: "hive", DaemonPath: "/tmp/hive-daemon"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, nil, nil, nil, func() bool { return true }, false, "")
+	results := configureWizardAgents([]agent.Agent{claude, opencode}, WizardAgentApplyOptions{PhaseModels: state.New().PhaseModels, HiveEntry: agent.MCPEntry{Name: "hive", DaemonPath: "/tmp/hive-daemon"}, Context7Entry: agent.MCPEntry{Name: "context7"}, PresetCtx: wizardPresetApplyContext{}, SkillsSubFS: nil, StatuslineConfirm: func() bool { return true }})
 
 	if len(results) != 2 {
 		t.Fatalf("expected two results, got %#v", results)

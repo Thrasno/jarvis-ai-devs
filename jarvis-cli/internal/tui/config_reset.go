@@ -124,21 +124,48 @@ func updateConfigReset(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// replacedEntirelySurfaceDisplays returns the exact Display text of every
+// ResetInventory surface marked ReplacedEntirely for platform, in contract
+// order. Both the reset step's warning paragraph and the apply summary
+// derive the "what gets entirely replaced" wording from here, so neither one
+// can drift from the contract or from each other (issue #767 hardening
+// R2-002/R2-003: this text used to be hand-written and named only Claude's
+// agents/ directory, which was simply wrong for an OpenCode-only machine).
+func replacedEntirelySurfaceDisplays(platform sddruntime.Platform) []string {
+	var out []string
+	for _, s := range sddruntime.ResetInventory(platform) {
+		if s.ReplacedEntirely {
+			out = append(out, s.Display)
+		}
+	}
+	return out
+}
+
 // configResetSummaryLines projects the per-agent apply results into the
 // final apply summary's reset section: one line per agent the reset
-// actually ran for, naming its durable snapshot ID, and nothing at all when
-// no agent had a reset applied (the wizard's decline path, or a machine with
+// actually ran for, naming its durable snapshot ID and exactly what its
+// platform's contract marks ReplacedEntirely, and nothing at all when no
+// agent had a reset applied (the wizard's decline path, or a machine with
 // nothing to reset, says nothing about a reset -- matching the summary's
-// tone before issue #767 introduced this step).
+// tone before issue #767 introduced this step). A reset that failed and
+// rolled back, or failed and left unrecovered paths, is not summarized here
+// at all: that agent's res.Err already carries the full outcome and is
+// reported through the ordinary failure path instead.
 func configResetSummaryLines(results []AgentApplyResult) []string {
 	var lines []string
 	for _, res := range results {
-		if !res.ResetApplied {
+		if !res.ResetApplied || res.Err != nil {
 			continue
 		}
+		replaced := "every contract-owned surface listed in the reset step"
+		if platform, err := agent.PlatformForAgentName(res.AgentName); err == nil {
+			if displays := replacedEntirelySurfaceDisplays(platform); len(displays) > 0 {
+				replaced = strings.Join(displays, "; ")
+			}
+		}
 		lines = append(lines, fmt.Sprintf(
-			"[%s] configuration reset applied before install (snapshot %s): replaced the agents/ directory and every other contract-owned surface listed in the reset step",
-			res.AgentName, res.ResetSnapshotID,
+			"[%s] configuration reset applied before install (snapshot %s): entirely replaced %s",
+			res.AgentName, res.ResetSnapshotID, replaced,
 		))
 	}
 	return lines
@@ -153,11 +180,31 @@ func viewConfigReset(m Model) string {
 	var contentSB strings.Builder
 	contentSB.WriteString(terminalui.TitleStyle.Render("Optional: reset Jarvis-managed configuration before continuing") + "\n\n")
 	contentSB.WriteString(
-		"Accepting entirely replaces ~/.claude/agents/ and the \"agent\" section of\n" +
-			"opencode.json before the rest of setup runs: any agent files or entries you\n" +
-			"added there yourself are lost. Declining leaves your current configuration\n" +
-			"exactly as it is; nothing below is touched.\n\n",
+		"Accepting runs before the rest of setup. Declining leaves your current\n" +
+			"configuration exactly as it is; nothing below is touched.\n\n",
 	)
+
+	// The "entirely replaced" warning is derived per detected platform from
+	// the same contract ResetInventory the reset itself reads, never
+	// hand-written here: it names exactly what is entirely replaced (an
+	// agent file or entry a user added there themselves is lost), for
+	// whichever platforms were actually detected on this machine.
+	seenPlatform := make(map[sddruntime.Platform]bool)
+	var replacedLines []string
+	for _, inv := range m.resetInventories {
+		if inv.PlanErr != nil || inv.Platform == "" || seenPlatform[inv.Platform] {
+			continue
+		}
+		seenPlatform[inv.Platform] = true
+		replacedLines = append(replacedLines, replacedEntirelySurfaceDisplays(inv.Platform)...)
+	}
+	if len(replacedLines) > 0 {
+		contentSB.WriteString("Accepting entirely replaces (anything you added there yourself is lost):\n")
+		for _, line := range replacedLines {
+			contentSB.WriteString("  - " + line + "\n")
+		}
+		contentSB.WriteString("\n")
+	}
 
 	failed := m.resetPlanFailed()
 	for _, inv := range m.resetInventories {
