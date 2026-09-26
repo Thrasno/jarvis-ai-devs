@@ -773,10 +773,9 @@ func TestOpenCodeAgent_MergeGeneratedConfig_IgnoresMalformedTaskPermissionValues
 	}
 }
 
-// TestBuildGeneratedAgents_ContainsAllReviewAgents asserts that
-// buildOpenCodeGeneratedAgents returns entries for all 4 R1-R4 review agents
-// with mode=subagent and hidden=true (spec: OpenCode Agent Registration).
-func TestBuildGeneratedAgents_ContainsAllReviewAgents(t *testing.T) {
+// TestBuildGeneratedAgents_ExcludesLegacy4R asserts that
+// buildOpenCodeGeneratedAgents does not register retired 4R agents.
+func TestBuildGeneratedAgents_ExcludesLegacy4R(t *testing.T) {
 	agents := buildOpenCodeGeneratedAgents(nil, nil)
 
 	reviewNames := []string{"review-risk", "review-readability", "review-reliability", "review-resilience"}
@@ -786,72 +785,26 @@ func TestBuildGeneratedAgents_ContainsAllReviewAgents(t *testing.T) {
 	}
 
 	for _, name := range reviewNames {
-		got, ok := byName[name]
-		if !ok {
-			t.Errorf("buildOpenCodeGeneratedAgents: missing entry for %q", name)
-			continue
-		}
-		if got.Mode != "subagent" {
-			t.Errorf("%s: mode = %q, want subagent", name, got.Mode)
-		}
-		if !got.Hidden {
-			t.Errorf("%s: hidden = false, want true", name)
+		if _, ok := byName[name]; ok {
+			t.Errorf("buildOpenCodeGeneratedAgents unexpectedly registered %q", name)
 		}
 	}
 }
 
-// TestCleanupAllowList_ContainsAllReviewAgents asserts that review agents are
-// included in the cleanup allow-list so they are not pruned during reinstall
-// (spec: OpenCode Agent Registration — Cleanup does not remove review agents).
-func TestCleanupAllowList_ContainsAllReviewAgents(t *testing.T) {
-	reviewNames := []string{"review-risk", "review-readability", "review-reliability", "review-resilience"}
-	allowed := openCodeReviewSubagents()
-
-	byName := make(map[string]bool, len(allowed))
-	for _, n := range allowed {
-		byName[n] = true
+func TestOpenCodeAgent_MergeGeneratedConfig_ExcludesLegacy4R(t *testing.T) {
+	a := &OpenCodeAgent{home: t.TempDir(), templatesFS: testTemplatesFS}
+	if err := a.MergeGeneratedConfig(defaultRuntimePhaseModels()); err != nil {
+		t.Fatalf("MergeGeneratedConfig: %v", err)
 	}
-
-	for _, name := range reviewNames {
-		if !byName[name] {
-			t.Errorf("openCodeReviewSubagents: missing %q", name)
+	settings := readJSONFile(t, a.settingsPath())
+	agents := settings["agent"].(map[string]any)
+	task := agents["sdd-orchestrator"].(map[string]any)["permission"].(map[string]any)["task"].(map[string]any)
+	for _, name := range []string{"review-risk", "review-readability", "review-reliability", "review-resilience"} {
+		if _, ok := agents[name]; ok {
+			t.Errorf("generated agent %q remains", name)
 		}
-	}
-
-	// Also verify they survive a full cleanupOpenCodeGeneratedConfig pass.
-	// Build a JSON blob where all review agents already have task:allow entries.
-	taskMap := map[string]any{"*": "deny"}
-	for _, n := range reviewNames {
-		taskMap[n] = "allow"
-	}
-	cfg := map[string]any{
-		"agent": map[string]any{
-			"sdd-orchestrator": map[string]any{
-				"permission": map[string]any{
-					"task": taskMap,
-				},
-			},
-		},
-	}
-	raw, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatalf("marshal test config: %v", err)
-	}
-
-	cleaned, err := cleanupOpenCodeGeneratedConfig(raw)
-	if err != nil {
-		t.Fatalf("cleanupOpenCodeGeneratedConfig: %v", err)
-	}
-
-	var out map[string]any
-	if err := json.Unmarshal(cleaned, &out); err != nil {
-		t.Fatalf("unmarshal cleaned config: %v", err)
-	}
-
-	taskPerm := out["agent"].(map[string]any)["sdd-orchestrator"].(map[string]any)["permission"].(map[string]any)["task"].(map[string]any)
-	for _, name := range reviewNames {
-		if taskPerm[name] != "allow" {
-			t.Errorf("cleanupOpenCodeGeneratedConfig removed review agent %q from task allows: %#v", name, taskPerm)
+		if _, ok := task[name]; ok {
+			t.Errorf("generated task allow %q remains", name)
 		}
 	}
 }
