@@ -20,6 +20,12 @@ type AgentApplyResult struct {
 	State     state.AgentRecord
 	Warnings  []string
 	Err       error
+
+	// ResetApplied and ResetSnapshotID report the consented configuration
+	// reset (issue #767 T7) that ran for this agent before its normal
+	// install/merge steps, if the wizard's reset step was accepted.
+	ResetApplied    bool
+	ResetSnapshotID string
 }
 
 type wizardPresetApplyContext struct {
@@ -95,6 +101,13 @@ func reconcileWizardMCPs(agents []agent.Agent, home string) error {
 // committing canonical config and still report the failing agent explicitly.
 // agentsSubFS is the sub-FS rooted at embed/agents/<platform> passed through to
 // configureWizardAgent for file-based agent install (ClaudeAgent).
+//
+// resetConsented is the human's explicit answer to the wizard's configuration
+// reset step (issue #767 T7): only when true does this run agent.ApplyReset
+// for each agent, BEFORE that agent's normal install/merge steps, so the
+// subsequent install regenerates managed configuration from scratch exactly
+// as a fresh install would. home is the home directory the reset's durable
+// snapshot is stored under.
 func configureWizardAgents(
 	agents []agent.Agent,
 	phaseModels state.PhaseModels,
@@ -106,6 +119,8 @@ func configureWizardAgents(
 	selectedIDs []string,
 	agentsSubFS fs.FS,
 	statuslineConfirm func() bool,
+	resetConsented bool,
+	home string,
 ) []AgentApplyResult {
 	results := make([]AgentApplyResult, 0, len(agents))
 	for _, a := range agents {
@@ -127,6 +142,24 @@ func configureWizardAgents(
 			results = append(results, res)
 			return results
 		}
+
+		if resetConsented {
+			platform, platformErr := agent.PlatformForAgentName(a.Name())
+			if platformErr != nil {
+				res.Err = fmt.Errorf("resolve reset platform: %w", platformErr)
+				results = append(results, res)
+				return results
+			}
+			resetResult, resetErr := agent.ApplyReset(platform, a.ConfigDir(), home)
+			if resetErr != nil {
+				res.Err = fmt.Errorf("configuration reset: %w", resetErr)
+				results = append(results, res)
+				return results
+			}
+			res.ResetApplied = true
+			res.ResetSnapshotID = resetResult.SnapshotID
+		}
+
 		warnings, err := configureWizardAgent(a, phaseModels, hiveEntry, context7Entry, skillsSubFS, selectedIDs, agentsSubFS, statuslineConfirm)
 		res.Warnings = append(res.Warnings, warnings...)
 		if err != nil {

@@ -382,7 +382,7 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		Skills:               skillInfos,
 		PreviousPresetSlug:   previousPresetSlug,
 		PreviousPresetSource: previousPresetSource,
-	}, skillsSubFS, selectedIDs, agentsSubFS, statuslineConfirm)
+	}, skillsSubFS, selectedIDs, agentsSubFS, statuslineConfirm, false, home)
 	var configuredAgents []string
 	for _, res := range results {
 		fmt.Printf("Configuring %s ...\n", res.AgentName)

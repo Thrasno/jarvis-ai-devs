@@ -125,6 +125,8 @@ func TestNewCockpitModel_StartsAtCockpitNotWizard(t *testing.T) {
 }
 
 func TestCockpitInstallReconfigureEntersWizard(t *testing.T) {
+	isolateTestHome(t)
+	t.Setenv("PATH", "")
 	m := NewCockpitModel(testWizardConfig())
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -531,6 +533,7 @@ func TestNewModel_FreshDefaultsSelectFirstProfile(t *testing.T) {
 
 func TestNewModel_BlankPersonaAcceptanceBlocksLegacyV1PresetAndPreservesConfig(t *testing.T) {
 	isolateTestHome(t)
+	t.Setenv("PATH", "")
 	legacyPath := filepath.Join(os.Getenv("HOME"), ".jarvis", "personas", "legacy-custom.yaml")
 	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
 		t.Fatalf("create legacy preset dir: %v", err)
@@ -571,6 +574,7 @@ func TestNewModel_BlankPersonaAcceptanceBlocksLegacyV1PresetAndPreservesConfig(t
 
 func TestNewModel_BlankPersonaAcceptanceBlocksMissingPresetAndPreservesConfig(t *testing.T) {
 	isolateTestHome(t)
+	t.Setenv("PATH", "")
 	seedRecordedPersona(t, "deleted-custom", state.PersonaSourceUser)
 
 	m := NewModel(testWizardConfig(), false)
@@ -1259,7 +1263,7 @@ func TestConfigureWizardAgents_AddsClaudeRestartGuidanceOnlyForClaude(t *testing
 	claudeHome := t.TempDir()
 	claude := &sddInstallingMockAgent{mockAgent: mockAgent{name: "claude", configDir: filepath.Join(claudeHome, ".claude")}, home: claudeHome}
 	opencode := &mockAgent{name: "opencode", configDir: t.TempDir()}
-	results := configureWizardAgents([]agent.Agent{claude, opencode}, state.New().PhaseModels, agent.MCPEntry{Name: "hive", DaemonPath: "/tmp/hive-daemon"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, nil, nil, nil, func() bool { return true })
+	results := configureWizardAgents([]agent.Agent{claude, opencode}, state.New().PhaseModels, agent.MCPEntry{Name: "hive", DaemonPath: "/tmp/hive-daemon"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, nil, nil, nil, func() bool { return true }, false, "")
 
 	if len(results) != 2 {
 		t.Fatalf("expected two results, got %#v", results)
@@ -1578,6 +1582,8 @@ func TestNoTUI_SkipsTTYRequirement(t *testing.T) {
 // TestNewModel_WithEmptyWizardConfig verifies that NewModel returns a valid model
 // even when the WizardConfig has zero-value FSes (errors are silently ignored).
 func TestNewModel_WithEmptyWizardConfig(t *testing.T) {
+	isolateTestHome(t)
+	t.Setenv("PATH", "")
 	m := NewModel(WizardConfig{}, false)
 	if m.Step != StepHiveLocal {
 		t.Errorf("expected StepHiveLocal, got %v", m.Step)

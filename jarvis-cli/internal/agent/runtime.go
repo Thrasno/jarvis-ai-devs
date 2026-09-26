@@ -308,6 +308,14 @@ func resolvedAssignmentsForAgentWithConfig(agent string, models *state.PhaseMode
 	return sddruntime.ResolveAssignmentsForPlatform(platform, resolved)
 }
 
+// PlatformForAgentName maps an Agent.Name() value ("claude", "opencode") to
+// its sddruntime.Platform. It is the single source both runtime verification
+// and the wizard's consented configuration reset (issue #767) derive an
+// agent's reset platform from.
+func PlatformForAgentName(name string) (sddruntime.Platform, error) {
+	return platformForAgent(name)
+}
+
 func platformForAgent(agent string) (sddruntime.Platform, error) {
 	switch agent {
 	case "opencode":

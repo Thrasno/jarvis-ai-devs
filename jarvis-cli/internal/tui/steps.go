@@ -1443,7 +1443,7 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 			Skills:               skillInfos,
 			PreviousPresetSlug:   previousSlug,
 			PreviousPresetSource: previousSource,
-		}, skillsSubFS, selectedIDs, agentsSubFS, statuslineConfirm)
+		}, skillsSubFS, selectedIDs, agentsSubFS, statuslineConfirm, m.resetConsented, home)
 		var configuredAgents []string
 		var automationWarnings []string
 		for _, res := range results {
@@ -1453,6 +1453,7 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 			configuredAgents = append(configuredAgents, res.AgentName)
 			automationWarnings = append(automationWarnings, res.Warnings...)
 		}
+		resetLines := configResetSummaryLines(results)
 
 		if m.Scope == state.ScopeLocalOnly {
 			if err := config.DeleteSyncCredentials(); err != nil {
@@ -1510,6 +1511,9 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		summary := fmt.Sprintf("Configuration complete. Agents configured: %s", strings.Join(configuredAgents, ", "))
 		if len(configuredAgents) == 0 {
 			summary = "No agents detected. Install Claude Code or OpenCode and re-run jarvis."
+		}
+		if len(resetLines) > 0 {
+			summary += "\n" + strings.Join(resetLines, "\n")
 		}
 		if len(automationWarnings) > 0 {
 			summary += "\n" + strings.Join(automationWarnings, "\n")
