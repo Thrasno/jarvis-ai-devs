@@ -247,6 +247,27 @@ func verifyOpenCodeConfigInvariants(oc ObservedOpenCodeConfig, storeMode string)
 		Message:    ctx7Msg,
 	})
 
+	// --- Legacy 4R residue (informational only) ---
+	residueStatus := StatusPass
+	residueDrift := DriftNone
+	residueObserved := "none"
+	residueMsg := "no retired review-* agent entries or permission.task allows in opencode.json"
+	residue := legacyOpenCode4RResidue(oc)
+	if len(residue) > 0 {
+		residueStatus = StatusWarn
+		residueDrift = DriftNonOwned
+		residueObserved = strings.Join(residue, ",")
+		residueMsg = "retired review-* agent entries or permission.task allows remain in opencode.json; run the installation wizard and accept the consented configuration reset to remove them"
+	}
+	results = append(results, CheckResult{
+		Key:        "invariant.opencode.legacy_4r_residue",
+		Status:     residueStatus,
+		DriftClass: residueDrift,
+		Expected:   "no review-risk, review-readability, review-reliability, or review-resilience agent entries or task allows",
+		Observed:   residueObserved,
+		Message:    residueMsg,
+	})
+
 	return results
 }
 
@@ -359,6 +380,49 @@ func requiredOpenCodeSDDSubagents() []string {
 		"sdd-archive",
 		"sdd-onboard",
 	}
+}
+
+// retiredOpenCode4RNames are the four legacy 4R reviewer agent names retired
+// from Jarvis-issued OpenCode configuration. They are never required and,
+// when observed, are reported as informational residue only.
+func retiredOpenCode4RNames() []string {
+	return []string{
+		"review-risk",
+		"review-readability",
+		"review-reliability",
+		"review-resilience",
+	}
+}
+
+// legacyOpenCode4RResidue reports the exact surfaces where a retired 4R name
+// was observed: an "agent:<name>" entry (from AgentNames or HiddenSubagents)
+// or a "task_allow:<name>" permission.task allow. It is purely observational
+// and never mutates or requires repair.
+func legacyOpenCode4RResidue(oc ObservedOpenCodeConfig) []string {
+	seenAgent := make(map[string]struct{})
+	var residue []string
+	retired := retiredOpenCode4RNames()
+	retiredSet := make(map[string]struct{}, len(retired))
+	for _, name := range retired {
+		retiredSet[name] = struct{}{}
+	}
+	for _, name := range append(append([]string{}, oc.AgentNames...), oc.HiddenSubagents...) {
+		if _, ok := retiredSet[name]; !ok {
+			continue
+		}
+		if _, ok := seenAgent[name]; ok {
+			continue
+		}
+		seenAgent[name] = struct{}{}
+		residue = append(residue, "agent:"+name)
+	}
+	for _, name := range oc.TaskAllows {
+		if _, ok := retiredSet[name]; !ok {
+			continue
+		}
+		residue = append(residue, "task_allow:"+name)
+	}
+	return residue
 }
 
 func requiredOpenCodeSubagents() []string {

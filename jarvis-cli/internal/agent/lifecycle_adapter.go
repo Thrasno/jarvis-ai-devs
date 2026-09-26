@@ -36,6 +36,7 @@ func (a *lifecycleAgentAdapter) Observe() (lifecycle.ObservedProviderState, erro
 		RegistryQuality:            observed.RegistryQuality,
 		OpenCode:                   observed.OpenCode,
 		ClaudeSDDSubagentHiveTools: observed.ClaudeSDDSubagentHiveTools,
+		ClaudeLegacy4RResidue:      observed.ClaudeLegacy4RResidue,
 	}, nil
 }
 
