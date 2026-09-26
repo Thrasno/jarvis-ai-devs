@@ -84,7 +84,7 @@ func verifyOpenCodeConfigInvariants(oc ObservedOpenCodeConfig, storeMode string)
 	})
 
 	// --- R5: Required Subagents Present ---
-	// 10 SDD + 3 Judgment Day + 4 Review required hidden subagents.
+	// 10 SDD + 3 Judgment Day required hidden subagents.
 	missingSubagents, unexpectedSubagents := diffRequiredOpenCodeSubagents(oc.HiddenSubagents)
 	subStatus := StatusPass
 	subMsg := fmt.Sprintf("all required subagents present (hidden=true, mode=subagent): found %d", len(oc.HiddenSubagents))
@@ -104,7 +104,7 @@ func verifyOpenCodeConfigInvariants(oc ObservedOpenCodeConfig, storeMode string)
 	})
 
 	// --- R6: Task Allowlist ---
-	// Built-in general/explore routes plus 10 SDD, 3 Judgment Day, and 4 Review allows are required.
+	// Built-in general/explore routes plus 10 SDD and 3 Judgment Day allows are required.
 	missingTaskAllows, unexpectedTaskAllows := diffRequiredOpenCodeTaskAllows(oc.TaskAllows)
 	taskStatus := StatusPass
 	taskMsg := fmt.Sprintf("orchestrator task allowlist complete: wildcard deny=true, %d named allows", len(oc.TaskAllows))
@@ -376,10 +376,6 @@ func requiredOpenCodeSubagents() []string {
 		"jd-judge-a",
 		"jd-judge-b",
 		"jd-fix-agent",
-		"review-risk",
-		"review-readability",
-		"review-reliability",
-		"review-resilience",
 	}
 }
 

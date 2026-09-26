@@ -12,7 +12,7 @@ Remove Jarvis-issued legacy 4R agents and fresh-review prompts from newly instal
 - Forecast: 900–1400 authored diff lines across two slices. Delivery strategy `ask-on-risk`; user selected `stacked-to-main` for the issue's 3–4 PR slices. PR creation is not authorized; record slice boundaries before opening PRs.
 
 ## Tasks (stable IDs)
-- [ ] T1 Retire four embedded Claude 4R agents and OpenCode generation/allowlist; negative generation tests. Route: delegated writer (multi-file). Checks: focused `internal/agent` tests and source grep. Commit: pending.
+- [ ] T1 Retire four embedded Claude 4R agents and OpenCode generation/allowlist; negative generation tests. Route: delegated writer (multi-file). Checks: focused `internal/agent` tests and source grep. Commit: `4114dbaea11cae43765c6346f1be92caf222b107` (review correction pending).
 - [ ] T2 Remove 4R review/audit directives from embedded orchestrator, retaining delegation and review-budget safeguards. Route: delegated writer or direct if one-file and understood. Checks: full prompt readback, scoped grep/content test. Commit: pending.
 - [ ] T3 Stop requiring 4R in verifier; diagnose partial OpenCode/Claude residue informationally in doctor/reconcile without automatic cleanup. Route: delegated writer (multi-file). Checks: table tests incl partial residue. Commit: pending.
 - [ ] T4 Update impacted fixtures and assertions, negative end-to-end rendered outputs, retirement/generated-artifact docs and parity when touched. Route: delegated writer (multi-file). Checks: `go test ./...`, `go vet ./...`. Commit: pending.
@@ -23,5 +23,6 @@ Remove Jarvis-issued legacy 4R agents and fresh-review prompts from newly instal
 
 ## Progress and evidence
 - Approved issue read; isolated clean worktree created. Clarifications appended bilingually to issue #767 and verified remotely. No implementation yet.
-- T1 delegated writer completed source deletion/generation and focused checks: `go test ./internal/agent -run 'TestBuildGeneratedAgents|Test.*ReviewAgents|Test.*Legacy4R' -count=1` passed; `go vet ./internal/agent` passed; `git diff --check` passed. Assessment initially unassessable because ODD task document was untracked; stage explicitly for reassessment. Full suite pending T3/T4. Commit and independent verification pending.
-- Next: finish T1 assessment/verification and commit, then proceed to T2; preserve unrelated documentation worktree.
+- T1 generated-source removal committed as `4114dbaea11cae43765c6346f1be92caf222b107`; focused `go test ./internal/agent -run 'TestBuildGeneratedAgents|Test.*ReviewAgents|Test.*Legacy4R' -count=1`, `go vet ./internal/agent`, and independent read-only verification passed. Full suite remains pending, so T1 stays open.
+- Native review lineage `review-afbaf74bb2a90365` on this commit reports `correction_required`: R3-001 verifier still requires retired names; R3-002 embedded orchestrator still demands retired reviewers. Correction plan accepted at 168 diff lines, then STATUS stopped `corrected_candidate_unavailable` until candidate content changes. The delegated correction unexpectedly wrote the scoped T2/verifier files before reporting a review-tool blockage; a second attempt refused without edits. Independent focused `internal/sddruntime` tests, vet, and diff check passed for the resulting 47-line correction. Full suite and native validation pending.
+- Next: resume bound STATUS for corrected candidate; do not mark T1 done or claim review approval.
