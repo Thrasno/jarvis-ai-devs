@@ -139,6 +139,19 @@ Choose the next version by impact:
 - Release assets include Linux and Windows archives. macOS artifacts are best effort from GoReleaser and are not separately validated by CI.
 - After installing, run `jarvis` to apply or reapply managed configuration.
 
+## Artifact-retiring releases
+
+A release that retires or replaces a Jarvis-managed configuration artifact
+(an embedded agent file, an orchestrator rule, a generated settings key, and
+similar — the kind of change the wizard's configuration reset step exists to
+clean up; see
+[`maintenance/rdd-experiment-retirement.md`](maintenance/rdd-experiment-retirement.md))
+must say so plainly in its release notes: name what is retired and note that
+users on an existing machine should accept the wizard's configuration reset
+step to pick it up. Existing machines are never cleaned automatically, so a
+user who does not know a release retired something has no other signal to
+act on.
+
 ## Guardrails
 
 - Do not create new beta version numbers unless the maintainer explicitly asks for them.

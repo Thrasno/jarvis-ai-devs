@@ -1119,6 +1119,48 @@ func TestApplyReset_WritesSymlinkSidecarForDurableSnapshot(t *testing.T) {
 	}
 }
 
+func TestApplyReset_LstatKindError_PropagatesFromResolveEditableSurfacePath(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+	mustWriteFile(t, filepath.Join(configDir, "settings.json"), `{}`)
+	settingsPath := filepath.Join(configDir, "settings.json")
+
+	base := defaultResetFileOps()
+	origLstatKind := base.lstatKind
+	base.lstatKind = func(path string) (bool, bool, error) {
+		if path == settingsPath {
+			return false, false, fmt.Errorf("injected lstat failure")
+		}
+		return origLstatKind(path)
+	}
+
+	_, err := applyResetWithOps(sddruntime.PlatformClaude, configDir, home, base)
+	if err == nil || !strings.Contains(err.Error(), "injected lstat failure") {
+		t.Fatalf("err = %v, want it to wrap the injected lstat failure", err)
+	}
+}
+
+func TestApplyReset_WholeFileSurface_LstatKindError_Propagates(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+	mustWriteFile(t, filepath.Join(configDir, "sdd-orchestrator.md"), "content")
+	orchestratorPath := filepath.Join(configDir, "sdd-orchestrator.md")
+
+	base := defaultResetFileOps()
+	origLstatKind := base.lstatKind
+	base.lstatKind = func(path string) (bool, bool, error) {
+		if path == orchestratorPath {
+			return false, false, fmt.Errorf("injected orchestrator lstat failure")
+		}
+		return origLstatKind(path)
+	}
+
+	_, err := applyResetWithOps(sddruntime.PlatformClaude, configDir, home, base)
+	if err == nil || !strings.Contains(err.Error(), "injected orchestrator lstat failure") {
+		t.Fatalf("err = %v, want it to wrap the injected lstat failure", err)
+	}
+}
+
 func TestApplyReset_NoSymlinkSidecarWhenNoSymlinkMutations(t *testing.T) {
 	home := t.TempDir()
 	configDir := filepath.Join(home, ".claude")
