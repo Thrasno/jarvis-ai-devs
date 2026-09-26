@@ -33,9 +33,14 @@ Issue #767 retires the four 4R agents from Jarvis-issued product state:
   `invariant.opencode.legacy_4r_residue` in the doctor output. This finding
   is never auto-applied and is never deleted by doctor or reconcile.
 - Existing machines are cleaned only through an explicit, consented
-  configuration reset offered by the installation wizard (a later slice of
-  #767), never through silent automatic cleanup. Declining the reset leaves
-  the residue in place; this is expected, not a doctor failure.
+  configuration reset offered as the wizard's first step, never through
+  silent automatic cleanup. Accepting it snapshots the affected configuration
+  before making any change and reports the snapshot ID in the completion
+  summary; a failure during the reset itself, or a later install failure for
+  that same agent, rolls the reset back automatically. Declining the reset
+  leaves the residue in place; this is expected, not a doctor failure. See
+  [`../getting-started.md`](../getting-started.md#configuration-reset-upgrading-an-existing-machine)
+  for the exact list of surfaces and user-facing wording.
 
 The Council (#647) is a separate, later, explicitly manual-only advisory
 review design. It is not installed, activated, or referenced by any

@@ -34,6 +34,17 @@ export JARVIS_INSTALL_VERSION=beta
 curl -sSL https://raw.githubusercontent.com/Thrasno/jarvis-ai-devs/master/scripts/install.sh | bash
 ```
 
+## Upgrading an existing machine
+
+Reinstalling or upgrading over a machine that already has a supported agent
+configured (Claude Code, OpenCode) does not change that configuration by
+itself. Run `jarvis` after installing: its wizard detects the existing
+configuration and, as its first step, offers an explicit, consented reset of
+the Jarvis-managed parts of it. See
+[Configuration reset (upgrading an existing machine)](getting-started.md#configuration-reset-upgrading-an-existing-machine)
+in `getting-started.md` for exactly what it lists, what accepting replaces
+entirely, and what declining leaves in place.
+
 ## Notes
 
 - Without `JARVIS_INSTALL_VERSION`, the script installs the latest published release.

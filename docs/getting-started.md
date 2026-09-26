@@ -11,19 +11,85 @@ Jarvis Dev is installed and operated through the `jarvis` CLI. The fastest path 
    jarvis
    ```
 
-3. Choose the agent integrations you use, such as Claude Code or OpenCode.
-4. Confirm the generated configuration with:
+3. If any supported agent is already configured on this machine, the wizard's
+   first screen offers a configuration reset before anything else runs. See
+   [Configuration reset (upgrading an existing machine)](#configuration-reset-upgrading-an-existing-machine)
+   below before answering it.
+4. Choose the agent integrations you use, such as Claude Code or OpenCode.
+5. Confirm the generated configuration with:
 
    ```bash
    jarvis verify --provider all
    ```
 
-5. Open local memory tools when the Hive daemon is running:
+6. Open local memory tools when the Hive daemon is running:
 
    ```bash
    jarvis hive
    jarvis timeline --project <project>
    ```
+
+## Configuration reset (upgrading an existing machine)
+
+Before anything else, the wizard detects any already-configured supported
+agent (Claude Code, OpenCode) and offers to reset the Jarvis-managed parts of
+its configuration. This step exists so a machine that installed an earlier
+Jarvis release can be brought fully in line with the current release — for
+example, removing agent files or settings a retired Jarvis feature left
+behind (see [`maintenance/rdd-experiment-retirement.md`](maintenance/rdd-experiment-retirement.md)
+for the concrete case that motivated it).
+
+**What it lists.** The step shows, per detected agent, the exact contract-owned
+surfaces a reset would touch:
+
+- **Claude Code (`~/.claude/`):** `settings.json` keys `outputStyle` and
+  `statusLine`, plus Jarvis-written `hooks` and `permissions` entries
+  identified by content; the `CLAUDE.md` block between Jarvis markers; the
+  whole `agents/` directory; the files `sdd-orchestrator.md` and
+  `statusline-command.sh`; and the `output-styles/`, `skills/`, and
+  `hive-hooks/` directory trees.
+- **OpenCode (`~/.config/opencode/`):** the `opencode.json` sections
+  `default_agent`, `permission`, `agent`, `mcp.hive`, and `mcp.context7`; the
+  `AGENTS.md` block between Jarvis markers; the file `sdd-orchestrator.md`;
+  the `skills/` tree; and the Jarvis plugins under `plugins/`.
+
+Everything else in those files and directories — other MCP servers, themes,
+keybinds, your own hooks and permissions, and content outside the Jarvis
+marker blocks — is preserved either way.
+
+**What accepting replaces entirely.** Some surfaces are entirely Jarvis-owned
+rather than partially managed, and accepting the reset removes them
+completely — including any agent file or entry you added there yourself —
+exactly as the wizard's own step describes them:
+
+- Claude Code: `agents/: entire directory (SDD phase agents, Judgment Day
+  agents, retired review-* agents, and any user-added agent files)`.
+- OpenCode: `opencode.json: default_agent, permission, agent (entirely
+  Jarvis-owned keys, removed whole)`.
+
+That content is not recoverable from the running configuration afterward.
+The wizard's completion summary names the durable backup snapshot ID it took
+before making any change, so a user who needs to recover something can
+restore that snapshot by hand.
+
+**What the durable snapshot does not cover.** A symlinked top-level surface
+(for example, `~/.claude/settings.json` symlinked into a dotfile manager) and
+an edit-in-place surface whose real target lies outside Jarvis's own config
+roots are recorded in a sidecar file next to the snapshot manifest, but their
+content is not archived into it. The wizard's plan view names any such path
+before you answer, and the only way to get it back is the in-process
+rollback of that same run — not a restore of the durable snapshot afterward.
+This is rare in practice: it only applies to a machine where Jarvis's config
+files are themselves symlinks, most often through a dotfile manager.
+
+**What declining does.** Declining keeps your current configuration exactly
+as it is; nothing described above is touched, and the rest of setup proceeds
+unchanged. Leftover files or settings from an earlier release (for example,
+retired `review-*` agent files) remain on disk. This is expected, not an
+error: `jarvis doctor` reports that kind of residue informationally and
+points back at this step, but never deletes it, and neither `jarvis sync`,
+`jarvis reconcile`, nor ordinary doctor checks ever perform this reset on
+their own. Only this consented wizard step does.
 
 ## Expected result
 

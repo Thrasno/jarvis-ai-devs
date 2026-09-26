@@ -377,12 +377,23 @@ func runNoTUI(wcfg WizardConfig, input io.Reader) error {
 		return fmt.Errorf("check statusline script: %w", err)
 	}
 
-	results := configureWizardAgents(agents, manifestPhaseModels, agent.MCPEntry{}, agent.MCPEntry{}, resolvedPreset, wizardPresetApplyContext{
-		Layer1:               config.Layer1Content(),
-		Skills:               skillInfos,
-		PreviousPresetSlug:   previousPresetSlug,
-		PreviousPresetSource: previousPresetSource,
-	}, skillsSubFS, selectedIDs, agentsSubFS, statuslineConfirm)
+	results := configureWizardAgents(agents, WizardAgentApplyOptions{
+		PhaseModels:   manifestPhaseModels,
+		HiveEntry:     agent.MCPEntry{},
+		Context7Entry: agent.MCPEntry{},
+		Resolved:      resolvedPreset,
+		PresetCtx: wizardPresetApplyContext{
+			Layer1:               config.Layer1Content(),
+			Skills:               skillInfos,
+			PreviousPresetSlug:   previousPresetSlug,
+			PreviousPresetSource: previousPresetSource,
+		},
+		SkillsSubFS:       skillsSubFS,
+		SelectedIDs:       selectedIDs,
+		AgentsSubFS:       agentsSubFS,
+		StatuslineConfirm: statuslineConfirm,
+		Home:              home,
+	})
 	var configuredAgents []string
 	for _, res := range results {
 		fmt.Printf("Configuring %s ...\n", res.AgentName)

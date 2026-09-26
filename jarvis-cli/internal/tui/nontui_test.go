@@ -273,6 +273,8 @@ func TestRunNoTUI_SkipsAuthAndDefaultsPersona(t *testing.T) {
 }
 
 func TestNewModel_NoTUIFallbackStartsWizardNotCockpit(t *testing.T) {
+	isolateTestHome(t)
+	t.Setenv("PATH", "")
 	m := NewModel(testWizardConfig(), true)
 
 	if m.Screen != ScreenWizard {
