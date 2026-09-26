@@ -45,6 +45,9 @@ type resetAgentInventory struct {
 // from m.Agents. It must run after m.Agents is populated (agent.Detect), and
 // is idempotent: calling it again recomputes the same inventory and resets
 // the captured choice back to the default No.
+// resetUserHomeDir is replaceable in tests to exercise home-resolution failure.
+var resetUserHomeDir = os.UserHomeDir
+
 func initializeConfigResetStep(m Model) Model {
 	m.resetChoice = 0
 	m.resetConsented = false
@@ -57,11 +60,16 @@ func initializeConfigResetStep(m Model) Model {
 	// (internal/agent.withinBackupAllowedRoots), so it needs the same home
 	// directory ApplyReset later receives (opts.Home), computed the same way
 	// every other wizard call site resolves it.
-	home, _ := os.UserHomeDir()
+	home, homeErr := resetUserHomeDir()
 
 	inventories := make([]resetAgentInventory, 0, len(m.Agents))
 	for _, a := range m.Agents {
 		inv := resetAgentInventory{AgentName: a.Name(), ConfigDir: a.ConfigDir()}
+		if homeErr != nil {
+			inv.PlanErr = fmt.Errorf("determine home directory for reset: %w", homeErr)
+			inventories = append(inventories, inv)
+			continue
+		}
 		platform, err := agent.PlatformForAgentName(a.Name())
 		if err != nil {
 			inv.PlanErr = err

@@ -285,11 +285,17 @@ func configureWizardAgents(agents []agent.Agent, opts WizardAgentApplyOptions) [
 			PreviousPresetSource: opts.PresetCtx.PreviousPresetSource,
 		}); err != nil {
 			profileErr := fmt.Errorf("apply preset pipeline: %w", err)
+			var outcomes []string
 			for i, a := range agents {
 				if i >= len(results) {
 					break
 				}
-				rollbackAgentReset(a, &results[i])
+				if outcome := rollbackAgentReset(a, &results[i]); outcome != "" {
+					outcomes = append(outcomes, outcome)
+				}
+			}
+			if len(outcomes) > 0 {
+				profileErr = fmt.Errorf("%w (%s)", profileErr, strings.Join(outcomes, "; "))
 			}
 			if len(results) == 0 {
 				return []AgentApplyResult{{AgentName: "persona-apply", Err: profileErr}}

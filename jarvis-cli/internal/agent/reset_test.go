@@ -1220,6 +1220,40 @@ func TestWithinBackupAllowedRoots_DerivesRootsFromBackupStore(t *testing.T) {
 	}
 }
 
+func TestWithinBackupAllowedRoots_AbsentPathsAndSymlinkEscape(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	cases := []struct {
+		name, path string
+		want       bool
+	}{
+		{"absent in root", filepath.Join(root, "missing", "file"), true},
+		{"absent outside", filepath.Join(outside, "missing", "file"), false},
+	}
+	if runtime.GOOS != "windows" {
+		link := filepath.Join(root, "escape")
+		if err := os.Symlink(outside, link); err != nil {
+			t.Fatal(err)
+		}
+		cases = append(cases, struct {
+			name, path string
+			want       bool
+		}{"symlink escape with absent child", filepath.Join(link, "missing", "file"), false})
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := withinBackupAllowedRoots(home, tt.path)
+			if err != nil || got != tt.want {
+				t.Fatalf("withinBackupAllowedRoots(%q) = %v, %v; want %v", tt.path, got, err, tt.want)
+			}
+		})
+	}
+}
+
 // TestWithinBackupAllowedRoots_SymlinkedHomeDirectory_StillMatchesRealRoot
 // proves the fix for R2-004/R3-001: a path already resolved to its real,
 // canonical form (as resolveEditableSurfacePath produces for an edited-in

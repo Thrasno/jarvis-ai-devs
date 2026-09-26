@@ -138,6 +138,21 @@ func TestInitializeConfigResetStep_DisplayLinesComeFromContract(t *testing.T) {
 	}
 }
 
+func TestInitializeConfigResetStep_HomeErrorFailsClosed(t *testing.T) {
+	old := resetUserHomeDir
+	resetUserHomeDir = func() (string, error) { return "", errors.New("home unavailable") }
+	t.Cleanup(func() { resetUserHomeDir = old })
+	m := initializeConfigResetStep(Model{Agents: []agent.Agent{&setupAgentStub{name: "claude", configDir: t.TempDir()}}})
+	if !m.resetPlanFailed() || !strings.Contains(m.resetInventories[0].PlanErr.Error(), "home unavailable") || !strings.Contains(viewConfigReset(m), "Cannot plan a reset") {
+		t.Fatalf("home failure must be shown and block planning: %+v", m.resetInventories)
+	}
+	m.resetChoice = 1
+	updated, _ := updateConfigReset(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if updated.(Model).resetConsented {
+		t.Fatal("home failure permitted reset consent")
+	}
+}
+
 func TestInitializeConfigResetStep_PlanError_ForcesNoAndBlocksNavigation(t *testing.T) {
 	home := isolateTestHome(t)
 	t.Setenv("PATH", "")
@@ -555,6 +570,9 @@ func TestConfigureWizardAgents_ProfileApplyFailure_RollsBackSucceededAgentsReset
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "apply preset pipeline") {
 		t.Fatalf("res.Err = %v, want it to name the preset pipeline failure", res.Err)
 	}
+	if !strings.Contains(res.Err.Error(), "rolled back") || !strings.Contains(res.Err.Error(), "files written by the install attempt may remain under") {
+		t.Fatalf("res.Err = %v, want rollback outcome and residual-directory warning", res.Err)
+	}
 	if !res.ResetApplied {
 		t.Fatalf("res.ResetApplied = false, want true")
 	}
@@ -661,7 +679,9 @@ func TestViewConfigReset_ShowsNotInDurableSnapshotWarning(t *testing.T) {
 		t.Fatalf("symlink orchestrator: %v", err)
 	}
 
-	m := Model{Agents: agent.Detect(embed.FS{}), width: 120}
+	// Leave room for the absolute path, its list prefix and the panel border.
+	// A fixed 120-column viewport wraps long Windows temporary directories.
+	m := Model{Agents: agent.Detect(embed.FS{}), width: len([]rune(orchestratorLink)) + 120}
 	m = initializeConfigResetStep(m)
 	view := viewConfigReset(m)
 

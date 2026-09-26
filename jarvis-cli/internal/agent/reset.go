@@ -495,22 +495,16 @@ func computeResetMutations(platform sddruntime.Platform, configDir string, ops r
 // other (issue #767 hardening R1-001/R4-002/R3-001). Canonicalizing both
 // sides here removes that mismatch.
 //
-// A root absent from this machine (e.g. no ~/.config/opencode) is skipped,
-// matching BackupStore.isAllowedRoot's own tolerance for that case: an
-// absent root can only narrow what is allowed, never widen it.
+// An absent root is classified through its nearest existing ancestor, so an
+// absent path inside it is not mislabeled as outside. Snapshot creation still
+// decides separately whether a target actually exists and can be archived.
 func withinBackupAllowedRoots(homeDir, path string) (bool, error) {
-	canonPath, err := lifecycle.CanonicalizePath(path)
+	canonPath, err := canonicalizeAbsentResetPath(path)
 	if err != nil {
-		if errors.Is(err, lifecycle.ErrPathAbsent) {
-			return false, nil
-		}
 		return false, fmt.Errorf("canonicalize %s: %w", path, err)
 	}
 	for _, root := range lifecycle.NewBackupStore(homeDir).AllowedRoots() {
-		canonRoot, err := lifecycle.CanonicalizePath(root)
-		if errors.Is(err, lifecycle.ErrPathAbsent) {
-			continue
-		}
+		canonRoot, err := canonicalizeAbsentResetPath(root)
 		if err != nil {
 			return false, fmt.Errorf("canonicalize allowed root %s: %w", root, err)
 		}
@@ -519,6 +513,42 @@ func withinBackupAllowedRoots(homeDir, path string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// canonicalizeAbsentResetPath resolves the nearest existing ancestor, never
+// trusting a lexical prefix that might hide a symlink escape. The remaining
+// nonexistent components cannot themselves be symlinks.
+func canonicalizeAbsentResetPath(path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("path must be absolute: %s", path)
+	}
+	clean := filepath.Clean(path)
+	var missing []string
+	for {
+		canon, err := lifecycle.CanonicalizePath(clean)
+		if err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				canon = filepath.Join(canon, missing[i])
+			}
+			return canon, nil
+		}
+		if !errors.Is(err, lifecycle.ErrPathAbsent) {
+			return "", err
+		}
+		parent := filepath.Dir(clean)
+		if parent == clean {
+			return "", err
+		}
+		if info, statErr := os.Lstat(clean); statErr == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return "", fmt.Errorf("cannot classify dangling symlink %s", clean)
+			}
+		} else if !os.IsNotExist(statErr) {
+			return "", statErr
+		}
+		missing = append(missing, filepath.Base(clean))
+		clean = parent
+	}
 }
 
 // partitionDurableSnapshotTargets splits mutations into what ApplyReset's
