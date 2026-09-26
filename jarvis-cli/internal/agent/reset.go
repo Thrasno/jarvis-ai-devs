@@ -12,6 +12,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -50,9 +51,14 @@ type ResetResult struct {
 }
 
 // ResetRestoreError reports that ApplyReset failed AND that the automatic
-// rollback did not fully restore prior state. SnapshotID names the durable
-// lifecycle.BackupStore snapshot an operator can restore from by hand;
-// UnrecoveredPaths lists exactly which paths the rollback could not put back.
+// rollback did NOT fully restore prior state (at least one path in
+// UnrecoveredPaths). SnapshotID names the durable lifecycle.BackupStore
+// snapshot an operator can restore from by hand.
+//
+// When a mutation fails but rollback fully restores every applied change,
+// ApplyReset returns the plain wrapped cause instead: callers can tell the
+// two outcomes apart with errors.As, since only an incomplete rollback
+// produces a *ResetRestoreError.
 type ResetRestoreError struct {
 	SnapshotID       string
 	UnrecoveredPaths []string
@@ -61,7 +67,7 @@ type ResetRestoreError struct {
 
 func (e *ResetRestoreError) Error() string {
 	return fmt.Sprintf(
-		"configuration reset failed and rollback was incomplete (snapshot %s, unrecovered paths: %s): %v",
+		"configuration reset failed and rollback could not restore everything (snapshot %s, unrecovered paths: %s): %v",
 		e.SnapshotID, strings.Join(e.UnrecoveredPaths, ", "), e.Cause,
 	)
 }
@@ -72,26 +78,50 @@ func (e *ResetRestoreError) Unwrap() error { return e.Cause }
 // mutate/read through. Tests replace it to force a failure at an exact step
 // without chmod tricks.
 type resetFileOps struct {
-	readFile   func(path string) (data []byte, existed bool, err error)
-	writeFile  func(path string, data []byte) error
-	removeFile func(path string) error
-	listDir    func(dir string) ([]string, error)
+	// readFile reads a regular file. It never follows a symlink for content:
+	// callers must route a resetDirEntry with IsSymlink through readLink
+	// instead. mode is the file's permission bits when existed is true.
+	readFile func(path string) (data []byte, existed bool, mode os.FileMode, err error)
+	// writeFile (re)writes a regular file with the given permission bits. A
+	// zero mode falls back to 0644.
+	writeFile func(path string, data []byte, mode os.FileMode) error
+	// readLink reports a symlink's target without following it.
+	readLink func(path string) (target string, err error)
+	// writeSymlink recreates a symlink pointing at target, replacing any
+	// existing entry at path first.
+	writeSymlink func(path, target string) error
+	removeFile   func(path string) error
+	listDir      func(dir string) ([]resetDirEntry, error)
 }
 
 func defaultResetFileOps() resetFileOps {
 	return resetFileOps{
-		readFile: func(path string) ([]byte, bool, error) {
-			data, err := os.ReadFile(path)
+		readFile: func(path string) ([]byte, bool, os.FileMode, error) {
+			info, err := os.Lstat(path)
 			if err != nil {
 				if os.IsNotExist(err) {
-					return nil, false, nil
+					return nil, false, 0, nil
 				}
-				return nil, false, err
+				return nil, false, 0, err
 			}
-			return data, true, nil
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return nil, false, 0, err
+			}
+			return data, true, info.Mode().Perm(), nil
 		},
-		writeFile: func(path string, data []byte) error {
-			return writeFileAtomic(path, data, 0644)
+		writeFile: func(path string, data []byte, mode os.FileMode) error {
+			if mode == 0 {
+				mode = 0644
+			}
+			return writeFileAtomic(path, data, mode)
+		},
+		readLink: os.Readlink,
+		writeSymlink: func(path, target string) error {
+			if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
+				return rmErr
+			}
+			return os.Symlink(target, path)
 		},
 		removeFile: func(path string) error {
 			err := os.Remove(path)
@@ -100,14 +130,25 @@ func defaultResetFileOps() resetFileOps {
 			}
 			return err
 		},
-		listDir: listRegularFilesRecursively,
+		listDir: listResetDirEntriesRecursively,
 	}
 }
 
-// listRegularFilesRecursively returns every regular file under dir, as
-// dir-relative paths, sorted. An absent dir reports no files and no error:
-// there is nothing to reset in a directory that was never created.
-func listRegularFilesRecursively(dir string) ([]string, error) {
+// resetDirEntry is one dir-relative entry found under a whole-directory reset
+// surface. IsSymlink reports the entry's own Lstat type: a symlink is never
+// followed to decide this, whether it points at a file or a directory.
+type resetDirEntry struct {
+	RelPath   string
+	IsSymlink bool
+}
+
+// listResetDirEntriesRecursively returns every regular file and symlink under
+// dir, as dir-relative entries, sorted by path. An absent dir reports no
+// entries and no error: there is nothing to reset in a directory that was
+// never created. A symlink pointing at a directory is recorded as its own
+// entry and never walked into, because fs.WalkDir uses Lstat semantics and
+// does not follow symlinks to descend into them.
+func listResetDirEntriesRecursively(dir string) ([]resetDirEntry, error) {
 	info, err := os.Stat(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -118,10 +159,13 @@ func listRegularFilesRecursively(dir string) ([]string, error) {
 	if !info.IsDir() {
 		return nil, fmt.Errorf("expected directory, found file: %s", dir)
 	}
-	var files []string
+	var entries []resetDirEntry
 	walkErr := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if path == dir {
+			return nil
 		}
 		if entry.IsDir() {
 			return nil
@@ -130,14 +174,17 @@ func listRegularFilesRecursively(dir string) ([]string, error) {
 		if relErr != nil {
 			return relErr
 		}
-		files = append(files, rel)
+		entries = append(entries, resetDirEntry{
+			RelPath:   rel,
+			IsSymlink: entry.Type()&fs.ModeSymlink != 0,
+		})
 		return nil
 	})
 	if walkErr != nil {
 		return nil, walkErr
 	}
-	sort.Strings(files)
-	return files, nil
+	sort.Slice(entries, func(i, j int) bool { return entries[i].RelPath < entries[j].RelPath })
+	return entries, nil
 }
 
 // resetFileMutation is one file-level reset step: before is the content that
@@ -146,12 +193,25 @@ func listRegularFilesRecursively(dir string) ([]string, error) {
 // to delete the path. changes is the plan-facing description this mutation
 // covers (a single physical file can satisfy more than one contract surface,
 // e.g. Claude settings.json covers five).
+//
+// beforeMode is the permission bits the path had before the reset (valid when
+// existed is true); a rewrite or a rollback restore reuses it instead of a
+// hardcoded mode, so an executable script keeps its executable bit.
+//
+// isSymlink marks a path whose entry itself is a symlink: before/beforeMode
+// are unused, and linkTarget holds the link's prior target instead. A
+// symlink mutation is always a deletion (after is nil); rollback recreates
+// the link rather than writing file bytes.
 type resetFileMutation struct {
-	Path    string
-	before  []byte
-	existed bool
-	after   []byte // nil means delete
-	changes []ResetChange
+	Path       string
+	before     []byte
+	beforeMode os.FileMode
+	existed    bool
+	after      []byte // nil means delete
+	changes    []ResetChange
+
+	isSymlink  bool
+	linkTarget string
 }
 
 // PlanReset computes, without mutating anything, exactly what ApplyReset
@@ -190,9 +250,19 @@ func applyResetWithOps(platform sddruntime.Platform, configDir, homeDir string, 
 		return ResetResult{Platform: platform}, nil
 	}
 
+	// A symlink mutation is excluded from the durable lifecycle.BackupStore
+	// snapshot: that store archives file content via os.ReadFile, which is
+	// exactly the through-the-link read this reset must never perform, and
+	// it would fail outright for a dangling link. The in-process journal
+	// already carries everything a symlink mutation needs to roll back (its
+	// prior target via linkTarget), so no external content backup is needed
+	// for it.
 	backupTargets := make([]lifecycle.BackupTarget, 0, len(mutations))
 	seen := make(map[string]bool, len(mutations))
 	for _, m := range mutations {
+		if m.isSymlink {
+			continue
+		}
 		if !seen[m.Path] {
 			seen[m.Path] = true
 			backupTargets = append(backupTargets, lifecycle.BackupTarget{Path: m.Path})
@@ -210,15 +280,21 @@ func applyResetWithOps(platform sddruntime.Platform, configDir, homeDir string, 
 		if m.after == nil {
 			mutateErr = ops.removeFile(m.Path)
 		} else {
-			mutateErr = ops.writeFile(m.Path, m.after)
+			mutateErr = ops.writeFile(m.Path, m.after, m.beforeMode)
 		}
 		if mutateErr != nil {
 			unrecovered := rollbackResetMutations(applied, ops)
-			return ResetResult{}, &ResetRestoreError{
-				SnapshotID:       manifest.SnapshotID,
-				UnrecoveredPaths: unrecovered,
-				Cause:            mutateErr,
+			if len(unrecovered) > 0 {
+				return ResetResult{}, &ResetRestoreError{
+					SnapshotID:       manifest.SnapshotID,
+					UnrecoveredPaths: unrecovered,
+					Cause:            mutateErr,
+				}
 			}
+			return ResetResult{}, fmt.Errorf(
+				"configuration reset failed, rollback restored prior state (snapshot %s): %w",
+				manifest.SnapshotID, mutateErr,
+			)
 		}
 		applied = append(applied, m)
 	}
@@ -235,9 +311,12 @@ func rollbackResetMutations(applied []resetFileMutation, ops resetFileOps) []str
 	for i := len(applied) - 1; i >= 0; i-- {
 		m := applied[i]
 		var err error
-		if m.existed {
-			err = ops.writeFile(m.Path, m.before)
-		} else {
+		switch {
+		case m.existed && m.isSymlink:
+			err = ops.writeSymlink(m.Path, m.linkTarget)
+		case m.existed:
+			err = ops.writeFile(m.Path, m.before, m.beforeMode)
+		default:
 			err = ops.removeFile(m.Path)
 		}
 		if err != nil {
@@ -282,17 +361,17 @@ func computeClaudeResetMutations(configDir string, ops resetFileOps) ([]resetFil
 	var mutations []resetFileMutation
 
 	settingsPath := filepath.Join(configDir, "settings.json")
-	settingsBefore, existed, err := ops.readFile(settingsPath)
+	settingsBefore, existed, settingsMode, err := ops.readFile(settingsPath)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", settingsPath, err)
 	}
 	if existed {
 		after, changes, err := computeClaudeSettingsReset(settingsBefore)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%s: %w", settingsPath, err)
 		}
 		if after != nil {
-			mutations = append(mutations, resetFileMutation{Path: settingsPath, before: settingsBefore, existed: true, after: after, changes: changes})
+			mutations = append(mutations, resetFileMutation{Path: settingsPath, before: settingsBefore, beforeMode: settingsMode, existed: true, after: after, changes: changes})
 		}
 	}
 
@@ -358,13 +437,22 @@ func claudeJarvisOwnedAgentBaseNames() map[string]bool {
 // by (*ClaudeAgent).statusLineSettingsPatch.
 const claudeManagedStatuslineCommand = "bash ~/.claude/statusline-command.sh"
 
+// errResetSettingsUnparseable reports that an existing settings file could
+// not be parsed as a JSON object, so PlanReset/ApplyReset refuse to guess at
+// its content: they name the file and stop rather than silently treating it
+// as nothing to reset, or attempting to repair or rewrite it.
+var errResetSettingsUnparseable = errors.New("settings file is not a valid JSON object")
+
 func computeClaudeSettingsReset(before []byte) ([]byte, []ResetChange, error) {
 	if len(strings.TrimSpace(string(before))) == 0 {
 		return nil, nil, nil
 	}
 	root, err := parseOrderedJSON(before)
-	if err != nil || root.object == nil {
-		return nil, nil, nil
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %v", errResetSettingsUnparseable, err)
+	}
+	if root.object == nil {
+		return nil, nil, fmt.Errorf("%w: top-level value is not a JSON object", errResetSettingsUnparseable)
 	}
 
 	var changes []ResetChange
@@ -488,17 +576,17 @@ func computeOpenCodeResetMutations(configDir string, ops resetFileOps) ([]resetF
 	var mutations []resetFileMutation
 
 	settingsPath := filepath.Join(configDir, "opencode.json")
-	settingsBefore, existed, err := ops.readFile(settingsPath)
+	settingsBefore, existed, settingsMode, err := ops.readFile(settingsPath)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", settingsPath, err)
 	}
 	if existed {
 		after, changes, err := computeOpenCodeSettingsReset(settingsBefore)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%s: %w", settingsPath, err)
 		}
 		if after != nil {
-			mutations = append(mutations, resetFileMutation{Path: settingsPath, before: settingsBefore, existed: true, after: after, changes: changes})
+			mutations = append(mutations, resetFileMutation{Path: settingsPath, before: settingsBefore, beforeMode: settingsMode, existed: true, after: after, changes: changes})
 		}
 	}
 
@@ -541,8 +629,11 @@ func computeOpenCodeSettingsReset(before []byte) ([]byte, []ResetChange, error) 
 		return nil, nil, nil
 	}
 	root, err := parseOrderedJSON(before)
-	if err != nil || root.object == nil {
-		return nil, nil, nil
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %v", errResetSettingsUnparseable, err)
+	}
+	if root.object == nil {
+		return nil, nil, fmt.Errorf("%w: top-level value is not a JSON object", errResetSettingsUnparseable)
 	}
 
 	var changes []ResetChange
@@ -599,7 +690,7 @@ func computeOpenCodeSettingsReset(before []byte) ([]byte, []ResetChange, error) 
 // --- Shared file/JSON helpers ---
 
 func computeWholeFileDeleteMutation(path, surfaceID string, ops resetFileOps) (*resetFileMutation, error) {
-	before, existed, err := ops.readFile(path)
+	before, existed, mode, err := ops.readFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
@@ -607,13 +698,13 @@ func computeWholeFileDeleteMutation(path, surfaceID string, ops resetFileOps) (*
 		return nil, nil
 	}
 	return &resetFileMutation{
-		Path: path, before: before, existed: true, after: nil,
+		Path: path, before: before, beforeMode: mode, existed: true, after: nil,
 		changes: []ResetChange{{SurfaceID: surfaceID, Path: path, Detail: "removed"}},
 	}, nil
 }
 
 func computeMarkerBlockMutation(path, surfaceID string, ops resetFileOps) (*resetFileMutation, error) {
-	before, existed, err := ops.readFile(path)
+	before, existed, mode, err := ops.readFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
@@ -625,7 +716,7 @@ func computeMarkerBlockMutation(path, surfaceID string, ops resetFileOps) (*rese
 		return nil, nil
 	}
 	return &resetFileMutation{
-		Path: path, before: before, existed: true, after: []byte(after),
+		Path: path, before: before, beforeMode: mode, existed: true, after: []byte(after),
 		changes: []ResetChange{{SurfaceID: surfaceID, Path: path, Detail: "marker block content"}},
 	}, nil
 }
@@ -656,26 +747,24 @@ func stripMarkerBlock(content string) (string, bool) {
 	}
 }
 
-// computeWholeDirectoryDeleteMutations enumerates every regular file under
-// dir and plans its deletion. When owned is non-nil, a file whose base name
-// (without extension) is not a key in owned is reported as user-added in its
-// Detail, so a plan surfaces content a consented reset would otherwise
-// silently discard.
+// computeWholeDirectoryDeleteMutations enumerates every regular file and
+// symlink under dir and plans its deletion. When owned is non-nil, an entry
+// whose base name (without extension) is not a key in owned is reported as
+// user-added in its Detail, so a plan surfaces content a consented reset
+// would otherwise silently discard.
+//
+// A symlink entry is never followed to read content: its target is recorded
+// via readLink and restored via writeSymlink if the reset later rolls back,
+// whether the symlink points at a file or at a directory.
 func computeWholeDirectoryDeleteMutations(dir, surfaceID string, owned map[string]bool, ops resetFileOps) ([]resetFileMutation, error) {
-	files, err := ops.listDir(dir)
+	entries, err := ops.listDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("list %s: %w", dir, err)
 	}
-	mutations := make([]resetFileMutation, 0, len(files))
-	for _, rel := range files {
+	mutations := make([]resetFileMutation, 0, len(entries))
+	for _, entry := range entries {
+		rel := entry.RelPath
 		path := filepath.Join(dir, rel)
-		before, existed, err := ops.readFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", path, err)
-		}
-		if !existed {
-			continue
-		}
 		detail := filepath.ToSlash(rel)
 		if owned != nil {
 			base := strings.TrimSuffix(rel, filepath.Ext(rel))
@@ -683,8 +772,28 @@ func computeWholeDirectoryDeleteMutations(dir, surfaceID string, owned map[strin
 				detail += " (user-added)"
 			}
 		}
+
+		if entry.IsSymlink {
+			target, err := ops.readLink(path)
+			if err != nil {
+				return nil, fmt.Errorf("readlink %s: %w", path, err)
+			}
+			mutations = append(mutations, resetFileMutation{
+				Path: path, existed: true, isSymlink: true, linkTarget: target, after: nil,
+				changes: []ResetChange{{SurfaceID: surfaceID, Path: path, Detail: detail + " (symlink)"}},
+			})
+			continue
+		}
+
+		before, existed, mode, err := ops.readFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		if !existed {
+			continue
+		}
 		mutations = append(mutations, resetFileMutation{
-			Path: path, before: before, existed: true, after: nil,
+			Path: path, before: before, beforeMode: mode, existed: true, after: nil,
 			changes: []ResetChange{{SurfaceID: surfaceID, Path: path, Detail: detail}},
 		})
 	}

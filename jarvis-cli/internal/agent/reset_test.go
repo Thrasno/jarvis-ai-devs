@@ -2,9 +2,11 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -382,26 +384,29 @@ func TestApplyReset_FailureMidway_RestoresPriorBytesAndDeletesCreatedContent(t *
 
 	base := defaultResetFileOps()
 	origWrite := base.writeFile
-	base.writeFile = func(path string, data []byte) error {
+	base.writeFile = func(path string, data []byte, mode os.FileMode) error {
 		if path == claudeMDPath {
 			return fmt.Errorf("injected apply failure")
 		}
-		return origWrite(path, data)
+		return origWrite(path, data, mode)
 	}
 
 	_, err := applyResetWithOps(sddruntime.PlatformClaude, configDir, home, base)
 	if err == nil {
 		t.Fatalf("expected an error from the injected failure")
 	}
-	restoreErr, ok := err.(*ResetRestoreError)
-	if !ok {
-		t.Fatalf("error = %T, want *ResetRestoreError", err)
+	// Rollback fully restored prior state here, so the caller must see the
+	// plain wrapped cause, NOT a *ResetRestoreError: that type is reserved
+	// for an incomplete rollback (see the sibling restore-failure test).
+	var restoreErr *ResetRestoreError
+	if errors.As(err, &restoreErr) {
+		t.Fatalf("error = %v (*ResetRestoreError), want a plain wrapped error since rollback fully succeeded", err)
 	}
-	if restoreErr.SnapshotID == "" {
-		t.Fatalf("expected a snapshot ID on the restore error")
+	if !strings.Contains(err.Error(), "injected apply failure") {
+		t.Fatalf("error = %q, want it to wrap the injected cause", err)
 	}
-	if len(restoreErr.UnrecoveredPaths) != 0 {
-		t.Fatalf("UnrecoveredPaths = %v, want empty (rollback fully succeeded)", restoreErr.UnrecoveredPaths)
+	if !strings.Contains(err.Error(), "rollback restored prior state") {
+		t.Fatalf("error = %q, want it to say rollback restored prior state", err)
 	}
 
 	if got := mustReadFile(t, settingsPath); got != originalSettings {
@@ -425,7 +430,7 @@ func TestApplyReset_FailureDuringRestore_ReportsSnapshotIDAndUnrecoveredPaths(t 
 	base := defaultResetFileOps()
 	origWrite := base.writeFile
 	callCount := map[string]int{}
-	base.writeFile = func(path string, data []byte) error {
+	base.writeFile = func(path string, data []byte, mode os.FileMode) error {
 		callCount[path]++
 		switch {
 		case path == claudeMDPath:
@@ -433,7 +438,7 @@ func TestApplyReset_FailureDuringRestore_ReportsSnapshotIDAndUnrecoveredPaths(t 
 		case path == settingsPath && callCount[path] == 2:
 			return fmt.Errorf("injected restore failure")
 		default:
-			return origWrite(path, data)
+			return origWrite(path, data, mode)
 		}
 	}
 
@@ -502,4 +507,346 @@ func TestApplyReset_SkillsDirectory_RemovesAllFilesRecursively(t *testing.T) {
 	if names[0] != "_shared/helper.md" || names[1] != "foo/SKILL.md" {
 		t.Fatalf("result.Changes details = %v", names)
 	}
+}
+
+// --- R3-002: symlinks under a whole-directory surface ---
+
+func TestApplyReset_Claude_FileSymlink_RemovedWithoutReadingThroughIt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks on Windows needs elevated privileges")
+	}
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+	mustWriteFile(t, filepath.Join(configDir, "agents", "sdd-init.md"), "owned agent")
+
+	linkPath := filepath.Join(configDir, "agents", "dangling-link.md")
+	if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// A dangling target proves the reset never calls os.ReadFile through the
+	// symlink: reading through it would fail with ENOENT.
+	if err := os.Symlink(filepath.Join(home, "nonexistent-target-xyz"), linkPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	plan, err := PlanReset(sddruntime.PlatformClaude, configDir)
+	if err != nil {
+		t.Fatalf("PlanReset: %v", err)
+	}
+	var symlinkDetail string
+	for _, c := range plan.Changes {
+		if strings.Contains(c.Detail, "dangling-link.md") {
+			symlinkDetail = c.Detail
+		}
+	}
+	if !strings.Contains(symlinkDetail, "symlink") {
+		t.Fatalf("expected the symlink entry flagged as a symlink, got %q", symlinkDetail)
+	}
+	if !strings.Contains(symlinkDetail, "user-added") {
+		t.Fatalf("expected the symlink entry flagged as user-added, got %q", symlinkDetail)
+	}
+
+	result, err := ApplyReset(sddruntime.PlatformClaude, configDir, home)
+	if err != nil {
+		t.Fatalf("ApplyReset: %v", err)
+	}
+	if result.SnapshotID == "" {
+		t.Fatalf("expected a snapshot ID")
+	}
+	if _, err := os.Lstat(linkPath); !os.IsNotExist(err) {
+		t.Fatalf("symlink still present after reset, lstat err = %v", err)
+	}
+}
+
+func TestApplyReset_Claude_DirectorySymlink_NeverFollowedOrDescendedInto(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks on Windows needs elevated privileges")
+	}
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+
+	targetDir := filepath.Join(home, "outside-target-dir")
+	mustWriteFile(t, filepath.Join(targetDir, "untouched.txt"), "must survive")
+
+	linkPath := filepath.Join(configDir, "agents", "linked-dir")
+	if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Symlink(targetDir, linkPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	plan, err := PlanReset(sddruntime.PlatformClaude, configDir)
+	if err != nil {
+		t.Fatalf("PlanReset: %v", err)
+	}
+	for _, c := range plan.Changes {
+		if strings.Contains(c.Detail, "untouched.txt") {
+			t.Fatalf("plan descended into the symlinked directory, got %+v", plan.Changes)
+		}
+	}
+	var symlinkDetail string
+	for _, c := range plan.Changes {
+		if strings.Contains(c.Detail, "linked-dir") {
+			symlinkDetail = c.Detail
+		}
+	}
+	if !strings.Contains(symlinkDetail, "symlink") {
+		t.Fatalf("expected the directory symlink entry flagged as a symlink, got %q", symlinkDetail)
+	}
+
+	result, err := ApplyReset(sddruntime.PlatformClaude, configDir, home)
+	if err != nil {
+		t.Fatalf("ApplyReset: %v", err)
+	}
+	if result.SnapshotID == "" {
+		t.Fatalf("expected a snapshot ID")
+	}
+	if _, err := os.Lstat(linkPath); !os.IsNotExist(err) {
+		t.Fatalf("directory symlink still present after reset, lstat err = %v", err)
+	}
+	if got := mustReadFile(t, filepath.Join(targetDir, "untouched.txt")); got != "must survive" {
+		t.Fatalf("file behind the symlinked directory was mutated: %q", got)
+	}
+}
+
+// --- R3-003: restored file mode preserves the original permission bits ---
+
+func TestApplyReset_RollbackRestoresOriginalExecutableBit(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+	scriptPath := filepath.Join(configDir, "statusline-command.sh")
+	skillPath := filepath.Join(configDir, "skills", "foo", "SKILL.md")
+	scriptContent := "#!/bin/sh\necho hi\n"
+	mustWriteFile(t, skillPath, "skill")
+	if err := os.MkdirAll(filepath.Dir(scriptPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	base := defaultResetFileOps()
+	origRemove := base.removeFile
+	base.removeFile = func(path string) error {
+		if path == skillPath {
+			return fmt.Errorf("injected failure removing skill file")
+		}
+		return origRemove(path)
+	}
+
+	_, err := applyResetWithOps(sddruntime.PlatformClaude, configDir, home, base)
+	if err == nil {
+		t.Fatalf("expected an error from the injected failure")
+	}
+
+	info, statErr := os.Stat(scriptPath)
+	if statErr != nil {
+		t.Fatalf("statusline-command.sh was not restored: %v", statErr)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("statusline-command.sh mode = %o, want 0755 (executable bit preserved)", info.Mode().Perm())
+	}
+	if got := mustReadFile(t, scriptPath); got != scriptContent {
+		t.Fatalf("statusline-command.sh content = %q, want %q", got, scriptContent)
+	}
+}
+
+// --- R3-004: an unparseable existing settings file is an explicit error ---
+
+func TestPlanReset_Claude_UnparseableSettings_ReturnsExplicitError(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+	settingsPath := filepath.Join(configDir, "settings.json")
+	mustWriteFile(t, settingsPath, "{ this is not valid json")
+
+	if _, err := PlanReset(sddruntime.PlatformClaude, configDir); err == nil {
+		t.Fatalf("expected an error for an unparseable settings.json")
+	} else if !strings.Contains(err.Error(), "settings.json") {
+		t.Fatalf("error = %q, want it to name settings.json", err)
+	}
+
+	if _, err := ApplyReset(sddruntime.PlatformClaude, configDir, home); err == nil {
+		t.Fatalf("expected ApplyReset to also refuse an unparseable settings.json")
+	}
+	if _, err := os.Stat(filepath.Join(home, ".jarvis", "backups")); !os.IsNotExist(err) {
+		t.Fatalf("a refused reset must not create a backup, stat err = %v", err)
+	}
+	if got := mustReadFile(t, settingsPath); got != "{ this is not valid json" {
+		t.Fatalf("the unparseable file must be left untouched, got %q", got)
+	}
+}
+
+func TestPlanReset_OpenCode_UnparseableSettings_ReturnsExplicitError(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".config", "opencode")
+	settingsPath := filepath.Join(configDir, "opencode.json")
+	mustWriteFile(t, settingsPath, "not json at all")
+
+	if _, err := PlanReset(sddruntime.PlatformOpenCode, configDir); err == nil {
+		t.Fatalf("expected an error for an unparseable opencode.json")
+	} else if !strings.Contains(err.Error(), "opencode.json") {
+		t.Fatalf("error = %q, want it to name opencode.json", err)
+	}
+}
+
+// --- R3-005: positive-removal coverage for branches that only had
+// preservation tests before ---
+
+func TestApplyReset_Claude_RemovesJarvisPersonaOutputStyle(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+	names, err := claudeManagedOutputStyleNames()
+	if err != nil || len(names) == 0 {
+		t.Fatalf("claudeManagedOutputStyleNames() = %v, %v, want at least one built-in name", names, err)
+	}
+	settings := fmt.Sprintf("{\"outputStyle\": %q}\n", names[0])
+	mustWriteFile(t, filepath.Join(configDir, "settings.json"), settings)
+
+	result, err := ApplyReset(sddruntime.PlatformClaude, configDir, home)
+	if err != nil {
+		t.Fatalf("ApplyReset: %v", err)
+	}
+	after := mustReadFile(t, filepath.Join(configDir, "settings.json"))
+	if strings.Contains(after, "outputStyle") {
+		t.Fatalf("Jarvis-emitted outputStyle was not removed: %s", after)
+	}
+	if !hasChangeSurface(result.Changes, "claude.settings.output_style") {
+		t.Fatalf("expected claude.settings.output_style change, got %+v", result.Changes)
+	}
+}
+
+func TestApplyReset_Claude_RemovesExactManagedStatusLineCommand(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+	settings := `{"statusLine": {"type": "command", "command": "bash ~/.claude/statusline-command.sh"}}` + "\n"
+	mustWriteFile(t, filepath.Join(configDir, "settings.json"), settings)
+
+	result, err := ApplyReset(sddruntime.PlatformClaude, configDir, home)
+	if err != nil {
+		t.Fatalf("ApplyReset: %v", err)
+	}
+	after := mustReadFile(t, filepath.Join(configDir, "settings.json"))
+	if strings.Contains(after, "statusLine") {
+		t.Fatalf("exact managed statusLine command was not removed: %s", after)
+	}
+	if !hasChangeSurface(result.Changes, "claude.settings.status_line") {
+		t.Fatalf("expected claude.settings.status_line change, got %+v", result.Changes)
+	}
+}
+
+func TestApplyReset_Claude_RemovesDefaultModeBypassPermissions(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+	settings := `{"permissions": {"defaultMode": "bypassPermissions"}}` + "\n"
+	mustWriteFile(t, filepath.Join(configDir, "settings.json"), settings)
+
+	result, err := ApplyReset(sddruntime.PlatformClaude, configDir, home)
+	if err != nil {
+		t.Fatalf("ApplyReset: %v", err)
+	}
+	after := mustReadFile(t, filepath.Join(configDir, "settings.json"))
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(after), &decoded); err != nil {
+		t.Fatalf("settings.json is invalid JSON after reset: %v", err)
+	}
+	permissions, _ := decoded["permissions"].(map[string]any)
+	if _, ok := permissions["defaultMode"]; ok {
+		t.Fatalf("permissions.defaultMode == bypassPermissions was not removed: %+v", permissions)
+	}
+	if !hasChangeSurface(result.Changes, "claude.settings.default_mode") {
+		t.Fatalf("expected claude.settings.default_mode change, got %+v", result.Changes)
+	}
+}
+
+const sampleAgentsMD = `# AGENTS.md
+
+Some user-owned preamble the reset must never touch.
+
+<!-- JARVIS:LAYER1:START -->
+layer1 content
+<!-- JARVIS:LAYER1:END -->
+
+<!-- JARVIS:LAYER2:START -->
+layer2 content
+<!-- JARVIS:LAYER2:END -->
+
+Some user-owned trailer the reset must never touch.
+`
+
+func TestApplyReset_OpenCode_StripsAGENTSMarkerBlock(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".config", "opencode")
+	mustWriteFile(t, filepath.Join(configDir, "AGENTS.md"), sampleAgentsMD)
+
+	result, err := ApplyReset(sddruntime.PlatformOpenCode, configDir, home)
+	if err != nil {
+		t.Fatalf("ApplyReset: %v", err)
+	}
+	if result.SnapshotID == "" {
+		t.Fatalf("expected a snapshot ID")
+	}
+	after := mustReadFile(t, filepath.Join(configDir, "AGENTS.md"))
+	if strings.Contains(after, "layer1 content") || strings.Contains(after, "layer2 content") {
+		t.Fatalf("AGENTS.md marker block content was not stripped: %s", after)
+	}
+	if !strings.Contains(after, "Some user-owned preamble") || !strings.Contains(after, "Some user-owned trailer") {
+		t.Fatalf("AGENTS.md content outside markers was not preserved: %s", after)
+	}
+}
+
+func TestApplyReset_OpenCode_RemovesPluginFiles(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".config", "opencode")
+	hivePluginPath := filepath.Join(configDir, "plugins", "hive.ts")
+	registryPluginPath := filepath.Join(configDir, "plugins", "skill-registry.ts")
+	mustWriteFile(t, hivePluginPath, "hive plugin")
+	mustWriteFile(t, registryPluginPath, "registry plugin")
+
+	result, err := ApplyReset(sddruntime.PlatformOpenCode, configDir, home)
+	if err != nil {
+		t.Fatalf("ApplyReset: %v", err)
+	}
+	for _, path := range []string{hivePluginPath, registryPluginPath} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("plugin file %s still present after reset", path)
+		}
+	}
+	if !hasChangeSurface(result.Changes, "opencode.plugins.hive_hook") {
+		t.Fatalf("expected opencode.plugins.hive_hook change, got %+v", result.Changes)
+	}
+	if !hasChangeSurface(result.Changes, "opencode.plugins.registry_hook") {
+		t.Fatalf("expected opencode.plugins.registry_hook change, got %+v", result.Changes)
+	}
+}
+
+func TestApplyReset_OpenCode_RemovesMCPContext7(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".config", "opencode")
+	content := `{"mcp": {"context7": {"type": "remote", "url": "https://example.com"}, "other": {"type": "remote", "url": "https://other.example.com"}}}` + "\n"
+	mustWriteFile(t, filepath.Join(configDir, "opencode.json"), content)
+
+	result, err := ApplyReset(sddruntime.PlatformOpenCode, configDir, home)
+	if err != nil {
+		t.Fatalf("ApplyReset: %v", err)
+	}
+	after := mustReadFile(t, filepath.Join(configDir, "opencode.json"))
+	if strings.Contains(after, "context7") {
+		t.Fatalf("mcp.context7 was not removed: %s", after)
+	}
+	if !strings.Contains(after, "other") {
+		t.Fatalf("unrelated mcp server was not preserved: %s", after)
+	}
+	if !hasChangeSurface(result.Changes, "opencode.settings.mcp") {
+		t.Fatalf("expected opencode.settings.mcp change, got %+v", result.Changes)
+	}
+}
+
+func hasChangeSurface(changes []ResetChange, surfaceID string) bool {
+	for _, c := range changes {
+		if c.SurfaceID == surfaceID {
+			return true
+		}
+	}
+	return false
 }

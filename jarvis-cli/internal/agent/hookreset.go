@@ -1,11 +1,6 @@
 package agent
 
-import (
-	"encoding/json"
-	"strings"
-)
-
-// removeHookNestedCommandsByTokens is the configuration-reset counterpart to
+// filterHookGroupNestedCommands is the configuration-reset counterpart to
 // removeHookEntries in hookcleanup.go. The install path's removeHookEntries
 // drops a whole hook group the moment ANY nested command matches, which is
 // correct for idempotent re-installation because Jarvis only ever installs
@@ -14,53 +9,10 @@ import (
 // Jarvis-managed one: it strips only the matching nested commands, preserves
 // the group's "matcher" and every other field and every unrelated nested
 // command, and drops the group only once its nested "hooks" list becomes
-// empty. It scans every hook event present, not a fixed list, since Jarvis
-// manages hooks across several event names.
+// empty. computeClaudeSettingsReset in reset.go is the single caller: it
+// walks every hook event present (not a fixed list, since Jarvis manages
+// hooks across several event names) and applies this filter per group.
 //
-// Returns the original bytes unchanged when settings is empty, unparseable,
-// or nothing matches.
-func removeHookNestedCommandsByTokens(settings []byte, tokens []string) []byte {
-	if len(strings.TrimSpace(string(settings))) == 0 || len(tokens) == 0 {
-		return settings
-	}
-	root, err := parseOrderedJSON(settings)
-	if err != nil || root.object == nil {
-		return settings
-	}
-	hooksVal, ok := root.object.get("hooks")
-	if !ok || hooksVal.object == nil {
-		return settings
-	}
-
-	changed := false
-	for i, eventPair := range hooksVal.object.pairs {
-		if eventPair.value.array == nil {
-			continue
-		}
-		filteredGroups := make([]orderedValue, 0, len(eventPair.value.array))
-		for _, group := range eventPair.value.array {
-			kept, groupChanged := filterHookGroupNestedCommands(group, tokens)
-			if groupChanged {
-				changed = true
-			}
-			if kept != nil {
-				filteredGroups = append(filteredGroups, *kept)
-			}
-		}
-		hooksVal.object.pairs[i].value = orderedValue{array: filteredGroups}
-	}
-	if !changed {
-		return settings
-	}
-
-	root.object.set("hooks", hooksVal)
-	out, err := json.MarshalIndent(root, "", "  ")
-	if err != nil {
-		return settings
-	}
-	return append(out, '\n')
-}
-
 // filterHookGroupNestedCommands removes, from one hook group's nested "hooks"
 // list, every entry whose "command" matches any token at a word boundary. It
 // returns the (possibly mutated) group and whether anything changed; a nil
