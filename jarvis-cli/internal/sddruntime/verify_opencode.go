@@ -384,14 +384,10 @@ func requiredOpenCodeSDDSubagents() []string {
 
 // retiredOpenCode4RNames are the four legacy 4R reviewer agent names retired
 // from Jarvis-issued OpenCode configuration. They are never required and,
-// when observed, are reported as informational residue only.
+// when observed, are reported as informational residue only. The single
+// source is RetiredOpenCodeReviewAgentNames, shared with the reset inventory.
 func retiredOpenCode4RNames() []string {
-	return []string{
-		"review-risk",
-		"review-readability",
-		"review-reliability",
-		"review-resilience",
-	}
+	return RetiredOpenCodeReviewAgentNames()
 }
 
 // legacyOpenCode4RResidue reports the exact surfaces where a retired 4R name
