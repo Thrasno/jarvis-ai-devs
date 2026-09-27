@@ -20,9 +20,9 @@ func TestClaudeAgent_InstallAgents_WritesAllFiles(t *testing.T) {
 	a := &ClaudeAgent{home: home, templatesFS: emptyFS}
 
 	testFS := fstest.MapFS{
-		"review-risk.md":        {Data: []byte("# Review Risk")},
-		"review-readability.md": {Data: []byte("# Review Readability")},
-		"jd-judge-a.md":         {Data: []byte("# JD Judge A")},
+		"agent-a.md":    {Data: []byte("# Agent A")},
+		"agent-b.md":    {Data: []byte("# Agent B")},
+		"jd-judge-a.md": {Data: []byte("# JD Judge A")},
 	}
 
 	if err := a.InstallAgents(testFS); err != nil {
@@ -32,9 +32,9 @@ func TestClaudeAgent_InstallAgents_WritesAllFiles(t *testing.T) {
 	agentsDir := filepath.Join(claudeDir, "agents")
 
 	wantFiles := map[string]string{
-		"review-risk.md":        "# Review Risk",
-		"review-readability.md": "# Review Readability",
-		"jd-judge-a.md":         "# JD Judge A",
+		"agent-a.md":    "# Agent A",
+		"agent-b.md":    "# Agent B",
+		"jd-judge-a.md": "# JD Judge A",
 	}
 
 	for relPath, wantContent := range wantFiles {
@@ -62,7 +62,7 @@ func TestClaudeAgent_InstallAgents_Idempotent(t *testing.T) {
 	a := &ClaudeAgent{home: home, templatesFS: emptyFS}
 
 	testFS := fstest.MapFS{
-		"review-risk.md": {Data: []byte("# Review Risk")},
+		"agent-a.md": {Data: []byte("# Agent A")},
 	}
 
 	// First call.
@@ -76,11 +76,11 @@ func TestClaudeAgent_InstallAgents_Idempotent(t *testing.T) {
 	}
 
 	agentsDir := filepath.Join(claudeDir, "agents")
-	got, err := os.ReadFile(filepath.Join(agentsDir, "review-risk.md"))
+	got, err := os.ReadFile(filepath.Join(agentsDir, "agent-a.md"))
 	if err != nil {
 		t.Fatalf("read file after second call: %v", err)
 	}
-	if string(got) != "# Review Risk" {
-		t.Errorf("content after second call = %q, want %q", got, "# Review Risk")
+	if string(got) != "# Agent A" {
+		t.Errorf("content after second call = %q, want %q", got, "# Agent A")
 	}
 }

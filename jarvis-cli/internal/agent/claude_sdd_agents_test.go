@@ -174,10 +174,16 @@ func TestClaudeStaticAndOpenCodeSDDAgentsRemainAvailable(t *testing.T) {
 	}
 	for _, name := range []string{
 		"jd-judge-a.md", "jd-judge-b.md", "jd-fix-agent.md",
-		"review-risk.md", "review-readability.md", "review-reliability.md", "review-resilience.md",
 	} {
 		if _, err := fs.Stat(agentsFS, name); err != nil {
 			t.Fatalf("static Claude agent %q missing: %v", name, err)
+		}
+	}
+	for _, name := range []string{
+		"review-risk.md", "review-readability.md", "review-reliability.md", "review-resilience.md",
+	} {
+		if _, err := fs.Stat(agentsFS, name); err == nil {
+			t.Fatalf("retired legacy 4R Claude agent %q still embedded", name)
 		}
 	}
 

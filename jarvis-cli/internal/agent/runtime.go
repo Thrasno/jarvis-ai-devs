@@ -141,6 +141,7 @@ func observeRuntimeWithConfig(configDir string, plan sddruntime.RuntimePlan, mod
 	// Claude leaves this at zero value (ParseSucceeded==false), which is safe.
 	var openCodeCfg sddruntime.ObservedOpenCodeConfig
 	var claudeSDDHiveTools map[string][]string
+	var claudeLegacy4RResidue []string
 	if plan.Agent == "opencode" {
 		settingsPath := filepath.Join(configDir, filepath.Base(plan.Paths.Settings))
 		openCodeCfg = parseOpenCodeConfig(settingsPath)
@@ -148,6 +149,7 @@ func observeRuntimeWithConfig(configDir string, plan sddruntime.RuntimePlan, mod
 		openCodeCfg.PluginHiveExists = artifacts["prompt_hook"].Exists
 	} else if plan.Agent == "claude" {
 		claudeSDDHiveTools = observeClaudeSDDSubagentHiveTools(filepath.Join(configDir, "agents"))
+		claudeLegacy4RResidue = observeClaudeLegacy4RResidue(filepath.Join(configDir, "agents"))
 	}
 
 	return sddruntime.ObservedRuntime{
@@ -169,7 +171,36 @@ func observeRuntimeWithConfig(configDir string, plan sddruntime.RuntimePlan, mod
 		Artifacts:                  artifacts,
 		OpenCode:                   openCodeCfg,
 		ClaudeSDDSubagentHiveTools: claudeSDDHiveTools,
+		ClaudeLegacy4RResidue:      claudeLegacy4RResidue,
 	}, nil
+}
+
+// retiredClaudeAgentFilenames are the four legacy 4R reviewer agent files
+// retired from Jarvis-issued Claude configuration. installAgentsFromFS only
+// copies files and never deletes them (see internal/agent/install.go), so a
+// machine that installed an earlier Jarvis release keeps these files until an
+// explicit, consented reset removes them.
+func retiredClaudeAgentFilenames() []string {
+	return []string{
+		"review-risk.md",
+		"review-readability.md",
+		"review-reliability.md",
+		"review-resilience.md",
+	}
+}
+
+// observeClaudeLegacy4RResidue reports, without mutating anything, which
+// retired review-* agent files are still present under agentsDir. It is
+// purely observational: doctor/reconcile report this informationally and
+// never delete these files.
+func observeClaudeLegacy4RResidue(agentsDir string) []string {
+	var residue []string
+	for _, name := range retiredClaudeAgentFilenames() {
+		if _, err := os.Stat(filepath.Join(agentsDir, name)); err == nil {
+			residue = append(residue, name)
+		}
+	}
+	return residue
 }
 
 func observeClaudeSDDSubagentHiveTools(agentsDir string) map[string][]string {

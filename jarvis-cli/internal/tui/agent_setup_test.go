@@ -398,7 +398,7 @@ func TestConfigureWizardAgent_InstallsAgents(t *testing.T) {
 		stub := &setupAgentInstallerStub{
 			setupAgentStub: &setupAgentStub{name: "claude"},
 		}
-		agentsSubFS := fstest.MapFS{"review-risk.md": {Data: []byte("# review-risk")}}
+		agentsSubFS := fstest.MapFS{"agent-a.md": {Data: []byte("# agent-a")}}
 
 		_, err := configureWizardAgent(stub, state.PhaseModels{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, agentsSubFS, func() bool { return true })
 		if err != nil {
@@ -426,7 +426,7 @@ func TestConfigureWizardAgent_InstallsAgents(t *testing.T) {
 			setupAgentStub:   &setupAgentStub{name: "claude"},
 			installAgentsErr: errors.New("agents dir write failed"),
 		}
-		agentsSubFS := fstest.MapFS{"review-risk.md": {Data: []byte("# review-risk")}}
+		agentsSubFS := fstest.MapFS{"agent-a.md": {Data: []byte("# agent-a")}}
 
 		_, err := configureWizardAgent(stub, state.PhaseModels{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, testSkillsFS, nil, agentsSubFS, func() bool { return true })
 		if err == nil {
@@ -1054,7 +1054,6 @@ func compliantOpenCodeObservedForTUI() sddruntime.ObservedOpenCodeConfig {
 		"sdd-tasks", "sdd-apply", "sdd-verify", "sdd-archive",
 		"sdd-init", "sdd-onboard",
 		"jd-judge-a", "jd-judge-b", "jd-fix-agent",
-		"review-risk", "review-readability", "review-reliability", "review-resilience",
 	}
 	return sddruntime.ObservedOpenCodeConfig{
 		ParseSucceeded:               true,
