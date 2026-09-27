@@ -118,7 +118,7 @@ func TestConfigureWizardAgents_RecordsTheAgentsInstructionsPath(t *testing.T) {
 	}
 	a := &setupAgentStub{name: "claude", observeRuntime: passingRuntimeObservation(t, "claude", assignments, nil)}
 
-	results := configureWizardAgents([]agent.Agent{a}, state.PhaseModels{}, agent.MCPEntry{Name: "hive"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, testSkillsFS, nil, nil, func() bool { return true })
+	results := configureWizardAgents([]agent.Agent{a}, WizardAgentApplyOptions{PhaseModels: state.PhaseModels{}, HiveEntry: agent.MCPEntry{Name: "hive"}, Context7Entry: agent.MCPEntry{Name: "context7"}, PresetCtx: wizardPresetApplyContext{}, SkillsSubFS: testSkillsFS, StatuslineConfirm: func() bool { return true }})
 	if len(results) != 1 || results[0].Err != nil {
 		t.Fatalf("configureWizardAgents = %+v, want a single successful result", results)
 	}

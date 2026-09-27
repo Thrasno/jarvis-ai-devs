@@ -140,7 +140,7 @@ Every Jarvis release is a complete ecosystem pack. A rollout is valid only when 
 
 Do not use or document nonexistent release commands such as `jarvis update`, `jarvis upgrade`, or `jarvis setup`. Release rollout governs ecosystem installation and reconfiguration only; Hive ↔ Hive API sync remains a separate product behavior.
 
-`jarvis sync` is non-interactive and takes no flags. It replays the manifest at `~/.jarvis/state.yaml` against the installed version's embedded assets: model assignments, Jarvis-managed MCPs, installer-managed skills, persona, and the statusline when it was enabled at install time. A machine that is already current performs zero writes and says so. See [`docs/cli-reference.md`](docs/cli-reference.md) for the full contract and [`docs/troubleshooting.md`](docs/troubleshooting.md) for its known gaps.
+`jarvis sync` is non-interactive and takes no flags. It replays the manifest at `~/.jarvis/state.yaml` against the installed version's embedded assets: model assignments, Jarvis-managed MCPs, installer-managed skills, persona, and the statusline when it was enabled at install time. A machine that is already current performs zero writes and says so. `jarvis sync` never resets or removes existing configuration; only the interactive `jarvis` wizard offers the consented configuration reset described in [`docs/getting-started.md`](docs/getting-started.md#configuration-reset-upgrading-an-existing-machine). See [`docs/cli-reference.md`](docs/cli-reference.md) for the full contract and [`docs/troubleshooting.md`](docs/troubleshooting.md) for its known gaps.
 
 ### Single installer contract
 

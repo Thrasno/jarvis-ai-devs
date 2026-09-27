@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strings"
 	"testing"
 
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/lifecycle"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 )
 
@@ -54,7 +56,7 @@ func TestPlanAndApplyReset_AbsentConfigDir_EmptyPlanNoWrites(t *testing.T) {
 	home := t.TempDir()
 	configDir := filepath.Join(home, ".claude")
 
-	plan, err := PlanReset(sddruntime.PlatformClaude, configDir)
+	plan, err := PlanReset(sddruntime.PlatformClaude, configDir, home)
 	if err != nil {
 		t.Fatalf("PlanReset: %v", err)
 	}
@@ -106,7 +108,7 @@ func TestApplyReset_Claude_RemovesLegacy4RResidueAgentFiles(t *testing.T) {
 		mustWriteFile(t, filepath.Join(configDir, "agents", name+".md"), "retired agent")
 	}
 
-	plan, err := PlanReset(sddruntime.PlatformClaude, configDir)
+	plan, err := PlanReset(sddruntime.PlatformClaude, configDir, home)
 	if err != nil {
 		t.Fatalf("PlanReset: %v", err)
 	}
@@ -171,7 +173,7 @@ func TestPlanReset_Claude_ReportsUserAddedAgentAsUserAdded(t *testing.T) {
 	mustWriteFile(t, filepath.Join(configDir, "agents", "sdd-init.md"), "owned agent")
 	mustWriteFile(t, filepath.Join(configDir, "agents", "my-custom-agent.md"), "user agent")
 
-	plan, err := PlanReset(sddruntime.PlatformClaude, configDir)
+	plan, err := PlanReset(sddruntime.PlatformClaude, configDir, home)
 	if err != nil {
 		t.Fatalf("PlanReset: %v", err)
 	}
@@ -209,7 +211,7 @@ func TestPlanReset_OpenCode_ReportsExtraAgentEntries(t *testing.T) {
 	content := `{"agent": {"sdd-init": {"mode": "subagent"}, "my-custom-agent": {"mode": "subagent"}}}`
 	mustWriteFile(t, filepath.Join(configDir, "opencode.json"), content)
 
-	plan, err := PlanReset(sddruntime.PlatformOpenCode, configDir)
+	plan, err := PlanReset(sddruntime.PlatformOpenCode, configDir, home)
 	if err != nil {
 		t.Fatalf("PlanReset: %v", err)
 	}
@@ -481,7 +483,7 @@ func TestRollbackResetMutations_DeletesPathThatWasAbsentBefore(t *testing.T) {
 }
 
 func TestPlanReset_UnsupportedPlatform_ReturnsError(t *testing.T) {
-	if _, err := PlanReset(sddruntime.Platform("unknown"), t.TempDir()); err == nil {
+	if _, err := PlanReset(sddruntime.Platform("unknown"), t.TempDir(), t.TempDir()); err == nil {
 		t.Fatalf("expected an error for an unsupported platform")
 	}
 }
@@ -529,7 +531,7 @@ func TestApplyReset_Claude_FileSymlink_RemovedWithoutReadingThroughIt(t *testing
 		t.Fatalf("symlink: %v", err)
 	}
 
-	plan, err := PlanReset(sddruntime.PlatformClaude, configDir)
+	plan, err := PlanReset(sddruntime.PlatformClaude, configDir, home)
 	if err != nil {
 		t.Fatalf("PlanReset: %v", err)
 	}
@@ -576,7 +578,7 @@ func TestApplyReset_Claude_DirectorySymlink_NeverFollowedOrDescendedInto(t *test
 		t.Fatalf("symlink: %v", err)
 	}
 
-	plan, err := PlanReset(sddruntime.PlatformClaude, configDir)
+	plan, err := PlanReset(sddruntime.PlatformClaude, configDir, home)
 	if err != nil {
 		t.Fatalf("PlanReset: %v", err)
 	}
@@ -669,7 +671,7 @@ func TestPlanReset_Claude_UnparseableSettings_ReturnsExplicitError(t *testing.T)
 	settingsPath := filepath.Join(configDir, "settings.json")
 	mustWriteFile(t, settingsPath, "{ this is not valid json")
 
-	if _, err := PlanReset(sddruntime.PlatformClaude, configDir); err == nil {
+	if _, err := PlanReset(sddruntime.PlatformClaude, configDir, home); err == nil {
 		t.Fatalf("expected an error for an unparseable settings.json")
 	} else if !strings.Contains(err.Error(), "settings.json") {
 		t.Fatalf("error = %q, want it to name settings.json", err)
@@ -692,7 +694,7 @@ func TestPlanReset_OpenCode_UnparseableSettings_ReturnsExplicitError(t *testing.
 	settingsPath := filepath.Join(configDir, "opencode.json")
 	mustWriteFile(t, settingsPath, "not json at all")
 
-	if _, err := PlanReset(sddruntime.PlatformOpenCode, configDir); err == nil {
+	if _, err := PlanReset(sddruntime.PlatformOpenCode, configDir, home); err == nil {
 		t.Fatalf("expected an error for an unparseable opencode.json")
 	} else if !strings.Contains(err.Error(), "opencode.json") {
 		t.Fatalf("error = %q, want it to name opencode.json", err)
@@ -858,4 +860,534 @@ func hasChangeSurface(changes []ResetChange, surfaceID string) bool {
 		}
 	}
 	return false
+}
+
+// --- Hardening: top-level surfaces that are themselves symlinks ---
+//
+// R3-002 covered a symlink found while enumerating a whole-directory surface
+// (agents/, skills/, ...). These tests cover the surfaces read directly by
+// path -- settings.json, CLAUDE.md, and a whole-file surface -- where a
+// dotfile manager is most likely to place the symlink itself.
+
+func TestApplyReset_Claude_SymlinkedSettingsJSON_EditedInPlaceLinkPreserved(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks on Windows needs elevated privileges")
+	}
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	names, err := claudeManagedOutputStyleNames()
+	if err != nil || len(names) == 0 {
+		t.Fatalf("claudeManagedOutputStyleNames() = %v, %v, want at least one built-in name", names, err)
+	}
+	managedStyle := names[0]
+
+	realDir := filepath.Join(home, "dotfiles")
+	realPath := filepath.Join(realDir, "claude-settings.json")
+	original := fmt.Sprintf(`{"outputStyle": %q, "permissions": {"allow": ["Bash(git status:*)"]}}`, managedStyle)
+	mustWriteFile(t, realPath, original)
+	if err := os.Chmod(realPath, 0o640); err != nil {
+		t.Fatalf("chmod real target: %v", err)
+	}
+
+	linkPath := filepath.Join(configDir, "settings.json")
+	if err := os.Symlink(realPath, linkPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	result, err := ApplyReset(sddruntime.PlatformClaude, configDir, home)
+	if err != nil {
+		t.Fatalf("ApplyReset: %v", err)
+	}
+
+	linkInfo, err := os.Lstat(linkPath)
+	if err != nil {
+		t.Fatalf("lstat link: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("settings.json is no longer a symlink; the reset replaced the link with a regular file")
+	}
+	target, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("readlink: %v", err)
+	}
+	if target != realPath {
+		t.Fatalf("symlink target = %q, want %q (unchanged)", target, realPath)
+	}
+
+	realInfo, err := os.Lstat(realPath)
+	if err != nil {
+		t.Fatalf("lstat real target: %v", err)
+	}
+	if realInfo.Mode().Perm() != 0o640 {
+		t.Fatalf("real target mode = %v, want 0640 preserved (not the symlink's own Lstat mode)", realInfo.Mode().Perm())
+	}
+
+	after := mustReadFile(t, realPath)
+	if strings.Contains(after, managedStyle) {
+		t.Fatalf("outputStyle was not reset in the real target: %s", after)
+	}
+	if !hasChangeSurface(result.Changes, "claude.settings.output_style") {
+		t.Fatalf("expected claude.settings.output_style change, got %+v", result.Changes)
+	}
+}
+
+func TestApplyReset_Claude_SymlinkedWholeFileSurface_LinkRemovedTargetUntouched(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks on Windows needs elevated privileges")
+	}
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+
+	realPath := filepath.Join(home, "dotfiles", "sdd-orchestrator.md")
+	mustWriteFile(t, realPath, "shared orchestrator content")
+
+	linkPath := filepath.Join(configDir, "sdd-orchestrator.md")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Symlink(realPath, linkPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	result, err := ApplyReset(sddruntime.PlatformClaude, configDir, home)
+	if err != nil {
+		t.Fatalf("ApplyReset: %v", err)
+	}
+
+	if _, err := os.Lstat(linkPath); !os.IsNotExist(err) {
+		t.Fatalf("symlink still present after reset, lstat err = %v", err)
+	}
+	if got := mustReadFile(t, realPath); got != "shared orchestrator content" {
+		t.Fatalf("real target was mutated through the link: %q", got)
+	}
+	var detail string
+	for _, c := range result.Changes {
+		if c.SurfaceID == "claude.orchestrator.file" {
+			detail = c.Detail
+		}
+	}
+	if !strings.Contains(detail, "symlink") {
+		t.Fatalf("expected the whole-file symlink flagged as a symlink, got %q", detail)
+	}
+}
+
+func TestApplyReset_Claude_SymlinkedTopLevelSurfaces_MidApplyFailureRollsBack(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks on Windows needs elevated privileges")
+	}
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+
+	realClaudeMDPath := filepath.Join(home, "dotfiles", "claude-settings.json")
+	originalSettings := `{"outputStyle": "Gentleman"}`
+	mustWriteFile(t, realClaudeMDPath, originalSettings)
+	settingsLink := filepath.Join(configDir, "settings.json")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Symlink(realClaudeMDPath, settingsLink); err != nil {
+		t.Fatalf("symlink settings: %v", err)
+	}
+
+	realOrchestratorPath := filepath.Join(home, "dotfiles", "sdd-orchestrator.md")
+	mustWriteFile(t, realOrchestratorPath, "shared orchestrator content")
+	orchestratorLink := filepath.Join(configDir, "sdd-orchestrator.md")
+	if err := os.Symlink(realOrchestratorPath, orchestratorLink); err != nil {
+		t.Fatalf("symlink orchestrator: %v", err)
+	}
+
+	mustWriteFile(t, filepath.Join(configDir, "CLAUDE.md"), sampleClaudeMD)
+	claudeMDPath := filepath.Join(configDir, "CLAUDE.md")
+
+	base := defaultResetFileOps()
+	origWrite := base.writeFile
+	base.writeFile = func(path string, data []byte, mode os.FileMode) error {
+		if path == claudeMDPath {
+			return fmt.Errorf("injected apply failure")
+		}
+		return origWrite(path, data, mode)
+	}
+
+	_, err := applyResetWithOps(sddruntime.PlatformClaude, configDir, home, base)
+	if err == nil {
+		t.Fatalf("expected an error from the injected failure")
+	}
+	var restoreErr *ResetRestoreError
+	if errors.As(err, &restoreErr) {
+		t.Fatalf("error = %v (*ResetRestoreError), want a plain wrapped error since rollback fully succeeded", err)
+	}
+
+	// The settings symlink mutation edited the real target in place: rollback
+	// must restore its prior bytes, and the link itself must still exist.
+	if got := mustReadFile(t, realClaudeMDPath); got != originalSettings {
+		t.Fatalf("real settings target = %q, want original restored: %q", got, originalSettings)
+	}
+	if _, err := os.Lstat(settingsLink); err != nil {
+		t.Fatalf("settings symlink missing after rollback: %v", err)
+	}
+
+	// The orchestrator symlink mutation deleted the link itself: rollback
+	// must recreate the link pointing at the same target.
+	linkInfo, err := os.Lstat(orchestratorLink)
+	if err != nil {
+		t.Fatalf("orchestrator symlink missing after rollback: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("orchestrator path was recreated as a regular file, not a symlink")
+	}
+	target, err := os.Readlink(orchestratorLink)
+	if err != nil {
+		t.Fatalf("readlink orchestrator after rollback: %v", err)
+	}
+	if target != realOrchestratorPath {
+		t.Fatalf("orchestrator symlink target after rollback = %q, want %q", target, realOrchestratorPath)
+	}
+}
+
+// --- Hardening R4-002: ApplyReset.Rollback undoes an already-applied reset ---
+
+func TestApplyReset_Rollback_UndoesASuccessfulReset(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+	mustWriteFile(t, filepath.Join(configDir, "CLAUDE.md"), sampleClaudeMD)
+	mustWriteFile(t, filepath.Join(configDir, "agents", "sdd-init.md"), "agent content")
+
+	result, err := ApplyReset(sddruntime.PlatformClaude, configDir, home)
+	if err != nil {
+		t.Fatalf("ApplyReset: %v", err)
+	}
+	if result.Rollback == nil {
+		t.Fatalf("expected a non-nil Rollback for a reset that applied mutations")
+	}
+	if _, err := os.Stat(filepath.Join(configDir, "agents", "sdd-init.md")); !os.IsNotExist(err) {
+		t.Fatalf("expected agents/sdd-init.md removed by the reset before rollback")
+	}
+
+	if err := result.Rollback(); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+
+	if got := mustReadFile(t, filepath.Join(configDir, "CLAUDE.md")); got != sampleClaudeMD {
+		t.Fatalf("CLAUDE.md = %q, want original content restored by Rollback", got)
+	}
+	if got := mustReadFile(t, filepath.Join(configDir, "agents", "sdd-init.md")); got != "agent content" {
+		t.Fatalf("agents/sdd-init.md = %q, want restored by Rollback", got)
+	}
+}
+
+func TestApplyReset_Rollback_NilWhenNothingToReset(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+
+	result, err := ApplyReset(sddruntime.PlatformClaude, configDir, home)
+	if err != nil {
+		t.Fatalf("ApplyReset: %v", err)
+	}
+	if result.Rollback != nil {
+		t.Fatalf("expected a nil Rollback when there were no mutations to apply")
+	}
+}
+
+// --- Hardening R4-003: symlink inventory sidecar next to the durable snapshot ---
+
+func TestApplyReset_WritesSymlinkSidecarForDurableSnapshot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks on Windows needs elevated privileges")
+	}
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+
+	realPath := filepath.Join(home, "dotfiles", "sdd-orchestrator.md")
+	mustWriteFile(t, realPath, "shared orchestrator content")
+	linkPath := filepath.Join(configDir, "sdd-orchestrator.md")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Symlink(realPath, linkPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	result, err := ApplyReset(sddruntime.PlatformClaude, configDir, home)
+	if err != nil {
+		t.Fatalf("ApplyReset: %v", err)
+	}
+
+	sidecarPath := filepath.Join(home, ".jarvis", "backups", result.SnapshotID+".symlinks.json")
+	raw, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		t.Fatalf("read symlink sidecar: %v", err)
+	}
+	var entries []resetSymlinkSidecarEntry
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		t.Fatalf("unmarshal symlink sidecar: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Path != linkPath || entries[0].Target != realPath {
+		t.Fatalf("sidecar entries = %+v, want exactly one {%s, %s}", entries, linkPath, realPath)
+	}
+}
+
+func TestApplyReset_LstatKindError_PropagatesFromResolveEditableSurfacePath(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+	mustWriteFile(t, filepath.Join(configDir, "settings.json"), `{}`)
+	settingsPath := filepath.Join(configDir, "settings.json")
+
+	base := defaultResetFileOps()
+	origLstatKind := base.lstatKind
+	base.lstatKind = func(path string) (bool, bool, error) {
+		if path == settingsPath {
+			return false, false, fmt.Errorf("injected lstat failure")
+		}
+		return origLstatKind(path)
+	}
+
+	_, err := applyResetWithOps(sddruntime.PlatformClaude, configDir, home, base)
+	if err == nil || !strings.Contains(err.Error(), "injected lstat failure") {
+		t.Fatalf("err = %v, want it to wrap the injected lstat failure", err)
+	}
+}
+
+func TestApplyReset_WholeFileSurface_LstatKindError_Propagates(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+	mustWriteFile(t, filepath.Join(configDir, "sdd-orchestrator.md"), "content")
+	orchestratorPath := filepath.Join(configDir, "sdd-orchestrator.md")
+
+	base := defaultResetFileOps()
+	origLstatKind := base.lstatKind
+	base.lstatKind = func(path string) (bool, bool, error) {
+		if path == orchestratorPath {
+			return false, false, fmt.Errorf("injected orchestrator lstat failure")
+		}
+		return origLstatKind(path)
+	}
+
+	_, err := applyResetWithOps(sddruntime.PlatformClaude, configDir, home, base)
+	if err == nil || !strings.Contains(err.Error(), "injected orchestrator lstat failure") {
+		t.Fatalf("err = %v, want it to wrap the injected lstat failure", err)
+	}
+}
+
+func TestApplyReset_NoSymlinkSidecarWhenNoSymlinkMutations(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+	mustWriteFile(t, filepath.Join(configDir, "CLAUDE.md"), sampleClaudeMD)
+
+	result, err := ApplyReset(sddruntime.PlatformClaude, configDir, home)
+	if err != nil {
+		t.Fatalf("ApplyReset: %v", err)
+	}
+	sidecarPath := filepath.Join(home, ".jarvis", "backups", result.SnapshotID+".symlinks.json")
+	if _, err := os.Stat(sidecarPath); !os.IsNotExist(err) {
+		t.Fatalf("did not expect a symlink sidecar when no symlink mutations occurred, stat err = %v", err)
+	}
+}
+
+// --- Hardening R2-004/R3-001/R1-001/R4-002: durable-snapshot exclusions are
+// canonicalized and derived from lifecycle.BackupStore itself ---
+
+// TestWithinBackupAllowedRoots_DerivesRootsFromBackupStore is the parity
+// test the reset core's allowed-root check must never drift from: every
+// root lifecycle.NewBackupStore(home).AllowedRoots() reports is itself
+// reported "within" by withinBackupAllowedRoots, because the latter derives
+// its roots directly from the former rather than a hand-copied duplicate.
+func TestWithinBackupAllowedRoots_DerivesRootsFromBackupStore(t *testing.T) {
+	home := t.TempDir()
+	store := lifecycle.NewBackupStore(home)
+	for _, root := range store.AllowedRoots() {
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", root, err)
+		}
+		within, err := withinBackupAllowedRoots(home, root)
+		if err != nil {
+			t.Fatalf("withinBackupAllowedRoots(%s): %v", root, err)
+		}
+		if !within {
+			t.Fatalf("withinBackupAllowedRoots(%q) = false, want true: it must derive its roots from lifecycle.BackupStore.AllowedRoots()", root)
+		}
+	}
+	outside := filepath.Join(home, "not-managed")
+	within, err := withinBackupAllowedRoots(home, outside)
+	if err != nil {
+		t.Fatalf("withinBackupAllowedRoots(%s): %v", outside, err)
+	}
+	if within {
+		t.Fatalf("withinBackupAllowedRoots(%q) = true, want false: it is outside every allowed root", outside)
+	}
+}
+
+func TestWithinBackupAllowedRoots_AbsentPathsAndSymlinkEscape(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	cases := []struct {
+		name, path string
+		want       bool
+	}{
+		{"absent in root", filepath.Join(root, "missing", "file"), true},
+		{"absent outside", filepath.Join(outside, "missing", "file"), false},
+	}
+	if runtime.GOOS != "windows" {
+		link := filepath.Join(root, "escape")
+		if err := os.Symlink(outside, link); err != nil {
+			t.Fatal(err)
+		}
+		cases = append(cases, struct {
+			name, path string
+			want       bool
+		}{"symlink escape with absent child", filepath.Join(link, "missing", "file"), false})
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := withinBackupAllowedRoots(home, tt.path)
+			if err != nil || got != tt.want {
+				t.Fatalf("withinBackupAllowedRoots(%q) = %v, %v; want %v", tt.path, got, err, tt.want)
+			}
+		})
+	}
+}
+
+// TestWithinBackupAllowedRoots_SymlinkedHomeDirectory_StillMatchesRealRoot
+// proves the fix for R2-004/R3-001: a path already resolved to its real,
+// canonical form (as resolveEditableSurfacePath produces for an edited-in
+// -place symlinked surface) must still be recognized as within an allowed
+// root even when homeDir itself is reached through a symlinked ancestor
+// (e.g. $HOME is a symlink into another location). The prior
+// filepath.Clean-only comparison failed this case because EvalSymlinks
+// canonicalizes the home prefix on one side of the comparison but not the
+// other.
+func TestWithinBackupAllowedRoots_SymlinkedHomeDirectory_StillMatchesRealRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks on Windows needs elevated privileges")
+	}
+	realHome := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(realHome, ".claude"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	linkedHome := filepath.Join(t.TempDir(), "home-link")
+	if err := os.Symlink(realHome, linkedHome); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	resolvedPath := filepath.Join(realHome, ".claude", "settings.json")
+	within, err := withinBackupAllowedRoots(linkedHome, resolvedPath)
+	if err != nil {
+		t.Fatalf("withinBackupAllowedRoots: %v", err)
+	}
+	if !within {
+		t.Fatalf("withinBackupAllowedRoots(%q, %q) = false, want true: a symlinked home directory must canonicalize to the same root as its real target", linkedHome, resolvedPath)
+	}
+}
+
+// TestPlanAndApplyReset_NotInDurableSnapshot_IncludesSymlinksAndOutOfRootTargets
+// proves both PlanReset and ApplyReset report the identical set of paths a
+// human could only recover through this run's own in-process rollback: a
+// whole-file symlink surface (recorded by its own link path) and an
+// edit-in-place surface resolved, through a symlink, to a target outside
+// lifecycle.BackupStore's allowed roots (recorded by its resolved real
+// path) -- and that the snapshot-exclusion sidecar records both, with the
+// reason distinguishing them (issue #767 hardening R1-001/R4-002/R2-004).
+func TestPlanAndApplyReset_NotInDurableSnapshot_IncludesSymlinksAndOutOfRootTargets(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks on Windows needs elevated privileges")
+	}
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	realClaudeMDPath := filepath.Join(home, "dotfiles", "claude-instructions.md")
+	mustWriteFile(t, realClaudeMDPath, sampleClaudeMD)
+	claudeMDLink := filepath.Join(configDir, "CLAUDE.md")
+	if err := os.Symlink(realClaudeMDPath, claudeMDLink); err != nil {
+		t.Fatalf("symlink CLAUDE.md: %v", err)
+	}
+
+	realOrchestratorPath := filepath.Join(home, "dotfiles", "sdd-orchestrator.md")
+	mustWriteFile(t, realOrchestratorPath, "shared orchestrator content")
+	orchestratorLink := filepath.Join(configDir, "sdd-orchestrator.md")
+	if err := os.Symlink(realOrchestratorPath, orchestratorLink); err != nil {
+		t.Fatalf("symlink orchestrator: %v", err)
+	}
+
+	wantExcluded := []string{orchestratorLink, realClaudeMDPath}
+	sort.Strings(wantExcluded)
+
+	plan, err := PlanReset(sddruntime.PlatformClaude, configDir, home)
+	if err != nil {
+		t.Fatalf("PlanReset: %v", err)
+	}
+	if !reflect.DeepEqual(plan.NotInDurableSnapshot, wantExcluded) {
+		t.Fatalf("plan.NotInDurableSnapshot = %v, want %v", plan.NotInDurableSnapshot, wantExcluded)
+	}
+
+	result, err := ApplyReset(sddruntime.PlatformClaude, configDir, home)
+	if err != nil {
+		t.Fatalf("ApplyReset: %v", err)
+	}
+	if !reflect.DeepEqual(result.NotInDurableSnapshot, wantExcluded) {
+		t.Fatalf("result.NotInDurableSnapshot = %v, want %v", result.NotInDurableSnapshot, wantExcluded)
+	}
+
+	sidecarPath := filepath.Join(home, ".jarvis", "backups", result.SnapshotID+".symlinks.json")
+	raw, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		t.Fatalf("read snapshot-exclusion sidecar: %v", err)
+	}
+	var entries []resetSymlinkSidecarEntry
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		t.Fatalf("unmarshal sidecar: %v", err)
+	}
+	byPath := make(map[string]resetSymlinkSidecarEntry, len(entries))
+	for _, e := range entries {
+		byPath[e.Path] = e
+	}
+	if e, ok := byPath[orchestratorLink]; !ok || e.Reason != "symlink" || e.Target != realOrchestratorPath {
+		t.Fatalf("sidecar entry for %s = %+v, want reason %q target %q", orchestratorLink, e, "symlink", realOrchestratorPath)
+	}
+	if e, ok := byPath[realClaudeMDPath]; !ok || e.Reason != "outside_backup_roots" {
+		t.Fatalf("sidecar entry for %s = %+v, want reason %q", realClaudeMDPath, e, "outside_backup_roots")
+	}
+}
+
+// --- Hardening R3-003: managed directories a rollback cannot fully undo ---
+
+func TestResetManagedDirectories_Claude(t *testing.T) {
+	got := ResetManagedDirectories(sddruntime.PlatformClaude)
+	for _, want := range []string{"agents", "hive-hooks", "output-styles", "skills"} {
+		found := false
+		for _, dir := range got {
+			if dir == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("ResetManagedDirectories(claude) = %v, want it to include %q", got, want)
+		}
+	}
+}
+
+func TestResetManagedDirectories_OpenCode(t *testing.T) {
+	got := ResetManagedDirectories(sddruntime.PlatformOpenCode)
+	for _, want := range []string{"plugins", "skills"} {
+		found := false
+		for _, dir := range got {
+			if dir == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("ResetManagedDirectories(opencode) = %v, want it to include %q", got, want)
+		}
+	}
 }
