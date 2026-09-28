@@ -2003,6 +2003,47 @@ func TestUpdateApply_Enter_WhenDone_AdvancesToStepDone(t *testing.T) {
 	}
 }
 
+func TestUpdateApply_FailureQuitDoesNotRetryOrReportSuccess(t *testing.T) {
+	failure := errors.New("verification failed")
+	m := Model{Step: StepApply, agentProgress: []string{"Configuration FAILED: verification failed"}, agentDone: true, Err: failure}
+	if view := m.View(); !strings.Contains(view, "q") || !strings.Contains(view, "quit") {
+		t.Fatalf("failed Apply must advertise a quit action: %q", view)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	got := updated.(Model)
+	if got.Step != StepApply || got.Err != failure || !got.agentDone || len(got.agentProgress) != 1 || got.Done {
+		t.Fatalf("quit changed failed Apply into another state: %+v", got)
+	}
+	if cmd == nil {
+		t.Fatal("quit must return a command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("quit command returned %T, want tea.QuitMsg", cmd())
+	}
+	for _, tc := range []struct {
+		name string
+		key  tea.KeyMsg
+	}{
+		{name: "enter retries", key: tea.KeyMsg{Type: tea.KeyEnter}},
+		{name: "ctrl-c quits globally", key: tea.KeyMsg{Type: tea.KeyCtrlC}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			updated, cmd := m.Update(tc.key)
+			if cmd == nil {
+				t.Fatal("expected a command")
+			}
+			got := updated.(Model)
+			if tc.key.Type == tea.KeyEnter {
+				if got.Err != nil || got.agentDone || len(got.agentProgress) != 0 {
+					t.Fatalf("retry did not reset failed progress: %+v", got)
+				}
+			} else if got.Err != failure || got.Step != StepApply {
+				t.Fatalf("ctrl-c changed failure state: %+v", got)
+			}
+		})
+	}
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // TestUpdatePersonaCustomEdit_RuneInput
 // ──────────────────────────────────────────────────────────────────────────────

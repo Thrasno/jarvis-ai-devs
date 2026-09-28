@@ -15,13 +15,14 @@ The merged reset wizard reconciles managed MCPs in `internal/tui/steps.go` befor
 - Delivery: ask-on-risk; forecast approximately 250 authored changed lines, reviewable as two work-unit commits.
 
 ## Tasks
-- [x] ODD-RESET-01 — Repair managed MCP ordering for a consented reset, with a regression test that reads the final OpenCode JSON and verifies the Hive/hybrid runtime contract. Route: delegated writer (multi-file implementation). Checks: focused Go tests and preserved unrelated MCPs; record RED/GREEN evidence. Commit: pending.
+- [x] ODD-RESET-01 — Repair managed MCP ordering for a consented reset, with a regression test that reads the final OpenCode JSON and verifies the Hive/hybrid runtime contract. Route: delegated writer (multi-file implementation). Checks: focused Go tests and preserved unrelated MCPs; RED/GREEN observed. Commit: `4d9cf312`.
 - [x] ODD-RESET-01B — Complete the real-agent hybrid verification fixture: no unrelated missing-manifest/instruction errors may be accepted as success. Route: same delegated writer follow-up. Checks: focused Go tests and full successful runtime contract.
-- [ ] ODD-RESET-02 — Make Apply failure recovery visible and operable (retry plus exit/return) with direct Bubbletea Update tests; do not change successful Apply navigation. Route: delegated writer (multi-file implementation). Checks: focused Go tests, full `go test ./...` and `go vet ./...`; record RED/GREEN evidence. Commit: pending.
+- [x] ODD-RESET-02 — Failed Apply visibly offers `q` to quit as well as Enter to retry; Bubbletea Update tests cover no false success, retry, and Ctrl-C. Route: delegated writer (multi-file implementation). RED/GREEN observed; focused tests, full `go test ./...`, and `go vet ./...` passed. Commit: this work unit.
 
 ## Progress
-- Status: ODD-RESET-01 and ODD-RESET-01B completed. RED reproduced absent Hive; GREEN and strengthened fixture proved full hybrid verification success, a present manifest, preserved user MCP, and reset rollback when reconciliation fails.
-- Check: `cd jarvis-cli && go test ./internal/tui -run 'Test.*(Reset|MCP|OpenCode).*' -count=1` passed; diff --check passed. Full suite and vet pending ODD-RESET-02.
-- Running authored line count: 0.
-- Native review boundary: branch point `dc9df688` (review only at work-unit commits if enabled).
-- Next: implement ODD-RESET-02 with TUI error-state tests, then full suite and vet.
+- Status: all tasks completed. RED reproduced absent Hive and invisible Apply escape; GREEN proved full hybrid runtime success, preserved user MCP, rollback on MCP failure, and a visible non-retry quit action.
+- Check: focused reset/MCP/OpenCode tests and Apply escape test passed. Full Go suite and vet passed under writer and independent verifier; branch diff --check clean.
+- Running authored line count: 193 across two work-unit commits against `public/master` (includes task document).
+- Native review boundary: branch point `dc9df688`; committed assessment attempted after first work unit but unavailable (`schema-incompatible`), treated as unassessable/high and requiring independent verification. No review receipt claimed.
+- Independent verifier passed `go test ./internal/tui -count=1`, `go test ./...`, and `go vet ./...`; `git diff --check public/master` clean. Parent spot-check passed both critical tests. No interactive end-to-end or live MCP server test; no native review receipt.
+- Next: inspect native review authority without claiming a receipt, then deliver the branch for review/release planning; no release or deployment performed.

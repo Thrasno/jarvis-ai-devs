@@ -1335,6 +1335,9 @@ func viewStatuslineConfirm(m Model) string {
 
 // Step 6: Apply
 func updateApply(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.agentDone && m.Err != nil && msg.Type == tea.KeyRunes && string(msg.Runes) == "q" {
+		return m, tea.Quit
+	}
 	switch msg.Type {
 	case tea.KeyEnter:
 		if len(m.agentProgress) == 0 || (m.agentDone && m.Err != nil) {
@@ -1682,7 +1685,7 @@ func viewApply(m Model) string {
 	}
 	if m.agentDone {
 		if m.Err != nil {
-			contentSB.WriteString("\n" + errorStyle.Render("Setup failed. Press Enter to retry."))
+			contentSB.WriteString("\n" + errorStyle.Render("Setup failed. Press Enter to retry or q to quit."))
 		} else {
 			contentSB.WriteString("\n" + terminalui.TitleStyle.Render("All done!"))
 			contentSB.WriteString("\n" + terminalui.DimTextStyle.Render("Press Enter to see the summary."))
@@ -1690,6 +1693,9 @@ func viewApply(m Model) string {
 	}
 	sb.WriteString(terminalui.BorderedPanel(contentSB.String(), w) + "\n")
 	hints := []terminalui.KeyHint{{Key: "Enter", Desc: "continue"}}
+	if m.agentDone && m.Err != nil {
+		hints = []terminalui.KeyHint{{Key: "Enter", Desc: "retry"}, {Key: "q", Desc: "quit"}}
+	}
 	sb.WriteString(terminalui.HelpBar(hints, "normal", m.width))
 	return sb.String()
 }
