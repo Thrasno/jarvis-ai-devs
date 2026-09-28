@@ -1,5 +1,7 @@
 # Installation
 
+For editable platform onboarding, see the [Windows PowerShell guide](presentaciones/windows-onboarding.html) or the [Ubuntu/Linux guide](presentaciones/ubuntu-onboarding.html). Their shared wizard screenshots are not platform-specific installation or verification evidence.
+
 ## Latest production
 
 Without an override, the installers download the latest production release from GitHub.

@@ -4,6 +4,8 @@ Jarvis Dev is installed and operated through the `jarvis` CLI. The fastest path 
 
 ## Quick path
 
+For editable, illustrated onboarding, see the [Windows PowerShell guide](presentaciones/windows-onboarding.html) or the [Ubuntu/Linux guide](presentaciones/ubuntu-onboarding.html). Shared wizard screenshots are available; platform-specific installation and verification evidence remains pending.
+
 1. Install Jarvis from the release channel in [`installation.md`](installation.md).
 2. Run the setup wizard:
 
