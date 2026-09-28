@@ -156,6 +156,18 @@ func (o *orderedObject) set(key string, value orderedValue) {
 	o.pairs = append(o.pairs, orderedPair{key: key, value: value})
 }
 
+// delete removes key if present and reports whether it was found. Used by the
+// configuration reset path to strip Jarvis-owned JSON keys while preserving
+// the order and content of everything else.
+func (o *orderedObject) delete(key string) bool {
+	idx := o.index(key)
+	if idx < 0 {
+		return false
+	}
+	o.pairs = append(o.pairs[:idx], o.pairs[idx+1:]...)
+	return true
+}
+
 func (v orderedValue) MarshalJSON() ([]byte, error) {
 	if v.object != nil {
 		var buf bytes.Buffer

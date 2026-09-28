@@ -27,7 +27,8 @@ import (
 type Step int
 
 const (
-	StepScope Step = iota
+	StepConfigReset Step = iota
+	StepScope
 	StepHiveCloud
 	StepPersona
 	StepSkills
@@ -97,6 +98,15 @@ type Model struct {
 	statuslineOverwrite      bool // the captured decision: true = overwrite, false = skip
 	mcpAcknowledgement       string
 	mcpAcknowledged          bool
+
+	// Configuration reset step (issue #767 T7): a consented, default-No,
+	// first-step reset of contract-owned Claude/OpenCode surfaces before the
+	// rest of the wizard runs. resetInventories is computed once at model
+	// construction from the detected agents; resetChoice/resetConsented
+	// capture the human's explicit decision, never inferred.
+	resetInventories []resetAgentInventory
+	resetChoice      int  // 0 = No (default), 1 = Yes
+	resetConsented   bool // captured once Enter confirms the step
 
 	phaseModelRows                []phaseModelRow
 	phaseModelActiveRow           int
@@ -333,8 +343,21 @@ func NewModel(wcfg WizardConfig, noTUI bool) Model {
 
 	m.Agents = agent.Detect(wcfg.TemplateFS)
 	m = initializePhaseModelEditor(m)
+	m = initializeConfigResetStep(m)
+	m.Step = initialWizardStep(m)
 
 	return m
+}
+
+// initialWizardStep returns the wizard's first step: the consented
+// configuration reset step when at least one agent was detected (there is
+// something a reset could touch), or StepScope otherwise, exactly as before
+// issue #767 introduced the reset step.
+func initialWizardStep(m Model) Step {
+	if len(m.Agents) == 0 {
+		return StepScope
+	}
+	return StepConfigReset
 }
 
 // loadWizardManifest reads the desired state the wizard prefills from and
@@ -598,6 +621,8 @@ type errMsg struct{ err error }
 
 func (m Model) updateStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.Step {
+	case StepConfigReset:
+		return updateConfigReset(m, msg)
 	case StepScope:
 		return updateScope(m, msg)
 	case StepHiveCloud:
@@ -642,6 +667,8 @@ func (m Model) stepView() string {
 	}
 
 	switch m.Step {
+	case StepConfigReset:
+		return viewConfigReset(m)
 	case StepScope:
 		return viewScope(m)
 	case StepHiveCloud:

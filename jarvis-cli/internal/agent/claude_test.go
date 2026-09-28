@@ -541,7 +541,7 @@ func TestClaudeAgent_MergeGeneratedConfig_DeepMergesPermissionsAndPreservesHooks
 		t.Fatalf("permissions.allow not deep-merged idempotently: %#v", allow)
 	}
 	deny := permissions["deny"].([]any)
-	for _, expected := range []string{"Read(**/.env*)", "Read(*.env)", "Read(**/*.env)", "Read(*.env.*)", "Read(**/*.env.*)", "Read(secrets/**)", "Read(**/*secret*)", "Bash(rm -rf /*)", "Bash(git clean -fdx:*)", "Bash(git push --force*:*)"} {
+	for _, expected := range []string{"Read(**/.env*)", "Read(*.env)", "Read(**/*.env)", "Read(*.env.*)", "Read(**/*.env.*)", "Read(secrets/**)", "Read(**/*secret*)", "Bash(rm -rf /*)", "Bash(git clean -fdx:*)", "Bash(git push --force*)"} {
 		if countScalar(deny, expected) != 1 {
 			t.Fatalf("permissions.deny missing or duplicated %q: %#v", expected, deny)
 		}
@@ -625,13 +625,74 @@ func TestClaudeAgent_MergeGeneratedConfig_SetsBypassDefaultModeWhenMissing(t *te
 		"Read(**/*.pem)",
 		"Read(*.key)",
 		"Read(**/*.key)",
+		"Bash(git push --force*)",
+		"Bash(git push --force-with-lease*)",
+		"Bash(git push * --force*)",
+		"Bash(git push * --force-with-lease*)",
+	} {
+		if countScalar(deny, expected) != 1 {
+			t.Fatalf("permissions.deny missing or duplicated %q: %#v", expected, deny)
+		}
+	}
+}
+
+func TestClaudeAgent_MergeGeneratedConfig_MigratesOnlyObsoleteForcePushRules(t *testing.T) {
+	a := &ClaudeAgent{home: t.TempDir()}
+	path := a.settingsPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	obsolete := []string{
 		"Bash(git push --force*:*)",
 		"Bash(git push --force-with-lease*:*)",
 		"Bash(git push * --force*:*)",
 		"Bash(git push * --force-with-lease*:*)",
-	} {
-		if countScalar(deny, expected) != 1 {
-			t.Fatalf("permissions.deny missing or duplicated %q: %#v", expected, deny)
+	}
+	preserved := []string{"Bash(git push --force*:*) extra", "Bash(git push --force:*)", "Read(**/private-notes.md)"}
+	seed := []byte(`{"theme":"dark","permissions":{"defaultMode":"acceptEdits","deny":["Bash(git push --force*:*)","Bash(git push --force-with-lease*:*)","Bash(git push * --force*:*)","Bash(git push * --force-with-lease*:*)","Bash(git push --force*:*) extra","Bash(git push --force:*)","Read(**/private-notes.md)"],"allow":["Bash(custom:*)"]},"outputStyle":"Custom"}`)
+	if err := os.WriteFile(path, seed, 0644); err != nil {
+		t.Fatal(err)
+	}
+	for run := 1; run <= 2; run++ {
+		if err := a.MergeGeneratedConfig(defaultRuntimePhaseModels()); err != nil {
+			t.Fatalf("replay %d: %v", run, err)
+		}
+		settings := readJSONFile(t, path)
+		if settings["theme"] != "dark" || settings["outputStyle"] != "Custom" {
+			t.Fatalf("replay %d lost user settings: %#v", run, settings)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		orderedKeys := []string{`"theme"`, `"permissions"`, `"defaultMode"`, `"deny"`, `"allow"`, `"outputStyle"`}
+		last := -1
+		for _, key := range orderedKeys {
+			position := strings.Index(string(raw), key)
+			if position <= last {
+				t.Fatalf("replay %d changed existing key order at %s: %s", run, key, raw)
+			}
+			last = position
+		}
+		permissions := settings["permissions"].(map[string]any)
+		if permissions["defaultMode"] != "acceptEdits" || countScalar(permissions["allow"].([]any), "Bash(custom:*)") != 1 {
+			t.Fatalf("replay %d lost user permissions: %#v", run, permissions)
+		}
+		got := permissions["deny"].([]any)
+		for _, rule := range obsolete {
+			if countScalar(got, rule) != 0 {
+				t.Fatalf("replay %d retained obsolete %q: %#v", run, rule, got)
+			}
+		}
+		for _, rule := range preserved {
+			if countScalar(got, rule) != 1 {
+				t.Fatalf("replay %d lost user rule %q: %#v", run, rule, got)
+			}
+		}
+		for _, rule := range []string{"Bash(git push --force*)", "Bash(git push --force-with-lease*)", "Bash(git push * --force*)", "Bash(git push * --force-with-lease*)"} {
+			if countScalar(got, rule) != 1 {
+				t.Fatalf("replay %d missing or duplicated %q: %#v", run, rule, got)
+			}
 		}
 	}
 }

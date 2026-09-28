@@ -42,6 +42,12 @@ type ObservedRuntime struct {
 	// Claude SDD agent files; non-nil maps are verified for generated-artifact
 	// drift, including missing or unreadable generated agent files.
 	ClaudeSDDSubagentHiveTools map[string][]string
+	// ClaudeLegacy4RResidue lists retired review-* agent file names (for
+	// example "review-risk.md") still present under the Claude agents
+	// directory. Nil/empty means the observer found none. This is
+	// informational only: it is never treated as owned or non-owned drift
+	// requiring repair, and doctor/reconcile never delete these files.
+	ClaudeLegacy4RResidue []string
 }
 
 type ObservedRegistryQuality struct {
@@ -74,9 +80,36 @@ func Verify(agent string, observed ObservedRuntime) IntegrityReport {
 	}
 	if agent == "claude" {
 		verifyClaudeSDDSubagentHiveTools(&report, observed.ClaudeSDDSubagentHiveTools, observed.StoreMode)
+		verifyClaudeLegacy4RResidue(&report, observed.ClaudeLegacy4RResidue)
 	}
 
 	return report
+}
+
+// verifyClaudeLegacy4RResidue reports, informationally only, retired review-*
+// agent files still present under the Claude agents directory. It never fails
+// (StatusWarn at most) and never marks the finding as owned/non-owned drift
+// requiring repair; doctorStepFromCheck routes this check key to an
+// "informational" step that names the wizard reset as the only action.
+func verifyClaudeLegacy4RResidue(report *IntegrityReport, residue []string) {
+	status := StatusPass
+	drift := DriftNone
+	observed := "none"
+	message := "no retired review-* agent files under the Claude agents directory"
+	if len(residue) > 0 {
+		status = StatusWarn
+		drift = DriftNonOwned
+		observed = strings.Join(residue, ",")
+		message = "retired review-* agent files remain under the Claude agents directory; run the installation wizard and accept the consented configuration reset to remove them"
+	}
+	report.AddCheck(CheckResult{
+		Key:        "invariant.claude.legacy_4r_residue",
+		Status:     status,
+		DriftClass: drift,
+		Expected:   "no review-risk.md, review-readability.md, review-reliability.md, or review-resilience.md",
+		Observed:   observed,
+		Message:    message,
+	})
 }
 
 func verifyClaudeSDDSubagentHiveTools(report *IntegrityReport, evidence map[string][]string, storeMode string) {

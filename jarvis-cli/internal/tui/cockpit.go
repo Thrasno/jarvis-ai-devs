@@ -42,7 +42,7 @@ func runCockpitAction(m Model, action CockpitAction) (tea.Model, tea.Cmd) {
 	switch action.ID {
 	case CockpitActionInstall:
 		m.Screen = ScreenWizard
-		m.Step = StepScope
+		m.Step = initialWizardStep(m)
 		m.cockpitMessage = ""
 		return m, nil
 	case CockpitActionExit:

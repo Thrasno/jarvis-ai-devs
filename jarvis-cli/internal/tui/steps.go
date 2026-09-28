@@ -1335,6 +1335,9 @@ func viewStatuslineConfirm(m Model) string {
 
 // Step 6: Apply
 func updateApply(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.agentDone && m.Err != nil && msg.Type == tea.KeyRunes && string(msg.Runes) == "q" {
+		return m, tea.Quit
+	}
 	switch msg.Type {
 	case tea.KeyEnter:
 		if len(m.agentProgress) == 0 || (m.agentDone && m.Err != nil) {
@@ -1423,8 +1426,10 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 			previousSource = persona.PresetSourceUser
 		}
 
-		if err := reconcileWizardMCPs(m.Agents, home); err != nil {
-			return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: reconcile managed MCPs: %v", err), done: true, failed: true}
+		if !m.resetConsented {
+			if err := reconcileWizardMCPs(m.Agents, home); err != nil {
+				return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: reconcile managed MCPs: %v", err), done: true, failed: true}
+			}
 		}
 
 		// Determine statusline overwrite policy. The decision must be made here
@@ -1438,12 +1443,27 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		}
 
 		// Configure each detected agent and collect structured outcomes.
-		results := configureWizardAgents(m.Agents, wizardPhaseModels(m.manifest), agent.MCPEntry{}, agent.MCPEntry{}, resolvedPreset, wizardPresetApplyContext{
-			Layer1:               config.Layer1Content(),
-			Skills:               skillInfos,
-			PreviousPresetSlug:   previousSlug,
-			PreviousPresetSource: previousSource,
-		}, skillsSubFS, selectedIDs, agentsSubFS, statuslineConfirm)
+		results := configureWizardAgents(m.Agents, WizardAgentApplyOptions{
+			PhaseModels:   wizardPhaseModels(m.manifest),
+			HiveEntry:     agent.MCPEntry{},
+			Context7Entry: agent.MCPEntry{},
+			Resolved:      resolvedPreset,
+			PresetCtx: wizardPresetApplyContext{
+				Layer1:               config.Layer1Content(),
+				Skills:               skillInfos,
+				PreviousPresetSlug:   previousSlug,
+				PreviousPresetSource: previousSource,
+			},
+			SkillsSubFS:       skillsSubFS,
+			SelectedIDs:       selectedIDs,
+			AgentsSubFS:       agentsSubFS,
+			StatuslineConfirm: statuslineConfirm,
+			ResetConsented:    m.resetConsented,
+			Home:              home,
+			ReconcileMCPs: func(a agent.Agent) error {
+				return reconcileWizardMCPs([]agent.Agent{a}, home)
+			},
+		})
 		var configuredAgents []string
 		var automationWarnings []string
 		for _, res := range results {
@@ -1453,6 +1473,7 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 			configuredAgents = append(configuredAgents, res.AgentName)
 			automationWarnings = append(automationWarnings, res.Warnings...)
 		}
+		resetLines := configResetSummaryLines(results)
 
 		if m.Scope == state.ScopeLocalOnly {
 			if err := config.DeleteSyncCredentials(); err != nil {
@@ -1510,6 +1531,9 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 		summary := fmt.Sprintf("Configuration complete. Agents configured: %s", strings.Join(configuredAgents, ", "))
 		if len(configuredAgents) == 0 {
 			summary = "No agents detected. Install Claude Code or OpenCode and re-run jarvis."
+		}
+		if len(resetLines) > 0 {
+			summary += "\n" + strings.Join(resetLines, "\n")
 		}
 		if len(automationWarnings) > 0 {
 			summary += "\n" + strings.Join(automationWarnings, "\n")
@@ -1661,7 +1685,7 @@ func viewApply(m Model) string {
 	}
 	if m.agentDone {
 		if m.Err != nil {
-			contentSB.WriteString("\n" + errorStyle.Render("Setup failed. Press Enter to retry."))
+			contentSB.WriteString("\n" + errorStyle.Render("Setup failed. Press Enter to retry or q to quit."))
 		} else {
 			contentSB.WriteString("\n" + terminalui.TitleStyle.Render("All done!"))
 			contentSB.WriteString("\n" + terminalui.DimTextStyle.Render("Press Enter to see the summary."))
@@ -1669,6 +1693,9 @@ func viewApply(m Model) string {
 	}
 	sb.WriteString(terminalui.BorderedPanel(contentSB.String(), w) + "\n")
 	hints := []terminalui.KeyHint{{Key: "Enter", Desc: "continue"}}
+	if m.agentDone && m.Err != nil {
+		hints = []terminalui.KeyHint{{Key: "Enter", Desc: "retry"}, {Key: "q", Desc: "quit"}}
+	}
 	sb.WriteString(terminalui.HelpBar(hints, "normal", m.width))
 	return sb.String()
 }

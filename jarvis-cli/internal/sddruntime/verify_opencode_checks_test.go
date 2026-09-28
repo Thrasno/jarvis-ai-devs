@@ -237,10 +237,10 @@ func TestVerifyOpenCode_OrchestratorPrimary_PassesWhenAllFieldsCorrect(t *testin
 
 // --- invariant.opencode.subagents_present ---
 
-func TestVerifyOpenCode_SubagentsPresent_FailsWhenCountBelow17(t *testing.T) {
+func TestVerifyOpenCode_SubagentsPresent_FailsWhenCountBelow13(t *testing.T) {
 	observed := compliantOpenCodeRuntime(t)
 	// Remove one hidden subagent.
-	observed.OpenCode.HiddenSubagents = observed.OpenCode.HiddenSubagents[:16]
+	observed.OpenCode.HiddenSubagents = observed.OpenCode.HiddenSubagents[:12]
 
 	report := Verify("opencode", observed)
 
@@ -268,9 +268,9 @@ func TestVerifyOpenCode_SubagentsPresent_FailsWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestVerifyOpenCode_SubagentsPresent_PassesWhenExactly17(t *testing.T) {
+func TestVerifyOpenCode_SubagentsPresent_PassesWhenExactly13(t *testing.T) {
 	observed := compliantOpenCodeRuntime(t)
-	// compliantOpenCodeObserved sets exactly 17.
+	// compliantOpenCodeObserved sets exactly 13.
 
 	report := Verify("opencode", observed)
 
@@ -298,12 +298,12 @@ func TestVerifyOpenCode_SubagentsPresent_AllowsExtraUserOwnedSubagents(t *testin
 	}
 }
 
-func TestVerifyOpenCode_SubagentsPresent_FailsWhen17WrongNames(t *testing.T) {
+func TestVerifyOpenCode_SubagentsPresent_FailsWhen13WrongNames(t *testing.T) {
 	observed := compliantOpenCodeRuntime(t)
 	observed.OpenCode.HiddenSubagents = []string{
 		"wrong-01", "wrong-02", "wrong-03", "wrong-04", "wrong-05", "wrong-06",
 		"wrong-07", "wrong-08", "wrong-09", "wrong-10", "wrong-11", "wrong-12",
-		"wrong-13", "wrong-14", "wrong-15", "wrong-16", "wrong-17",
+		"wrong-13",
 	}
 
 	report := Verify("opencode", observed)
@@ -373,9 +373,9 @@ func removeString(values []string, target string) []string {
 	return result
 }
 
-func TestVerifyOpenCode_TaskAllowlist_FailsWhenAllowsBelow17(t *testing.T) {
+func TestVerifyOpenCode_TaskAllowlist_FailsWhenAllowsBelow15(t *testing.T) {
 	observed := compliantOpenCodeRuntime(t)
-	observed.OpenCode.TaskAllows = observed.OpenCode.TaskAllows[:16]
+	observed.OpenCode.TaskAllows = observed.OpenCode.TaskAllows[:14]
 
 	report := Verify("opencode", observed)
 

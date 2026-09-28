@@ -24,6 +24,9 @@ type ObservedProviderState struct {
 	// checks are gated on ParseSucceeded.
 	OpenCode                   sddruntime.ObservedOpenCodeConfig
 	ClaudeSDDSubagentHiveTools map[string][]string
+	// ClaudeLegacy4RResidue lists retired review-* agent file names still
+	// present under the Claude agents directory. Informational only.
+	ClaudeLegacy4RResidue []string
 }
 
 type VerifyResult struct {

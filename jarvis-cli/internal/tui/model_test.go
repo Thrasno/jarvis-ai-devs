@@ -125,6 +125,8 @@ func TestNewCockpitModel_StartsAtCockpitNotWizard(t *testing.T) {
 }
 
 func TestCockpitInstallReconfigureEntersWizard(t *testing.T) {
+	isolateTestHome(t)
+	t.Setenv("PATH", "")
 	m := NewCockpitModel(testWizardConfig())
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -531,6 +533,7 @@ func TestNewModel_FreshDefaultsSelectFirstProfile(t *testing.T) {
 
 func TestNewModel_BlankPersonaAcceptanceBlocksLegacyV1PresetAndPreservesConfig(t *testing.T) {
 	isolateTestHome(t)
+	t.Setenv("PATH", "")
 	legacyPath := filepath.Join(os.Getenv("HOME"), ".jarvis", "personas", "legacy-custom.yaml")
 	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
 		t.Fatalf("create legacy preset dir: %v", err)
@@ -571,6 +574,7 @@ func TestNewModel_BlankPersonaAcceptanceBlocksLegacyV1PresetAndPreservesConfig(t
 
 func TestNewModel_BlankPersonaAcceptanceBlocksMissingPresetAndPreservesConfig(t *testing.T) {
 	isolateTestHome(t)
+	t.Setenv("PATH", "")
 	seedRecordedPersona(t, "deleted-custom", state.PersonaSourceUser)
 
 	m := NewModel(testWizardConfig(), false)
@@ -1259,7 +1263,7 @@ func TestConfigureWizardAgents_AddsClaudeRestartGuidanceOnlyForClaude(t *testing
 	claudeHome := t.TempDir()
 	claude := &sddInstallingMockAgent{mockAgent: mockAgent{name: "claude", configDir: filepath.Join(claudeHome, ".claude")}, home: claudeHome}
 	opencode := &mockAgent{name: "opencode", configDir: t.TempDir()}
-	results := configureWizardAgents([]agent.Agent{claude, opencode}, state.New().PhaseModels, agent.MCPEntry{Name: "hive", DaemonPath: "/tmp/hive-daemon"}, agent.MCPEntry{Name: "context7"}, nil, wizardPresetApplyContext{}, nil, nil, nil, func() bool { return true })
+	results := configureWizardAgents([]agent.Agent{claude, opencode}, WizardAgentApplyOptions{PhaseModels: state.New().PhaseModels, HiveEntry: agent.MCPEntry{Name: "hive", DaemonPath: "/tmp/hive-daemon"}, Context7Entry: agent.MCPEntry{Name: "context7"}, PresetCtx: wizardPresetApplyContext{}, SkillsSubFS: nil, StatuslineConfirm: func() bool { return true }})
 
 	if len(results) != 2 {
 		t.Fatalf("expected two results, got %#v", results)
@@ -1578,6 +1582,8 @@ func TestNoTUI_SkipsTTYRequirement(t *testing.T) {
 // TestNewModel_WithEmptyWizardConfig verifies that NewModel returns a valid model
 // even when the WizardConfig has zero-value FSes (errors are silently ignored).
 func TestNewModel_WithEmptyWizardConfig(t *testing.T) {
+	isolateTestHome(t)
+	t.Setenv("PATH", "")
 	m := NewModel(WizardConfig{}, false)
 	if m.Step != StepHiveLocal {
 		t.Errorf("expected StepHiveLocal, got %v", m.Step)
@@ -1994,6 +2000,47 @@ func TestUpdateApply_Enter_WhenDone_AdvancesToStepDone(t *testing.T) {
 	m2 := updated.(Model)
 	if m2.Step != StepDone {
 		t.Errorf("expected StepDone after Enter with agentDone=true, got %v", m2.Step)
+	}
+}
+
+func TestUpdateApply_FailureQuitDoesNotRetryOrReportSuccess(t *testing.T) {
+	failure := errors.New("verification failed")
+	m := Model{Step: StepApply, agentProgress: []string{"Configuration FAILED: verification failed"}, agentDone: true, Err: failure}
+	if view := m.View(); !strings.Contains(view, "q") || !strings.Contains(view, "quit") {
+		t.Fatalf("failed Apply must advertise a quit action: %q", view)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	got := updated.(Model)
+	if got.Step != StepApply || got.Err != failure || !got.agentDone || len(got.agentProgress) != 1 || got.Done {
+		t.Fatalf("quit changed failed Apply into another state: %+v", got)
+	}
+	if cmd == nil {
+		t.Fatal("quit must return a command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("quit command returned %T, want tea.QuitMsg", cmd())
+	}
+	for _, tc := range []struct {
+		name string
+		key  tea.KeyMsg
+	}{
+		{name: "enter retries", key: tea.KeyMsg{Type: tea.KeyEnter}},
+		{name: "ctrl-c quits globally", key: tea.KeyMsg{Type: tea.KeyCtrlC}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			updated, cmd := m.Update(tc.key)
+			if cmd == nil {
+				t.Fatal("expected a command")
+			}
+			got := updated.(Model)
+			if tc.key.Type == tea.KeyEnter {
+				if got.Err != nil || got.agentDone || len(got.agentProgress) != 0 {
+					t.Fatalf("retry did not reset failed progress: %+v", got)
+				}
+			} else if got.Err != failure || got.Step != StepApply {
+				t.Fatalf("ctrl-c changed failure state: %+v", got)
+			}
+		})
 	}
 }
 

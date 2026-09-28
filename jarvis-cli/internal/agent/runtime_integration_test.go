@@ -742,7 +742,7 @@ func installOptionalManagedArtifacts(configDir string) error {
 		return err
 	}
 	// Write a fully compliant opencode.json so that opencode verifier checks pass.
-	// This includes all 17 required subagents, proper permissions, and orchestrator config.
+	// This includes the remaining SDD and Judgment Day subagents, permissions, and orchestrator config.
 	if err := os.WriteFile(configDir+"/opencode.json", []byte(compliantOpenCodeJSON()), 0644); err != nil {
 		return err
 	}
@@ -763,11 +763,10 @@ func installOptionalManagedArtifacts(configDir string) error {
 	return nil
 }
 
-// compliantOpenCodeJSON returns a JSON string that satisfies all opencode verifier
-// checks. It mirrors the structure that MergeGeneratedConfig produces so that test
-// fixtures not going through the full wizard flow still pass sddruntime.Verify.
+// compliantOpenCodeJSON returns a JSON string with the remaining SDD and Judgment Day
+// task allowances. It mirrors MergeGeneratedConfig for fixtures that bypass the wizard.
 func compliantOpenCodeJSON() string {
-	subagents := append(openCodeSDDSubagents(), append(openCodeJudgmentDaySubagents(), openCodeReviewSubagents()...)...)
+	subagents := append(openCodeSDDSubagents(), openCodeJudgmentDaySubagents()...)
 
 	taskAllows := `, "general": "allow", "explore": "allow"`
 	for _, name := range subagents {
