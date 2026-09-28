@@ -1423,8 +1423,10 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 			previousSource = persona.PresetSourceUser
 		}
 
-		if err := reconcileWizardMCPs(m.Agents, home); err != nil {
-			return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: reconcile managed MCPs: %v", err), done: true, failed: true}
+		if !m.resetConsented {
+			if err := reconcileWizardMCPs(m.Agents, home); err != nil {
+				return agentProgressMsg{line: fmt.Sprintf("Configuration FAILED: reconcile managed MCPs: %v", err), done: true, failed: true}
+			}
 		}
 
 		// Determine statusline overwrite policy. The decision must be made here
@@ -1455,6 +1457,9 @@ func runAgentConfigSequence(m Model) tea.Cmd {
 			StatuslineConfirm: statuslineConfirm,
 			ResetConsented:    m.resetConsented,
 			Home:              home,
+			ReconcileMCPs: func(a agent.Agent) error {
+				return reconcileWizardMCPs([]agent.Agent{a}, home)
+			},
 		})
 		var configuredAgents []string
 		var automationWarnings []string

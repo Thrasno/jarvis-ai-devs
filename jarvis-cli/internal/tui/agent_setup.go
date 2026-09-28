@@ -197,6 +197,9 @@ type WizardAgentApplyOptions struct {
 	// Home is the home directory the reset's durable snapshot is stored
 	// under.
 	Home string
+	// ReconcileMCPs runs after a consented reset and reinstall, before runtime
+	// verification. A failure rolls back that agent's reset like install failure.
+	ReconcileMCPs func(agent.Agent) error
 }
 
 // configureWizardAgents applies setup to all detected agents and returns
@@ -261,6 +264,16 @@ func configureWizardAgents(agents []agent.Agent, opts WizardAgentApplyOptions) [
 			res.Err = err
 			results = append(results, res)
 			return results
+		}
+		if opts.ResetConsented && opts.ReconcileMCPs != nil {
+			if err := opts.ReconcileMCPs(a); err != nil {
+				if outcome := rollbackAgentReset(a, &res); outcome != "" {
+					err = fmt.Errorf("%w (%s)", err, outcome)
+				}
+				res.Err = fmt.Errorf("reconcile managed MCPs: %w", err)
+				results = append(results, res)
+				return results
+			}
 		}
 		res.State.Configured = true
 		results = append(results, res)

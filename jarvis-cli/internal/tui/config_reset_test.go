@@ -2,6 +2,7 @@ package tui
 
 import (
 	"embed"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	jarvis "github.com/Thrasno/jarvis-ai-devs/jarvis-cli"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/agent"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/persona"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
@@ -406,6 +408,98 @@ func TestConfigResetSummaryLines_EmptyWhenNothingWasReset(t *testing.T) {
 	results := []AgentApplyResult{{AgentName: "claude"}, {AgentName: "opencode"}}
 	if lines := configResetSummaryLines(results); len(lines) != 0 {
 		t.Fatalf("configResetSummaryLines = %v, want empty when nothing was reset", lines)
+	}
+}
+
+func TestConfigureWizardAgents_ResetOpenCodeRestoresManagedMCPBeforeHybridVerification(t *testing.T) {
+	home := isolateTestHome(t)
+	t.Setenv(sddruntime.RuntimeStoreModeEnv, string(sddruntime.StoreModeHybrid))
+	useConcreteWizardExecutor(t, home, &nativeMCPReplacerStub{})
+	path := filepath.Join(home, ".config", "opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"theme":"night","mcp":{"custom":{"type":"remote","url":"https://example.com/mcp"},"hive":{"type":"local","command":["old"]},"context7":{"type":"remote","url":"https://old.example/mcp"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var openCode agent.Agent
+	for _, candidate := range agent.Detect(jarvis.TemplatesFS) {
+		if candidate.Name() == "opencode" {
+			openCode = candidate
+		}
+	}
+	if openCode == nil {
+		t.Fatal("OpenCode agent not detected")
+	}
+	resolved, err := resolveWizardPresetSelection(testPersonaFS, "fixture", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := configureWizardAgents([]agent.Agent{openCode}, WizardAgentApplyOptions{
+		PhaseModels: state.New().PhaseModels, SkillsSubFS: testSkillsFS,
+		Resolved: resolved, PresetCtx: wizardPresetApplyContext{Layer1: "# Jarvis runtime"},
+		StatuslineConfirm: func() bool { return false }, ResetConsented: true, Home: home,
+		ReconcileMCPs: func(a agent.Agent) error { return reconcileWizardMCPs([]agent.Agent{a}, home) },
+	})
+	if len(results) != 1 || results[0].Err != nil || !results[0].State.Configured || !results[0].ResetApplied {
+		t.Fatalf("hybrid runtime verification failed: %+v", results)
+	}
+	observed, err := openCode.ObserveRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.StoreMode != string(sddruntime.StoreModeHybrid) || !observed.Manifest.Present {
+		t.Fatalf("runtime store mode = %q, manifest present = %t, want hybrid and present", observed.StoreMode, observed.Manifest.Present)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var final struct {
+		MCP map[string]json.RawMessage `json:"mcp"`
+	}
+	if err := json.Unmarshal(content, &final); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"hive", "context7", "custom"} {
+		if len(final.MCP[name]) == 0 {
+			t.Errorf("final OpenCode JSON missing %s MCP: %s", name, content)
+		}
+	}
+	if string(final.MCP["custom"]) != `{"type":"remote","url":"https://example.com/mcp"}` {
+		t.Errorf("user-owned MCP changed: %s", final.MCP["custom"])
+	}
+}
+
+func TestConfigureWizardAgents_ResetMCPFailureRollsBackOpenCode(t *testing.T) {
+	home := isolateTestHome(t)
+	path := filepath.Join(home, ".config", "opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const original = `{"theme":"night","default_agent":"sdd-orchestrator","mcp":{"custom":{"type":"remote","url":"https://example.com/mcp"}}}`
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var a agent.Agent
+	for _, candidate := range agent.Detect(jarvis.TemplatesFS) {
+		if candidate.Name() == "opencode" {
+			a = candidate
+		}
+	}
+	if a == nil {
+		t.Fatal("OpenCode agent not detected")
+	}
+	results := configureWizardAgents([]agent.Agent{a}, WizardAgentApplyOptions{
+		SkillsSubFS: testSkillsFS, ResetConsented: true, Home: home,
+		ReconcileMCPs: func(agent.Agent) error { return errors.New("injected MCP failure") },
+	})
+	if len(results) != 1 || results[0].Err == nil || !strings.Contains(results[0].Err.Error(), "injected MCP failure") || !results[0].ResetRolledBack {
+		t.Fatalf("reset MCP failure did not roll back: %+v", results)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil || string(content) != original {
+		t.Fatalf("reset rollback config = %q, err = %v", content, err)
 	}
 }
 
