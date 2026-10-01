@@ -53,25 +53,22 @@ footer{padding:1rem 0 2rem;color:var(--muted)}
 </div>
 <p class="kicker">Jarvis · Windows PowerShell · guía editable</p>
 <h1>Tu primera sesión con Jarvis</h1>
-<p>Un recorrido sugerido para instalar, configurar y comprobar Jarvis. Los hitos de los primeros 15 minutos son orientativos, no tiempos garantizados ni resultados de una instalación observada.</p>
+<p>Un recorrido sugerido para preparar, instalar y configurar Jarvis. Los pasos son orientativos, no tiempos garantizados ni resultados de una instalación observada.</p>
 </header>
 <main id="contenido">
 <section aria-labelledby="ruta">
-<h2 id="ruta">Ruta orientativa de los primeros 15 minutos</h2>
-<p>Hitos sugeridos, no plazos ni resultados observados. Detente si necesitas soporte.</p>
+<h2 id="ruta">Ruta orientativa de instalación</h2>
+<p>Pasos sugeridos, no plazos ni resultados observados. Detente si necesitas soporte.</p>
 <ol>
 <li><strong>Preparar:</strong> confirma terminal, red y agente elegido. Criterio observable: puedes abrir PowerShell e identificar la integración prevista.</li>
 <li><strong>Instalar:</strong> ejecuta el comando documentado. Criterio observable: PowerShell reconoce <code>jarvis</code> o registras el fallo.</li>
 <li><strong>Configurar:</strong> abre <code>jarvis</code>. Criterio observable: completas el asistente o identificas dónde se detuvo.</li>
-<li><strong>Verificar:</strong> ejecuta <code>jarvis verify --provider all</code>. Criterio observable: obtienes diagnósticos reales, incluso si muestran incidencias; esto no acredita memoria ni sincronización.</li>
 </ol>
 </section>
 <nav aria-label="Contenido"><strong>En esta guía</strong><ul>
 <li><a href="#antes">Antes de empezar</a></li>
 <li><a href="#instalar">Instalar</a></li>
 <li><a href="#configurar">Configurar</a></li>
-<li><a href="#comprobar">Comprobar</a></li>
-<li><a href="#seguir">Continuar</a></li>
 <li><a href="glosario-jarvis.html">Glosario de Jarvis</a></li>
 </ul></nav>
 <section id="antes">
@@ -83,8 +80,12 @@ footer{padding:1rem 0 2rem;color:var(--muted)}
 <h2>2. Hito sugerido: instalar</h2>
 <p>Abre PowerShell y ejecuta el instalador documentado para la última versión de producción publicada. Revisa el origen del script según la política de tu organización. Este comando no acredita por sí solo una instalación limpia verificada.</p>
 <pre><code>irm https://raw.githubusercontent.com/Thrasno/jarvis-ai-devs/master/scripts/install.ps1 | iex</code></pre>
+<p><strong>Opcional: canal beta (no producción).</strong> Si tu equipo te ha indicado probar la beta, usa estos comandos en PowerShell en lugar del anterior. La variable selecciona la versión pública <code>beta</code>; no es el procedimiento de instalación estable.</p>
+<pre><code>$env:JARVIS_INSTALL_VERSION = "beta"
+irm https://raw.githubusercontent.com/Thrasno/jarvis-ai-devs/master/scripts/install.ps1 | iex</code></pre>
 <p>Según la documentación, el instalador coloca Jarvis en <code>%LOCALAPPDATA%\Programs\jarvis</code> y añade esa ubicación al PATH de usuario. Si el comando no aparece al terminar, abre una nueva sesión de PowerShell antes de diagnosticar el PATH.</p>
 <figure><div class="placeholder">[INSERTAR CAPTURA AQUI] #Captura instalación en PowerShell sin datos personales</div><figcaption>Insertar una captura real del instalador, no una salida ilustrativa.</figcaption></figure>
+<p class="callout"><strong>Evidencia pendiente:</strong> la captura de inicio del instalador beta disponible para Linux/amd64 no demuestra una instalación finalizada ni acredita el instalador de Windows. Aún falta una captura real de instalación en PowerShell; las capturas del asistente tampoco la sustituyen.</p>
 </section>
 <section id="configurar">
 <h2>3. Hito sugerido: primera configuración</h2>
@@ -101,27 +102,6 @@ footer{padding:1rem 0 2rem;color:var(--muted)}
 <figure><img src="capturas/SDDModelConfirmation.png" alt="Resumen de alcance, persona y modelos por fase con el correo oculto"><figcaption>Comprueba el resumen antes de aplicar los cambios. El correo original está oculto; los modelos y las opciones de confirmación se muestran completos.</figcaption></figure>
 <figure><img src="capturas/MCPConfirmation.png" alt="Advertencia sobre sustitución de MCP gestionados con el mismo nombre"><figcaption>Si aparece esta advertencia, revisa la posible sustitución de configuraciones MCP manuales antes de confirmar; no sigas a ciegas.</figcaption></figure>
 <figure><img src="capturas/StatusLineConfig.png" alt="Pregunta sobre sobrescribir una barra de estado de Claude existente"><figcaption>Solo si ya existe una barra de estado de Claude: decide si conservarla o sustituirla por la gestionada por Jarvis.</figcaption></figure>
-</section>
-<section id="comprobar">
-<h2>4. Hito sugerido: verificar</h2>
-<p>Después de completar el asistente, utiliza Jarvis para comprobar las configuraciones disponibles:</p>
-<pre><code>jarvis verify --provider all</code></pre>
-<p><strong>Qué significa:</strong> el comando aporta diagnósticos de la configuración local. Revisa los resultados para distinguir integraciones configuradas de proveedores no seleccionados o pendientes. Una ejecución sin errores relevantes para tu integración no demuestra por sí sola autenticación del agente, arranque de Hive, sincronización compartida ni persistencia de memoria.</p>
-<figure><div class="placeholder">[INSERTAR CAPTURA AQUI] #Captura salida real de jarvis verify --provider all en Windows</div><figcaption>Incluir el resultado observado y las incidencias, si las hubiera; no fabricar una salida «correcta».</figcaption></figure>
-<p class="callout"><strong>Evidencia pendiente:</strong> las capturas del asistente compartido no sustituyen las capturas de instalación, de <code>jarvis verify</code> ni de una incidencia observada en Windows. Faltan esos resultados verificables y la primera experiencia de memoria en el equipo de destino. La prueba de memoria con el agente se mostrará en la demo o sesión individual; esta guía no la da por superada.</p>
-<h3>Si algo falla</h3>
-<p>Si falla la descarga, comprueba la red, el acceso al origen y las políticas de PowerShell con soporte. Si <code>jarvis</code> no se reconoce, vuelve a abrir PowerShell y comprueba el PATH de usuario. Si la verificación señala una integración, revisa la selección en <code>jarvis</code> y consulta <a href="../installation.md">instalación</a>, <a href="../getting-started.md">primeros pasos</a> y <a href="../configuration.md">configuración</a>; traslada el mensaje exacto, sin credenciales, al equipo responsable.</p>
-<figure><div class="placeholder">[INSERTAR CAPTURA AQUI] #Captura diagnóstico de error o integración pendiente en Windows</div><figcaption>Usar solo si esa incidencia se observa realmente.</figcaption></figure>
-</section>
-<section id="seguir">
-<h2>5. Elige tu siguiente paso</h2>
-<ul>
-<li><strong>Desarrollador:</strong> abre un repositorio de prueba con el agente seleccionado y comprueba que carga la configuración generada.</li>
-<li><strong>Responsable de equipo:</strong> acuerda con el grupo qué agente se configurará y reúne incidencias de la verificación sin recopilar secretos.</li>
-<li><strong>Administrador de Hive:</strong> prepara por separado el daemon local y, si procede, las credenciales y políticas del Hive API; consulta <a href="../configuration.md">configuración</a>.</li>
-<li><strong>Evaluador:</strong> anota versión, selección y resultado real de verificación, incluidos los pasos no comprobados.</li>
-<li><strong>Formador:</strong> reserva una demostración guiada del comportamiento de memoria a través del agente; no presentes una captura pendiente como prueba.</li>
-</ul>
 </section>
 </main>
 <footer><p><strong>Editar esta fuente:</strong> abre este archivo HTML en un editor de texto. Sustituye los marcadores pendientes por imágenes locales sanitizadas, por ejemplo <code>&lt;img src="capturas/instalacion-windows.png" alt="Resultado real del instalador en PowerShell"&gt;</code>, con texto alternativo descriptivo; guarda la imagen junto a la guía antes de distribuirla sin conexión. No insertes secretos, rutas personales ni imágenes remotas. Actualiza también las afirmaciones de evidencia tras la prueba.</p></footer>
