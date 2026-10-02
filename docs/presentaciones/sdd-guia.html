@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NEXUS · Guía ilustrada de SDD con Jarvis</title>
+<meta name="description" content="Guía ilustrada de desarrollo guiado por especificaciones con Jarvis: decisiones humanas, planificación, pruebas, verificación y recuperación.">
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #080a10; --panel: #0E1320; --raised: #121a2b;
+  --text: #e6edf3; --muted: #8B97A8; --line: #1b2333;
+  --link: #9dc2f6; --accent: #E0246F; --blue: #3B82E8;
+  --violet: #8b5cf0; --focus: #e0a22e;
+  --mono: ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
+body {
+  margin: 0; color: var(--text); isolation: isolate;
+  background: radial-gradient(ellipse at 85% 0, rgb(139 92 240 / 5%), transparent 50%), var(--bg);
+  font: 1rem/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+/* Fixed rail uses the existing brand and navigation without reordering content. */
+body::before {
+  content: ""; position: fixed; inset: 0 auto 0 0; width: 248px;
+  background: #0a0e16; border-right: 1px solid var(--line); z-index: -1;
+}
+a { color: var(--link); text-underline-offset: .2em; }
+a:hover { color: var(--text); }
+a:focus-visible { outline: 3px solid var(--focus); outline-offset: 4px; }
+.skip {
+  position: fixed; top: -10rem; left: 1rem; z-index: 3;
+  background: var(--panel); padding: .7rem; border-radius: 14px;
+}
+.skip:focus { top: 1rem; }
+.wrap { max-width: 1320px; margin: 0 auto 0 248px; padding: 24px 32px; }
+header {
+  padding: 20px 24px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 14px;
+}
+.brand {
+  position: fixed; top: 24px; left: 24px; width: 200px;
+  display: flex; align-items: center; gap: .6rem;
+  padding-bottom: 20px; border-bottom: 1px solid var(--line);
+  font-weight: 750; letter-spacing: .12em;
+}
+.brand svg { width: 24px; height: 30px; flex-shrink: 0; }
+.kicker {
+  color: var(--muted); font: 700 .72rem/1.5 var(--mono);
+  text-transform: uppercase; letter-spacing: .12em; margin-top: 0;
+}
+h1 { font-size: clamp(1.6rem, 3vw, 2.15rem); line-height: 1.2; margin: .6rem 0; }
+h2 { font-size: 1.25rem; line-height: 1.4; margin: 0 0 1rem; }
+h3 { font-size: 1.05rem; margin: 1.2rem 0 .4rem; }
+nav {
+  position: fixed; top: 96px; left: 16px; width: 216px;
+  max-height: calc(100dvh - 112px); overflow-y: auto; padding: 8px;
+}
+nav strong {
+  display: block; color: var(--muted); font: 700 .65rem/1.5 var(--mono);
+  letter-spacing: .12em; text-transform: uppercase; padding: 0 10px 8px;
+}
+nav ul { list-style: none; padding: 0; margin: 0; }
+nav li { margin: 4px 0; }
+nav a {
+  display: block; padding: 9px 10px; border-radius: 8px;
+  color: var(--muted); font-size: .85rem; line-height: 1.5; text-decoration: none;
+}
+nav a:hover, nav a:focus-visible { background: rgb(59 130 232 / 10%); color: var(--text); }
+nav a:focus-visible { box-shadow: inset 2px 0 var(--accent); }
+section {
+  padding: 24px; margin: 20px 0; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 18px; min-width: 0;
+}
+section > h2 { padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+section:target { border-color: var(--blue); }
+p { margin: .7rem 0; }
+li { margin: .4rem 0; }
+article { padding: .5rem 0; border-top: 1px solid var(--line); }
+article:first-of-type { border-top: 0; }
+pre {
+  overflow: auto; padding: 16px; background: var(--bg);
+  border: 1px solid var(--line); border-left: 3px solid var(--blue); border-radius: 14px;
+}
+code { font-family: var(--mono); }
+:not(pre) > code { overflow-wrap: anywhere; color: #c7dcff; }
+figure {
+  margin: 20px 0; padding: 16px; background: var(--raised);
+  border: 1px solid var(--line); border-radius: 14px; break-inside: avoid;
+}
+figure:has(.placeholder) { border-style: dashed; border-color: var(--muted); }
+.placeholder { font-weight: 700; overflow-wrap: anywhere; color: var(--text); }
+figure img { display: block; max-width: 100%; height: auto; margin: 0 auto 12px; border-radius: 4px; }
+figcaption, .note { color: var(--muted); font-size: .9rem; }
+.callout { border-left: 3px solid var(--violet); padding: 12px 16px; background: var(--raised); border-radius: 0 14px 14px 0; }
+footer { padding: 0 0 24px; color: var(--muted); font-size: .9rem; }
+@media (max-width: 900px) {
+  body::before { display: none; }
+  .wrap { margin: auto; max-width: 850px; padding: 16px; }
+  .brand { position: static; width: auto; padding-bottom: 12px; margin-bottom: 16px; }
+  nav { position: static; width: auto; max-height: none; padding: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; }
+  nav ul { display: flex; flex-wrap: wrap; gap: 4px 8px; }
+}
+@media (max-width: 600px) {
+  .wrap { padding: 12px; }
+  header, section { padding: 16px; }
+  nav ul { display: block; }
+  pre { font-size: .85rem; }
+  figure { padding: 10px; }
+}
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+@page { size: A4; margin: 15mm; }
+@media print {
+  :root { color-scheme: light; --bg: #fff; --panel: #fff; --raised: #f1f5fa; --text: #172d43; --muted: #40546b; --line: #b3c1d1; --link: #1555a0; }
+  body { background: #fff; font-size: 10pt; }
+  body::before, nav, .skip { display: none; }
+  .wrap { max-width: none; margin: 0; padding: 0; }
+  .brand { position: static; width: auto; margin-bottom: 12px; }
+  header, section { padding: 12px; margin: 12px 0; }
+  header, article, figure { break-inside: avoid; }
+  h2, h3 { break-after: avoid; }
+  a { text-decoration: underline; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  code, :not(pre) > code { color: var(--text); }
+  section:target { border-color: var(--line); }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#contenido">Saltar al contenido</a>
+<div class="wrap">
+<header>
+<div class="brand" role="img" aria-label="NEXUS">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" aria-hidden="true" focusable="false"><polygon points="9,11 30,11 30,89 9,89" fill="#22b85c"/><polygon points="70,11 91,11 91,89 70,89" fill="#e0246f"/><polygon points="30,11 49,11 70,89 51,89" fill="#3b82e8"/></svg>
+<span>NEXUS</span>
+</div>
+<p class="kicker">Jarvis · desarrollo guiado por especificaciones · guía ilustrada</p>
+<h1>De la intención a un cambio verificable con SDD</h1>
+<p>Define qué debe cambiar, acuerda cómo hacerlo y comprueba el resultado antes de cerrar. Esta guía explica el recorrido para quien trabaja con un agente configurado con Jarvis; las decisiones y la responsabilidad siguen siendo humanas.</p>
+</header>
+<main id="contenido">
+<section aria-labelledby="ruta">
+<h2 id="ruta">Ruta rápida: decidir, planificar, comprobar</h2>
+<ol>
+<li><strong>Decidir:</strong> acepta expresamente SDD y confirma las opciones de la sesión. Inicializa el contexto del proyecto si falta.</li>
+<li><strong>Planificar:</strong> explora, delimita la propuesta y revisa especificaciones, diseño y tareas antes de implementar.</li>
+<li><strong>Comprobar:</strong> aplica por unidades con pruebas, verifica contra lo acordado y archiva solo cuando no haya bloqueos.</li>
+</ol>
+<p class="callout"><strong>Ejemplo hipotético:</strong> todo el recorrido usa <code>lista-lectura-demo</code>, una aplicación ficticia con un filtro de libros. Las cinco imágenes son ilustraciones sintéticas: no son capturas de ejecución observada ni prueban un cambio completo verificado.</p>
+</section>
+<nav aria-label="Contenido"><strong>En esta guía</strong><ul>
+<li><a href="#criterio">Cuándo merece la pena</a></li>
+<li><a href="#preparar">Activación y decisiones</a></li>
+<li><a href="#almacenamiento">Dónde queda el trabajo</a></li>
+<li><a href="#planificar">Ejemplo: planificación</a></li>
+<li><a href="#aplicar">Aplicar con pruebas</a></li>
+<li><a href="#cerrar">Verificar y archivar</a></li>
+<li><a href="#recuperar">Retomar o desbloquear</a></li>
+<li><a href="#referencias">Comandos y referencias</a></li>
+<li><a href="glosario-jarvis.html">Glosario de Jarvis</a></li>
+</ul></nav>
+<section id="criterio">
+<h2>1. Qué es SDD y cuándo merece la pena</h2>
+<p><strong>Spec-Driven Development (SDD)</strong> es un desarrollo guiado por especificaciones: la intención se convierte en requisitos observables, decisiones técnicas y tareas revisables. Esos artefactos, no solo el historial del chat, sirven para contrastar la implementación y retomar el trabajo.</p>
+<article><h3>Cambios adecuados</h3>
+<ul>
+<li><strong>Funcionalidades:</strong> un filtro con estados, comportamiento inicial y lista vacía exige acordar varios escenarios.</li>
+<li><strong>Errores:</strong> si el filtro pierde libros al volver a Todos, documenta la reproducción, el comportamiento esperado y una prueba de regresión.</li>
+<li><strong>Refactorizaciones:</strong> extraer la selección a una función sin alterar resultados requiere invariantes y pruebas que protejan el comportamiento existente.</li>
+</ul></article>
+<article><h3>Cuándo basta un cambio directo</h3>
+<p>Una errata, un renombrado mecánico ya entendido o un ajuste aislado sin decisiones abiertas suele necesitar menos ceremonia. Trabaja directamente con revisión y comprobaciones proporcionadas. SDD no se activa por defecto: si el agente lo recomienda, puedes aceptarlo o seguir sin SDD.</p></article>
+<article><h3>Beneficios y límites</h3>
+<p>El flujo puede reducir ambigüedades, hacer visibles las dependencias y mejorar la trazabilidad y el relevo entre sesiones. No garantiza ausencia de errores, seguridad, menor coste ni entrega más rápida. Una especificación equivocada puede producir una implementación equivocada aunque siga el plan.</p>
+<p>La planificación consume tiempo y contexto; los artefactos pueden quedar obsoletos y las herramientas de persistencia pueden fallar. La persona responsable decide el alcance, valida las reglas de negocio, revisa el código y acepta la entrega. Ni un informe del agente ni unas casillas marcadas sustituyen esa revisión.</p></article>
+</section>
+<section id="preparar">
+<h2>2. Activar SDD y confirmar la sesión</h2>
+<p>Con el agente configurado, pide explícitamente «usa SDD para añadir un filtro de estado a la lista de lectura». Antes de cualquier fase, el agente debe recoger tu confirmación de estas cuatro decisiones; un proyecto inicializado no sustituye esta confirmación de sesión.</p>
+<ul>
+<li><strong>Ritmo:</strong> interactivo (<code>interactive</code>) para revisar cada fase, o automático (<code>auto</code>) para encadenarlas con las paradas de seguridad aplicables.</li>
+<li><strong>Artefactos:</strong> Hive, OpenSpec, híbrido o sin persistencia; consulta la sección siguiente.</li>
+<li><strong>Entrega:</strong> preguntar ante riesgo (<code>ask-on-risk</code>), dividir automáticamente (<code>auto-chain</code>), intentar una PR (<code>single-pr</code>) o aceptar una excepción de tamaño (<code>exception-ok</code>).</li>
+<li><strong>Presupuesto de revisión:</strong> 400 líneas como opción recomendada, 800 u otro límite explícito. Si se prevé superarlo, acuerda división o excepción antes de aplicar; no sacrifiques claridad para ocultar el tamaño.</li>
+</ul>
+<p>Para este ejemplo elegiríamos modo interactivo, Hive, preguntar ante riesgo y 400 líneas. Son decisiones hipotéticas, no una sesión ejecutada.</p>
+<pre><code>/sdd-init</code></pre>
+<p>Inicializa una vez por proyecto, solo si falta el contexto: detecta la tecnología, convenciones y capacidades de pruebas. Después inicia el cambio:</p>
+<pre><code>/sdd-new lista-lectura-demo</code></pre>
+<p>Este comando inicia <strong>exploración y propuesta</strong>. En modo interactivo, revisa el resultado de cada fase y aprueba únicamente la siguiente; «continuar» no autoriza todo el recorrido. Antes de la propuesta, aprovecha la ronda de preguntas de producto para concretar destinatarios, reglas, casos límite y exclusiones.</p>
+</section>
+<section id="almacenamiento">
+<h2>3. Dónde quedan los artefactos</h2>
+<ul>
+<li><strong>Hive (<code>hive</code>):</strong> conserva artefactos en la memoria local del producto, recuperables entre sesiones; no requiere archivos de especificación en el repositorio.</li>
+<li><strong>OpenSpec (<code>openspec</code>):</strong> conserva archivos revisables con el repositorio, normalmente bajo <code>openspec/changes/lista-lectura-demo/</code>.</li>
+<li><strong>Híbrido (<code>hybrid</code>):</strong> utiliza ambos almacenes. Necesita coherencia entre las dos copias; una divergencia bloquea, no permite elegir arbitrariamente una.</li>
+<li><strong>Sin persistencia (<code>none</code>):</strong> devuelve resultados en la conversación; no guarda artefactos SDD ni un archivo duradero de cierre.</li>
+</ul>
+<p>Un cambio persistido queda vinculado a su almacén: no intentes trasladarlo cambiando una opción o variable de entorno a mitad del trabajo. Usa las ubicaciones que indique el estado, no supongas que todos los modos crean los mismos archivos.</p>
+<p class="callout">Guardar en Hive local no demuestra sincronización con la API compartida del equipo. <code>jarvis sync</code> reproduce la configuración registrada del agente; <strong>no sincroniza memoria ni avanza fases SDD</strong>.</p>
+</section>
+<section id="planificar">
+<h2>4. Ejemplo hipotético: planificar el filtro</h2>
+<p>La aplicación ficticia ya muestra libros pendientes y terminados en un orden establecido. Queremos elegir <strong>Todos, Pendientes o Terminados</strong>, sin modificar el catálogo ni añadir cuentas, sincronización o cambios de almacenamiento.</p>
+<article><h3>Exploración y propuesta: por qué y hasta dónde</h3>
+<p>La exploración identifica la vista existente, cómo representa los estados y qué pruebas hay. La propuesta recoge problema, objetivo, alcance, alternativas, riesgos y exclusiones: un selector en la vista actual evita crear una pantalla innecesaria.</p>
+<p><strong>Revisión humana:</strong> confirma que el filtro resuelve el problema y que los límites son correctos; ajusta las suposiciones antes de avanzar.</p>
+<figure><img src="capturas/pantallazosSDD/Proposal.png" alt="Propuesta sintética del filtro de lista de lectura con objetivo, alcance, exclusiones y riesgos"><figcaption><a href="capturas/pantallazosSDD/Proposal.png">Abrir ilustración a tamaño completo</a>. Propuesta de lista-lectura-demo: ilustración sintética, no ejecución observada. Muestra qué acordar antes de especificar; no acredita implementación.</figcaption></figure>
+</article>
+<article><h3>Especificaciones: qué debe observarse</h3>
+<pre><code>/sdd-continue lista-lectura-demo</code></pre>
+<p>Ejecuta la siguiente fase habilitada por las dependencias, no una fase elegida a partir de un resumen informal. Las especificaciones y el diseño dependen <strong>cada uno de la propuesta</strong>; las tareas requieren <strong>ambos</strong>. El recorrido aquí presenta primero especificaciones y después diseño para facilitar la lectura.</p>
+<ul>
+<li>Al abrir la vista se selecciona Todos y se conserva el orden original.</li>
+<li>Al elegir Pendientes o Terminados solo aparecen los libros de ese estado.</li>
+<li>Sin coincidencias se muestra un mensaje de lista vacía.</li>
+<li>Volver a Todos recupera la lista completa; el catálogo no cambia.</li>
+</ul>
+<p><strong>Revisión humana:</strong> comprueba los escenarios normales y los casos límite; una regla ambigua debe resolverse antes de programar.</p>
+<figure><img src="capturas/pantallazosSDD/Specs.png" alt="Especificaciones sintéticas con escenarios de estado inicial, pendientes, lista vacía y catálogo intacto"><figcaption><a href="capturas/pantallazosSDD/Specs.png">Abrir ilustración a tamaño completo</a>. Especificaciones del mismo filtro: ilustración sintética, no ejecución observada. Los escenarios son criterios previstos, no resultados de pruebas.</figcaption></figure>
+</article>
+<article><h3>Diseño: cómo preservar esos requisitos</h3>
+<p>Tras revisar y aprobar la siguiente fase, utiliza de nuevo <code>/sdd-continue lista-lectura-demo</code>. El diseño hipotético mantiene el filtro como estado de la vista y deriva los libros visibles mediante <code>filtrarLibros(catálogo, filtro)</code>. No borra elementos del catálogo original.</p>
+<p><strong>Revisión humana:</strong> confirma límites entre selector, función y vista; exige pruebas de selección, orden y no mutación, además de interacción con el selector.</p>
+<figure><img src="capturas/pantallazosSDD/Design.png" alt="Diseño sintético que separa selector, función de filtrado y resultados sin mutar el catálogo"><figcaption><a href="capturas/pantallazosSDD/Design.png">Abrir ilustración a tamaño completo</a>. Diseño del filtro: ilustración sintética, no ejecución observada. Documenta una decisión técnica prevista; no describe un sistema real validado.</figcaption></figure>
+</article>
+<article><h3>Tareas: unidades pequeñas y comprobables</h3>
+<p>Cuando especificaciones y diseño estén disponibles y revisados, la siguiente continuación prepara las tareas: contrato y pruebas del filtro, implementación de la función e integración del selector. El plan debe indicar dependencias, comprobaciones y coste previsto de revisión.</p>
+<p><strong>Revisión antes de aplicar:</strong> acuerda las unidades de entrega, la forma de deshacer cada unidad y las pruebas; resuelve cualquier decisión de tamaño pendiente.</p>
+<figure><img src="capturas/pantallazosSDD/Tasks.png" alt="Lista sintética de tareas para probar el contrato, implementar la función e integrar el selector"><figcaption><a href="capturas/pantallazosSDD/Tasks.png">Abrir ilustración a tamaño completo</a>. Tareas de lista-lectura-demo: ilustración sintética, no ejecución observada. Las casillas son un plan, no evidencia de trabajo terminado.</figcaption></figure>
+<p class="callout"><strong>Atajo de planificación:</strong> <code>/sdd-ff lista-lectura-demo</code> prepara propuesta, especificaciones, diseño y tareas. No implementa código y no elimina la confirmación de sesión, las revisiones interactivas ni las dependencias obligatorias.</p>
+</article>
+</section>
+<section id="aplicar">
+<h2>5. Aplicar por unidades con pruebas primero</h2>
+<pre><code>/sdd-apply lista-lectura-demo</code></pre>
+<p>Solo procede con especificaciones, diseño y tareas disponibles, decisiones de revisión resueltas y estado nativo que habilite la fase y el espacio de trabajo. El agente implementa las tareas asignadas por lotes; no debe ampliar el alcance por iniciativa propia.</p>
+<ol>
+<li><strong>RED:</strong> escribe la prueba más pequeña del comportamiento, ejecútala y registra el fallo esperado antes de implementar. Por ejemplo, elegir Pendientes excluye los terminados.</li>
+<li><strong>GREEN:</strong> implementa lo mínimo y registra la misma prueba pasando.</li>
+<li><strong>Ampliar cobertura:</strong> protege Terminados, lista vacía, orden estable, retorno a Todos y catálogo intacto.</li>
+<li><strong>Refactorizar:</strong> mejora la claridad solo con las pruebas enfocadas en verde; registra las comprobaciones y revisa el diff de la unidad.</li>
+</ol>
+<p>Este ciclo es obligatorio cuando el proyecto tiene TDD estricto activo. Usa los comandos reales detectados en la inicialización, no un comando de pruebas inventado para este ejemplo. Si no hay una prueba previa significativa —por ejemplo, documentación pasiva— justifica la excepción y ejecuta las validaciones adecuadas; no inventes un fallo RED.</p>
+<p>El artefacto esperado es <strong>apply-progress</strong>: tareas cubiertas, cambios, comandos y resultados realmente observados, bloqueos y siguiente trabajo pendiente. Las casillas y el progreso deben coincidir; un resumen de chat no basta.</p>
+<figure><img src="capturas/pantallazosSDD/Progress.png" alt="Progreso sintético parcial del filtro con revisión e implementación pendientes y sin resultados reales de pruebas"><figcaption><a href="capturas/pantallazosSDD/Progress.png">Abrir ilustración a tamaño completo</a>. Progreso hipotético: ilustración sintética, no ejecución observada. Las marcas no prueban pruebas ejecutadas ni una implementación completa; faltan trabajo y revisión.</figcaption></figure>
+<p><strong>Punto de control:</strong> revisa cada unidad y su evidencia antes de continuar. Si aparece una necesidad nueva, acuerda el cambio de alcance y actualiza los artefactos afectados en lugar de improvisar.</p>
+</section>
+<section id="cerrar">
+<h2>6. Verificar y archivar sin saltarse puertas</h2>
+<pre><code>/sdd-verify lista-lectura-demo</code></pre>
+<p>Una vez completada la implementación, la verificación contrasta especificaciones, diseño, tareas y progreso con el código y las pruebas ejecutadas. Produce un <strong>verify-report</strong> con cobertura de escenarios, resultados, omisiones y hallazgos críticos, advertencias o sugerencias.</p>
+<p>En el ejemplo, habría que comprobar tanto la función como el selector y el regreso a Todos. La revisión de código por sí sola no acredita esos comportamientos. Si una prueba no se ejecuta, debe constar como pendiente o no comprobada, no como aprobada.</p>
+<p><strong>Revisión humana:</strong> lee el informe, confirma que cubre el estado actual y resuelve los hallazgos. Un fallo devuelve trabajo a apply; después se verifica de nuevo. Aquí no se afirma que el ejemplo haya pasado ninguna prueba.</p>
+<pre><code>/sdd-archive lista-lectura-demo</code></pre>
+<p>Archiva solo con tareas completas, progreso coherente y verificación vigente que permita el cierre. Se consolida el conocimiento del cambio y se produce un <strong>archive-report</strong>; en OpenSpec se consolidan las especificaciones y se archiva el cambio, en Hive queda el cierre lógico, y en modo híbrido se requieren ambas partes coherentes. En <code>none</code> solo hay resumen en la conversación.</p>
+<p class="callout"><strong>Los bloqueos de archivo no se pueden dispensar.</strong> Ni una aprobación humana ni «archiva de todos modos» sustituyen pruebas, artefactos completos o coherencia del almacén. Archivar tampoco equivale a aprobar una PR, fusionarla o desplegar en producción.</p>
+</section>
+<section id="recuperar">
+<h2>7. Retomar una sesión o resolver un bloqueo</h2>
+<p>Identifica el proyecto y el cambio exactos. En el agente puedes pedir estado sin ejecutar fases:</p>
+<pre><code>/sdd-status lista-lectura-demo</code></pre>
+<p>En la terminal, los comandos nativos exponen el estado y la siguiente fase recomendada como JSON:</p>
+<pre><code>jarvis sdd status lista-lectura-demo --json
+jarvis sdd continue lista-lectura-demo --json</code></pre>
+<p><strong>No son equivalentes a ejecutar fases:</strong> <code>jarvis sdd continue</code> informa la recomendación; <code>/sdd-continue</code> la ejecuta mediante el agente tras las puertas aplicables. El estado nativo prevalece sobre inferencias del chat. La consulta de estado puede adoptar la vinculación del almacén si el cambio aún no la tenía; no debe describirse como recuperación puramente de lectura.</p>
+<ul>
+<li><strong>Falta planificación:</strong> recupera propuesta, especificaciones, diseño o tareas según las dependencias; no lances apply con artefactos incompletos.</li>
+<li><strong>Apply interrumpido:</strong> recupera el progreso validado y retoma solo tareas pendientes. No marques casillas a mano para simular finalización ni reescribas evidencia histórica.</li>
+<li><strong>Pruebas fallidas o informe obsoleto:</strong> corrige en apply, registra evidencia real y vuelve a verificar antes de archivar.</li>
+<li><strong>Hive no disponible o híbrido divergente:</strong> conserva ambas copias y comunica el bloqueo. No cambies de almacén como atajo ni elijas la copia más favorable.</li>
+<li><strong>Estado nativo no disponible:</strong> limita la recuperación a inspección; no inventes permiso para editar, verificar o archivar. Solicita diagnóstico con proyecto, cambio, comando y error sin secretos.</li>
+</ul>
+<p>Al retomar, confirma las opciones de la nueva sesión, revisa el estado persistido y aprueba la siguiente fase en modo interactivo. El objetivo es recuperar contexto y evidencia, no reconstruir el éxito a partir de recuerdos.</p>
+</section>
+<section id="referencias">
+<h2>8. Comandos del agente y siguiente paso</h2>
+<p>Los comandos con <code>/</code> se escriben en el agente, no en PowerShell ni en Bash. <code>/sdd-new</code>, <code>/sdd-continue</code>, <code>/sdd-ff</code> y <code>/sdd-status</code> los gestiona directamente el orquestador; pueden no aparecer en el autocompletado.</p>
+<ul>
+<li><code>/sdd-explore &lt;tema&gt;</code>: investigar una idea antes de comprometer el alcance.</li>
+<li><code>/sdd-onboard</code>: recorrido guiado con el proyecto; no es una fase adicional del ciclo.</li>
+<li><code>/sdd-init</code>, <code>/sdd-new &lt;change&gt;</code> y <code>/sdd-continue [change]</code>: contexto, inicio y siguiente fase habilitada.</li>
+<li><code>/sdd-ff &lt;name&gt;</code>: planificación; <code>/sdd-apply [change]</code>, <code>/sdd-verify [change]</code> y <code>/sdd-archive [change]</code>: implementación, comprobación y cierre.</li>
+</ul>
+<p>Las etiquetas <code>/sdd-propose</code>, <code>/sdd-spec</code>, <code>/sdd-design</code> y <code>/sdd-tasks</code> en las ilustraciones identifican fases. Para avanzar, utiliza los comandos documentados de inicio y continuación; las etiquetas no amplían el contrato de comandos del agente.</p>
+<p><strong>Antes de cerrar:</strong> ¿están acordados los requisitos, revisado el diseño, terminadas las tareas y registradas las pruebas? ¿La verificación es actual y no quedan bloqueos? Si alguna respuesta es no, vuelve al punto correspondiente.</p>
+<p>Consulta la <a href="../sdd-user-guide.md">guía de referencia de SDD</a>, el <a href="../../jarvis-cli/embed/orchestrator/sdd-orchestrator.md">contrato del orquestador</a> y las fases de <a href="../../jarvis-cli/embed/skills/sdd-apply/SKILL.md">apply</a>, <a href="../../jarvis-cli/embed/skills/sdd-verify/SKILL.md">verify</a> y <a href="../../jarvis-cli/embed/skills/sdd-archive/SKILL.md">archive</a> para los requisitos completos.</p>
+<p>Si aún no tienes el agente configurado, empieza por <a href="windows-onboarding.html">Windows/PowerShell</a> o <a href="ubuntu-onboarding.html">Ubuntu/Linux</a>.</p>
+</section>
+</main>
+<footer><p>Guía de lectura, no registro de una ejecución. Las cinco imágenes locales son sintéticas y no contienen datos de clientes. Al añadir evidencia real, revisa su privacidad e incluye procedencia, alcance y resultados observados; nunca publiques secretos ni datos personales.</p></footer>
+</div>
+</body>
+</html>
