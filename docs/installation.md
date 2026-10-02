@@ -1,6 +1,6 @@
 # Installation
 
-For editable platform onboarding, see the [Windows PowerShell guide](presentaciones/windows-onboarding.html) or the [Ubuntu/Linux guide](presentaciones/ubuntu-onboarding.html). Their shared wizard screenshots are not platform-specific installation or verification evidence.
+For illustrated platform onboarding in PDF format, see the [Windows PowerShell guide](presentaciones/windows-onboarding.pdf) or the [Ubuntu/Linux guide](presentaciones/ubuntu-onboarding.pdf).
 
 ## Latest production
 
