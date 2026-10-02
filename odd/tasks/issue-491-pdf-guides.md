@@ -11,9 +11,9 @@ Replace the four published HTML guides with self-contained PDFs and remove the 1
 - Preserve historical task documents. No Git history rewriting or builds. User authorized deletion, commits and publication.
 
 ## Tasks
-- [ ] P1 Export and verify four PDFs — in progress.
+- [x] P1 Export and verify four PDFs — complete; commit 8f058450.
   Checks: embedded images, complete/readable pages, Spanish content, usable cross-guide/reference links, no temporary file paths or private metadata; independent verification.
-- [ ] P2 Remove HTML/images, update links and publish — pending P1.
+- [x] P2 Remove HTML/images, update links and publish — complete; commit ca2ad07e.
   Checks: four PDFs tracked, four HTML and sixteen PNGs absent, functional Markdown links resolve; only authorized paths committed; push and remote confirmed.
 
 ## Decisions
@@ -38,5 +38,17 @@ Replace the four published HTML guides with self-contained PDFs and remove the 1
 - Windows/Ubuntu regenerated with temporary nonwrapping 7.25pt command blocks. Worker checks PASS: both raw/layout extraction preserve exact pipelines on page 2, beta assignments preceding separately; ten pages visually checked, original counts/content/links preserved and 25 other files hash-unchanged.
 - Independent targeted recheck delegated; no sources deleted yet. Command text smaller; zoom useful; PDFs untagged.
 
+- Independent corrected-PDF recheck PASS: exact physical installer lines in raw/layout extraction, all ten pages visually inspected, 10/11 images, safe annotations and other source/PDF hashes preserved.
+- P1 committed as 8f058450; parent git diff --check spot check passed.
+
+- Cleanup writer cannot perform deletions under its safety contract; parent performed the explicitly authorized mechanical allowlist deletion (4 HTML, 16 PNG). No folder-wide deletion or history rewrite.
+- Parent recorded preservation hashes; PDF hashes match committed versions. capturas/.gitignore and unrelated dashboard task retained.
+- Three-file Markdown link updates and final tree checks delegated back to writer.
+
+- P2 checks PASS: exactly four HTML/sixteen PNG absent; all PDFs byte-identical to 8f058450; preservation hashes match; five Markdown PDF links resolve; 370 functional docs scanned with no deleted-asset references. Parent diff/readback and git diff --check passed.
+- Cleanup commit ca2ad07e published with P1; push confirmed 1759aaf3..ca2ad07e.
+- GitHub recursive tree and PR changed-file inventory confirm four PDF guides present and no HTML/PNG sources under docs/presentaciones; only capturas/.gitignore retained.
+- PDFs remain untagged and dense command/image text benefits from zoom; external destination HTTP behavior and physical printing not tested. No Go tests/builds applicable, installers never executed. Git history intentionally unchanged.
+
 ## Next step
-Await corrected-PDF independent recheck, then commit P1 and proceed to source removal/link updates.
+Human reviews PDFs in PR #766. No pending implementation checks.
