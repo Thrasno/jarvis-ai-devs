@@ -1,5 +1,7 @@
 # Installation
 
+For illustrated platform onboarding in PDF format, see the [Windows PowerShell guide](presentaciones/windows-onboarding.pdf) or the [Ubuntu/Linux guide](presentaciones/ubuntu-onboarding.pdf).
+
 ## Latest production
 
 Without an override, the installers download the latest production release from GitHub.
