@@ -269,6 +269,55 @@ func TestOpenCodeHiveTemplate_RetryWithDelayedCancellationPublication(t *testing
 	testOpenCodeCreatedLifecycle(t, true)
 }
 
+func awaitHiveTemplateCancellationPublication(retryObserved <-chan time.Time, cleanup <-chan struct{}, deadline <-chan time.Time, now func() time.Time) (time.Time, error) {
+	select {
+	case <-retryObserved:
+		// The retry handler sends only after reading its request. Receiving
+		// that evidence establishes causality even if both clock values are
+		// equal. The timestamp is diagnostic only, never an ordering oracle.
+		return now(), nil
+	case <-cleanup:
+		return time.Time{}, fmt.Errorf("cancellation publication released by cleanup before retry observation")
+	case <-deadline:
+		return time.Time{}, fmt.Errorf("timed out waiting for retry observation before cancellation publication")
+	}
+}
+
+func TestOpenCodeHiveTemplate_CancellationPublicationControls(t *testing.T) {
+	// Model a clock whose resolution cannot distinguish these ordered events.
+	stamp := time.Unix(123, 0)
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{"equal clock retry", ""},
+		{"cleanup without retry", "released by cleanup"},
+		{"deadline without retry", "timed out waiting for retry observation"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			retry := make(chan time.Time, 1)
+			cleanup := make(chan struct{})
+			deadline := make(chan time.Time, 1)
+			switch tc.name {
+			case "equal clock retry":
+				retry <- stamp
+			case "cleanup without retry":
+				close(cleanup)
+			case "deadline without retry":
+				deadline <- stamp
+			}
+			publishedAt, err := awaitHiveTemplateCancellationPublication(retry, cleanup, deadline, func() time.Time { return stamp })
+			if tc.want == "" {
+				if err != nil || !publishedAt.Equal(stamp) {
+					t.Fatalf("causally ordered publication with equal timestamps = %s, %v", publishedAt, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.want) || !publishedAt.IsZero() {
+				t.Fatalf("publication without retry = %s, %v; want no publication and %q", publishedAt, err, tc.want)
+			}
+		})
+	}
+}
+
 func testOpenCodeCreatedLifecycle(t *testing.T, delayCancellation bool) {
 	t.Helper()
 	if testing.Short() {
@@ -282,7 +331,8 @@ func testOpenCodeCreatedLifecycle(t *testing.T, delayCancellation bool) {
 	promptRequests := make(chan hiveTemplateRequest, 3)
 	primaryStartCanceled := make(chan time.Time, 1)
 	releasePrimaryStart := make(chan struct{})
-	retryObserved := make(chan struct{})
+	retryObserved := make(chan time.Time, 1)
+	cancellationPublication := make(chan error, 1)
 	var retryObservedOnce sync.Once
 	var primaryStartHeld atomic.Bool
 	var starts atomic.Int32
@@ -302,17 +352,18 @@ func testOpenCodeCreatedLifecycle(t *testing.T, delayCancellation bool) {
 				case <-r.Context().Done():
 					if delayCancellation {
 						// Model an adverse handler schedule, not delayed client cancellation.
-						select {
-						case <-retryObserved:
-						case <-releasePrimaryStart:
-						case <-time.After(hiveTemplateRequestWait):
+						publishedAt, err := awaitHiveTemplateCancellationPublication(retryObserved, releasePrimaryStart, time.After(hiveTemplateRequestWait), time.Now)
+						cancellationPublication <- err
+						if err == nil {
+							primaryStartCanceled <- publishedAt
 						}
+					} else {
+						primaryStartCanceled <- time.Now()
 					}
-					primaryStartCanceled <- time.Now()
 				case <-releasePrimaryStart:
 				}
 			} else if isPrimaryOpenCodeStart(request) {
-				retryObservedOnce.Do(func() { close(retryObserved) })
+				retryObservedOnce.Do(func() { retryObserved <- request.observedAt })
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"ok":true}`))
@@ -457,10 +508,17 @@ observation.assertComplete();
 	secondStart := waitHiveTemplateChildRequest(t, startRequests, finished, cancel, &stderr, "retry after primary start timeout", progress)
 	// Server observation is eventual evidence only: independently scheduled
 	// handlers cannot establish client-local abort/rejection/retry ordering.
-	primaryCanceled := waitHiveTemplateTime(t, primaryStartCanceled, "primary start timeout cancellation")
-	if delayCancellation && !secondStart.observedAt.Before(primaryCanceled) {
-		t.Fatal("adverse scheduling fixture did not delay cancellation publication until after retry observation")
+	if delayCancellation {
+		select {
+		case err := <-cancellationPublication:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(hiveTemplateRequestWait):
+			t.Fatal("timed out waiting for cancellation publication proof")
+		}
 	}
+	_ = waitHiveTemplateTime(t, primaryStartCanceled, "primary start timeout cancellation")
 	if _, err := awaitHiveTemplateRequest(nil, finished, cancel, &stderr, "OpenCode Hive template completion", hiveTemplateRequestWait, progress); err != nil {
 		t.Fatal(err)
 	}
