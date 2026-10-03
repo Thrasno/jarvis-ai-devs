@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Jarvis Dev: contexto que permanece, cambios con criterio y memoria de equipo. Presentación para desarrolladores con identidad Nexus.">
+<title>NEXUS · Jarvis Dev: que el contexto no se vaya de vacaciones</title>
+<style>
+:root{color-scheme:dark;--bg:#080a10;--panel:#0e1320;--raised:#121a2b;--text:#e6edf3;--muted:#bbc7d8;--line:#34415a;--accent:#e0246f;--amber:#e0a22e;--blue:#a8caff;--gradient:linear-gradient(110deg,#e0246f,#8b5cf0,#3b82e8)}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:2rem}body{margin:0;background:var(--bg);color:var(--text);font:1.08rem/1.65 system-ui,-apple-system,"Segoe UI",sans-serif}a{color:var(--blue);text-underline-offset:.22em}a:hover{color:#fff}button,summary,a{touch-action:manipulation}:focus-visible{outline:3px solid var(--amber);outline-offset:5px}.skip{position:absolute;left:1rem;top:-10rem;z-index:5;background:var(--panel);padding:1rem}.skip:focus{top:1rem}
+header,main,footer{width:min(1160px,100%);margin:auto;padding:1.5rem}header{display:flex;justify-content:space-between;align-items:center;gap:1rem}.brand{display:flex;gap:.65rem;align-items:center;font-weight:800;letter-spacing:.16em}.brand svg{width:36px;height:36px}.small,.note,figcaption{font-size:.88rem;color:var(--muted)}.eyebrow{font:700 .8rem/1.5 ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}h1,h2,h3,p{margin-top:0}h1,h2{font-size:clamp(2.25rem,5.4vw,4.5rem);line-height:1.08;letter-spacing:-.035em;max-width:20ch;margin-bottom:1.5rem}h3{font-size:1.18rem;line-height:1.3}p{max-width:65ch}strong{color:var(--text)}.lead{font-size:clamp(1.2rem,2.3vw,1.6rem);line-height:1.5}.highlight{color:#ff94bc}.chapter{position:relative;min-height:78vh;padding:clamp(1.4rem,4.8vw,4rem);margin-bottom:2rem;border:1px solid var(--line);border-radius:24px;background:linear-gradient(150deg,var(--raised),var(--panel) 65%);scroll-margin-bottom:6rem}.chapter:before{content:"";position:absolute;top:0;left:2rem;right:2rem;height:3px;background:var(--gradient)}.chapter:focus{outline:2px solid var(--amber);outline-offset:4px}.hero{background:radial-gradient(ellipse at 95% 0%,#35214c 0,transparent 58%),var(--panel)}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.2rem}.thirds{grid-template-columns:repeat(3,minmax(0,1fr))}.card{padding:1.4rem;border:1px solid var(--line);border-radius:16px;background:var(--bg)}.card p:last-child{margin-bottom:0}.pill{display:inline-block;border:1px solid var(--line);border-radius:99px;padding:.25rem .8rem;margin:0 .3rem .5rem 0;font-size:.82rem;color:var(--muted)}.takeaway{border-left:4px solid var(--accent);padding:.6rem 1rem;margin-top:1.6rem;font-size:1.2rem;background:var(--raised)}.comic{display:grid;gap:.8rem;align-content:center}.bubble{border:1px solid var(--line);padding:1rem 1.3rem;border-radius:18px 18px 18px 3px;background:var(--raised)}.bubble.reply{margin-left:2rem;border-color:#8b5cf0;border-radius:18px 18px 3px 18px}.bubble .speaker{display:block;font:.8rem ui-monospace,monospace;color:var(--muted);margin-bottom:.4rem}.scene{font-size:3.4rem;line-height:1.2;letter-spacing:.05em}.step{color:var(--amber);font:700 .85rem ui-monospace,monospace}figure{margin:1.2rem 0}img{display:block;max-width:100%;height:auto;border:1px solid var(--line);border-radius:10px}figcaption{margin-top:.65rem}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere;color:#c7dcff}pre{overflow:auto;padding:1.1rem;border:1px solid var(--line);border-radius:10px;background:var(--bg);line-height:1.7}details{margin-top:1.5rem;border-top:1px solid var(--line);padding-top:1rem}summary{cursor:pointer;color:var(--blue);font-weight:650}details[open] summary{margin-bottom:1rem}ul,ol{padding-left:1.3rem}li{margin:.5rem 0}.index ol{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.25rem 2rem}.index{margin:0 0 2rem;padding:1.4rem;border:1px solid var(--line);border-radius:16px}.index summary{font-size:1rem}.dashboard{border:1px solid var(--line);border-radius:16px;overflow:hidden;background:var(--bg)}.dash-head{padding:1rem;border-bottom:1px solid var(--line);font-weight:800;letter-spacing:.1em}.dash-body{display:grid;grid-template-columns:130px 1fr;min-height:220px}.dash-menu{padding:1rem;border-right:1px solid var(--line);font-size:.8rem;color:var(--muted);line-height:2}.dash-content{padding:1.2rem}.record{margin:.6rem 0;padding:.7rem;border-left:3px solid #8b5cf0;background:var(--raised)}.routes{display:flex;flex-wrap:wrap;gap:.5rem}.routes span{padding:.4rem .7rem;background:var(--raised);border:1px solid var(--line);border-radius:8px;font-size:.9rem}
+.controls{position:sticky;bottom:0;z-index:3;background:#0e1320f5;border-top:1px solid var(--line);padding:.6rem 1rem}.controls[hidden]{display:none}.control-inner{max-width:1112px;margin:auto;display:flex;align-items:center;gap:1rem}.controls button{font:inherit;background:var(--raised);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:.55rem 1rem;cursor:pointer}.controls button:disabled{opacity:.5;cursor:default}.meter{flex:1;min-width:0}.meter label{display:block;font-size:.8rem}progress{display:block;width:100%;height:6px;accent-color:var(--accent);margin-top:.4rem}footer{padding-bottom:2rem}noscript p{padding:1rem;border:1px solid var(--line)}
+@media(max-width:760px){header{align-items:flex-start}.grid,.thirds{grid-template-columns:1fr}.chapter{min-height:auto;margin-bottom:1rem}.index ol{grid-template-columns:1fr}.control-inner{gap:.5rem}.controls button{padding:.55rem .6rem;font-size:.85rem}.controls .key-hint{display:none}.dash-body{grid-template-columns:1fr}.dash-menu{border-right:0;border-bottom:1px solid var(--line)}h1,h2{max-width:none}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{animation:none!important;transition:none!important}}
+@page{size:A4;margin:15mm}
+@media print{:root{color-scheme:light;--bg:#fff;--panel:#fff;--raised:#f1f5fa;--text:#172d43;--muted:#40546b;--line:#b3c1d1;--blue:#1555a0}body{font-size:11pt}header,main,footer{width:100%;padding:0}.chapter{min-height:0;border-radius:0;background:white;padding:1rem 0;break-before:page;margin:0}.chapter:first-child{break-before:auto}h1,h2{font-size:30pt}.controls,.skip,.index,.key-hint{display:none!important}.grid{display:block}.card,figure,.dashboard{break-inside:avoid;margin-bottom:1rem}.highlight{color:#9d1649}code{color:#1555a0}.hero{background:white}.bubble{background:#f1f5fa}.chapter:before{display:none}details{display:block}details::details-content{content-visibility:visible}details>*{display:block!important}summary{color:var(--text)}a{text-decoration:underline}pre{white-space:pre-wrap}footer{margin-top:1rem}}
+</style>
+</head>
+<body>
+<a class="skip" href="#inicio">Saltar al contenido</a>
+<header>
+<div class="brand" aria-label="Nexus"><svg viewBox="0 0 100 100" aria-hidden="true" focusable="false"><polygon points="9,11 30,11 30,89 9,89" fill="#22b85c"/><polygon points="70,11 91,11 91,89 70,89" fill="#e0246f"/><polygon points="30,11 49,11 70,89 51,89" fill="#3b82e8"/></svg>NEXUS</div>
+<span class="small">Jarvis Dev · para quienes construyen software</span>
+</header>
+<main>
+<details class="index" id="indice"><summary>El recorrido · diez capítulos y fuentes para profundizar</summary>
+<nav aria-label="Índice de la presentación"><ol>
+<li><a href="#inicio">El contexto también es infraestructura</a></li><li><a href="#yo-del-pasado">El misterio de mi propio código</a></li>
+<li><a href="#memoria-local">Dejar pistas a tu yo del futuro</a></li><li><a href="#vacaciones">La persona que sabe está de vacaciones</a></li>
+<li><a href="#ecosistema">Un ecosistema, no tres productos sueltos</a></li><li><a href="#boton">Era «solo un botón»</a></li>
+<li><a href="#sdd">SDD pone límites al iceberg</a></li><li><a href="#dashboard">Nexus Hive: abrir la memoria del equipo</a></li>
+<li><a href="#operacion">Una base consistente, no rituales</a></li><li><a href="#piloto">Documentemos la experiencia real</a></li>
+<li><a href="#fuentes">Apéndice · fuentes y procedencia</a></li>
+</ol></nav></details>
+<noscript><p>Esta presentación se lee completa sin JavaScript. Usa el índice o desplázate; todos los capítulos están visibles.</p></noscript>
+<section class="chapter hero" id="inicio" tabindex="-1" aria-labelledby="titulo-inicio">
+<p class="eyebrow">01 / La idea en una frase</p>
+<h1 id="titulo-inicio">Que el contexto no se vaya <span class="highlight">de vacaciones.</span></h1>
+<p class="lead">Jarvis Dev da continuidad al desarrollo asistido por IA: configuración consistente, memoria de proyecto y cambios con un plan verificable.</p>
+<div class="grid"><div class="card"><h3>No es otro chatbot.</h3><p>Es una capa de trabajo alrededor de tus herramientas: preparar, recordar, compartir cuando toca y verificar antes de dar por hecho.</p></div><div class="card"><h3>La IA cambia de sesión. El proyecto sigue.</h3><p>El valor está en recuperar el <em>porqué</em>, no en pedir a todo el equipo que vuelva a contar la película.</p></div></div>
+<p class="takeaway">Menos arqueología improvisada. Más decisiones recuperables.</p>
+<p class="note">Las historias de esta presentación son ilustrativas. Las capacidades operativas tienen sus fuentes al final.</p>
+</section>
+<section class="chapter" id="yo-del-pasado" tabindex="-1" aria-labelledby="titulo-pasado">
+<p class="eyebrow">02 / Escena ilustrativa · un lunes cualquiera</p><h2 id="titulo-pasado">«¿Quién escribió esto?»<br><span class="highlight">«Ah. Yo.»</span></h2>
+<div class="grid"><div><p class="lead">El código sigue ahí. Tu recuerdo del motivo, no tanto.</p><p>Encuentras un límite raro en un reintento. Git te cuenta quién cambió la línea; necesitas entender qué problema evitaba.</p><p>Una conversación desaparecida no es una estrategia de documentación. Tampoco lo es «seguro que me acuerdo».</p></div><div class="comic" role="img" aria-label="Viñeta ilustrativa: una persona revisa su código, descubre que lo escribió ella y busca el motivo del límite."><div class="scene" aria-hidden="true">⌨ → ? → ⌨</div><div class="bubble"><span class="speaker">YO DE HOY</span>¿Por qué hay exactamente tres reintentos?</div><div class="bubble reply"><span class="speaker">YO DEL PASADO</span>Tenía un motivo. Y mucha confianza en nuestra memoria.</div><div class="bubble"><span class="speaker">NARRADOR</span>La confianza no se persistió.</div></div></div>
+<p class="takeaway">Guardar la decisión hoy es dejar una pista útil para mañana.</p>
+</section>
+<section class="chapter" id="memoria-local" tabindex="-1" aria-labelledby="titulo-local">
+<p class="eyebrow">03 / Hive · memoria local primero</p><h2 id="titulo-local">Tu yo del futuro merece <span class="highlight">una nota.</span></h2>
+<div class="grid"><div class="card"><p class="step">REGISTRAR</p><h3>Lo que importa, con su motivo</h3><p>«Limitamos los reintentos porque el proveedor duplica cargos. Revisar idempotencia antes de subir el límite».</p><p class="note">Ejemplo ficticio de memoria; no es un incidente documentado.</p></div><div class="card"><p class="step">RECUPERAR Y CONTRASTAR</p><h3>Retomar sin empezar de cero</h3><p>Buscar esa decisión orienta la lectura del código y los tests actuales. Una nota puede estar desactualizada: se contrasta, no se obedece a ciegas.</p></div></div>
+<p class="lead" style="margin-top:1.5rem">Hive conserva contexto registrado: decisiones, causas de bugs, convenciones y, cuando es el almacén elegido, artefactos SDD.</p>
+<p>Con <code>hive-daemon</code> en marcha, la memoria local no necesita que el servidor compartido esté disponible. No ingiere automáticamente cada cambio del repositorio.</p>
+<details><summary>Cómo abrir ese contexto local</summary><pre><code>jarvis hive
+jarvis timeline --project &lt;proyecto&gt;</code></pre><p>La TUI y la vista temporal local requieren el daemon; la segunda exige un proyecto explícito. No son una vista temporal de desarrolladores en el dashboard.</p><a href="../hive/local-memory-guide.md">Guía de memoria local</a></details>
+</section>
+<section class="chapter" id="vacaciones" tabindex="-1" aria-labelledby="titulo-vacaciones">
+<p class="eyebrow">04 / Escena ilustrativa · incidente de equipo</p><h2 id="titulo-vacaciones">La alerta ha llegado.<br><span class="highlight">La persona que sabe, no.</span></h2>
+<div class="grid"><div class="comic" role="img" aria-label="Viñeta ilustrativa: hay una alerta mientras un compañero está de vacaciones; el equipo busca una decisión guardada en lugar de interrumpirle."><div class="bubble"><span class="speaker">CANAL DE GUARDIA</span>¿Quién conoce el cambio del caché?</div><div class="bubble reply"><span class="speaker">ESTADO DEL COMPAÑERO</span>De vacaciones. Mi único caché ahora es la nevera.</div><div class="bubble"><span class="speaker">EQUIPO</span>Vamos a buscar la decisión registrada.</div></div><div><p class="lead">No necesitamos telepatía. Necesitamos contexto compartido.</p><ol><li>Recuperamos una nota sobre el cambio de invalidación y su motivo.</li><li>Acotamos la investigación: configuración, invalidación y pruebas relacionadas.</li><li>Contrastamos con logs y código; probamos la hipótesis y registramos lo aprendido.</li></ol><p>La memoria ayuda a elegir dónde mirar. No descubre por sí sola la causa ni garantiza resolver el incidente.</p></div></div>
+<p class="takeaway">Compartir conocimiento reduce dependencia de una persona. No sustituye a la guardia.</p>
+<details><summary>Qué tiene que estar preparado antes</summary><p>Hive API configurada, credenciales válidas y daemon local. El equipo acuerda qué conocimiento puede compartirse. <code>mem_sync</code> mueve memoria; la sincronización en segundo plano requiere habilitación explícita. Instalar Jarvis no activa una compartición universal.</p><a href="../hive/sync-guide.md">Contrato de sincronización</a></details>
+</section>
+<section class="chapter" id="ecosistema" tabindex="-1" aria-labelledby="titulo-ecosistema">
+<p class="eyebrow">05 / Poner nombre a las piezas</p><h2 id="titulo-ecosistema">Jarvis es el ecosistema.<br><span class="highlight">Nexus, la identidad.</span></h2>
+<p class="lead">Nexus Hive es el dashboard de la memoria compartida. No son tres servicios independientes con tres promesas distintas.</p>
+<div class="grid thirds"><div class="card"><p class="step">PREPARAR Y GUIAR</p><h3>CLI + flujo SDD</h3><p>Configuración de herramientas, diagnóstico y una ruta para planificar, implementar y verificar cambios.</p></div><div class="card"><p class="step">DAR CONTINUIDAD</p><h3>Hive local</h3><p>Memoria de proyecto en tu máquina, servida por el daemon. Trabajo local primero.</p></div><div class="card"><p class="step">COMPARTIR E INSPECCIONAR</p><h3>Hive API + Nexus Hive</h3><p>Servicio compartido y dashboard opcional cuando se despliegan y configuran.</p></div></div>
+<p class="takeaway">Herramientas coherentes → contexto registrado → cambios trazables.</p>
+<details><summary>Una elección visible en la configuración</summary><figure><a href="jarvis-ecosystem-assets/SeleccionHiveMode.png"><img src="jarvis-ecosystem-assets/SeleccionHiveMode.png" width="1770" height="239" loading="lazy" alt="Captura existente del selector Scope, con las opciones local-only y local+cloud."></a><figcaption>Captura del repositorio: elección de ámbito. Seleccionar local+cloud no prueba que la autenticación o la sincronización hayan terminado.</figcaption></figure></details>
+</section>
+<section class="chapter" id="boton" tabindex="-1" aria-labelledby="titulo-boton">
+<p class="eyebrow">06 / Escena ilustrativa · el iceberg del alcance</p><h2 id="titulo-boton">«Es solo <span class="highlight">un botón.</span>»</h2>
+<div class="grid"><div class="card"><p class="step">LO QUE SE VE</p><p class="scene" aria-hidden="true">[ Exportar ]</p><p>Un rectángulo, una etiqueta y mucho optimismo.</p></div><div class="card"><p class="step">LO QUE APARECE AL EXPLORAR</p><ul><li>Permisos y datos que pueden salir.</li><li>Volumen, formatos y procesamiento.</li><li>Errores, auditoría y pruebas.</li><li>Compatibilidad y operación.</li></ul></div></div>
+<p class="lead" style="margin-top:1.5rem">El problema no es el botón. Es empezar a implementar antes de decidir qué significa «exportar».</p>
+<p class="takeaway">SDD convierte «ya que estamos…» en una decisión de alcance.</p>
+</section>
+<section class="chapter" id="sdd" tabindex="-1" aria-labelledby="titulo-sdd">
+<p class="eyebrow">07 / Spec-Driven Development</p><h2 id="titulo-sdd">Pequeñas entregas.<br><span class="highlight">Intención grande y clara.</span></h2>
+<p class="lead">SDD es un flujo guiado: definir comportamiento antes del código y conservar evidencia después.</p>
+<div class="grid thirds"><div class="card"><p class="step">1 · ENTENDER Y ACORDAR</p><h3>¿Qué vamos a entregar?</h3><p>Explorar, proponer, especificar y diseñar. Por ejemplo: exportación limitada, permisos explícitos y exclusiones conocidas.</p></div><div class="card"><p class="step">2 · DIVIDIR Y APLICAR</p><h3>¿Qué puede revisarse?</h3><p>Tareas acotadas con criterios observables. El siguiente «ya que estamos» vuelve a la conversación de alcance.</p></div><div class="card"><p class="step">3 · VERIFICAR Y ARCHIVAR</p><h3>¿Qué demuestra que funciona?</h3><p>Comparar con lo acordado, recoger pruebas y guardar el conocimiento para la próxima sesión.</p></div></div>
+<p class="takeaway">Un plan no garantiza buen código. Hace visible qué hay que demostrar.</p>
+<details><summary>El ciclo completo, sin convertirlo en una pared de siglas</summary><p>Init → Explore → Proposal → Spec → Design → Tasks → Apply → Verify → Archive. La activación es deliberada, con decisiones previas sobre almacenamiento, ejecución y entrega; Hive es el almacén por defecto salvo elección explícita de otra modalidad.</p><figure><a href="jarvis-ecosystem-assets/SDDModelConfigs.png"><img src="jarvis-ecosystem-assets/SDDModelConfigs.png" width="1771" height="447" loading="lazy" alt="Captura existente de la configuración de modelos por fase para OpenCode y Claude, con filas de las fases SDD."></a><figcaption>Captura del repositorio: configuración por fase. Las selecciones mostradas son un ejemplo de la interfaz, no una recomendación vigente ni evidencia de ejecución SDD.</figcaption></figure><a href="../sdd-user-guide.md">Guía SDD y límites del flujo</a></details>
+</section>
+<section class="chapter" id="dashboard" tabindex="-1" aria-labelledby="titulo-dashboard">
+<p class="eyebrow">08 / Nexus Hive · dashboard opcional</p><h2 id="titulo-dashboard">La memoria del equipo,<br><span class="highlight">a la vista.</span></h2>
+<div class="grid"><div><p class="lead">Pasar de «creo que alguien lo guardó» a inspeccionar el conocimiento compartido.</p><p>Memorias y conocimiento por proyecto, usuarios, actividad, auditoría y cuarentena: superficies para revisar datos y operar el servicio según los permisos del despliegue.</p><p>No sustituye los logs del incidente ni la revisión del código. Ayuda a consultar y supervisar la memoria que sí se ha registrado.</p></div><figure><div class="dashboard" role="img" aria-label="Esquema ilustrativo, no captura: Nexus Hive muestra una nota ficticia sobre el límite de reintentos en un proyecto."><div class="dash-head">NEXUS HIVE <span class="pill">Esquema</span></div><div class="dash-body"><div class="dash-menu">Resumen<br>Memorias<br>Proyectos<br>Auditoría</div><div class="dash-content"><span class="eyebrow">Proyecto · ejemplo</span><h3>El motivo también cuenta.</h3><div class="record">Decisión registrada<br><strong>Limitar reintentos</strong></div><p class="small">Consultar el contexto → contrastar con el estado actual.</p></div></div></div><figcaption>Ilustración HTML de la idea; no es una captura de producto ni una sesión real.</figcaption></figure></div>
+<details><summary>Superficies disponibles y dirección futura</summary><p>Vistas disponibles:</p><div class="routes"><span>overview</span><span>memories</span><span>users</span><span>audit</span><span>projects</span><span>knowledge</span><span>activity</span><span>quarantine</span></div><p style="margin-top:1rem">Grafos, analítica, contribuyentes, vista temporal de desarrolladores y conflictos están diferidos; no se presentan aquí como capacidades disponibles. El acceso y las funciones administrativas dependen del despliegue y sus permisos.</p><a href="../public/jarvis-security-and-privacy.md">Seguridad, acceso y gobernanza</a></details>
+</section>
+<section class="chapter" id="operacion" tabindex="-1" aria-labelledby="titulo-operacion">
+<p class="eyebrow">09 / Configuración reproducible y diagnóstico</p><h2 id="titulo-operacion">«En mi máquina…»<br><span class="highlight">con algo más que fe.</span></h2>
+<p class="lead">La CLI prepara una base común y ofrece diagnóstico. La configuración generada se regenera desde sus fuentes, no se parchea a mano.</p>
+<div class="grid thirds"><div class="card"><h3>Observar</h3><p><code>jarvis verify</code> comprueba; <code>jarvis doctor</code> diagnostica y propone un plan. No reparan en silencio.</p></div><div class="card"><h3>Reparar desviaciones</h3><p><code>jarvis reconcile</code> repara cambios seguros en configuración gestionada, con copia previa y verificación posterior. Lo ambiguo exige revisión.</p></div><div class="card"><h3>Reaplicar lo registrado</h3><p><code>jarvis sync</code> reproduce la configuración deseada de esta máquina. No mueve memorias; eso corresponde a <code>mem_sync</code> o al daemon configurado.</p></div></div>
+<details><summary>Ver la entrada al setup y seguir una ruta operativa</summary><figure><a href="jarvis-ecosystem-assets/WizardTUI.png"><img src="jarvis-ecosystem-assets/WizardTUI.png" width="1777" height="893" loading="lazy" alt="Captura existente del cockpit de Jarvis con opciones de instalación, reconfiguración, diagnóstico, verificación y recuperación."></a><figcaption>Captura existente del repositorio, no realizada para esta presentación. Ilustra la interfaz, no acredita instalación correcta en Windows, Ubuntu u otra plataforma.</figcaption></figure><pre><code>jarvis
+jarvis verify --provider all
+jarvis doctor --provider all</code></pre><p>Revisa el plan antes de una reparación. Credenciales fuera del repositorio; HTTPS y permisos adecuados para el servicio compartido.</p><a href="../setup-recovery.md">Guía de diagnóstico y recuperación</a> · <a href="../installation.md">Instalación</a></details>
+</section>
+<section class="chapter hero" id="piloto" tabindex="-1" aria-labelledby="titulo-piloto">
+<p class="eyebrow">10 / La siguiente conversación</p><h2 id="titulo-piloto">Ya lo estamos usando.<br><span class="highlight">Ahora, dejemos evidencia.</span></h2>
+<p class="lead">Dos compañeros ya están probando el ecosistema. El siguiente paso es documentar esa experiencia y medir su impacto.</p>
+<p class="note">Experiencia declarada; fechas, plataformas, resultados y tiempos todavía pendientes de registrar.</p>
+<div class="grid"><div class="card"><h3>Qué observar</h3><ul><li>Setup comprobado y diagnósticos entendibles.</li><li>Contexto registrado que se recupera y resulta útil.</li><li>Alcance, tareas y evidencia revisables.</li><li>Equipo capaz de explicar qué queda local y qué se comparte.</li></ul></div><div class="card"><h3>Qué documentar</h3><ul><li>Cómo lo utilizan ambos compañeros.</li><li>Qué conocimiento registran y recuperan.</li><li>Configuración local y compartida realmente utilizada.</li><li>Criterios de éxito y evidencia antes de ampliar.</li></ul></div></div>
+<p class="takeaway">No prometamos un porcentaje. Midamos si el contexto ayuda.</p>
+<details><summary>Eficiencia: una hipótesis que se puede medir</summary><p>Reutilizar contexto registrado de forma selectiva puede evitar repetir explicaciones. SDD y la persistencia también añaden trabajo y consumo; no hay aquí un ahorro de tokens demostrado.</p><p>Compara tareas equivalentes con el mismo modelo y criterios de resultado: cuenta el total de tokens de entrada, salida y caché, las llamadas y el consumo de herramientas, además de la calidad final y el esfuerzo de revisión. Incluye el coste de registrar, buscar y verificar, no solo la última respuesta.</p><a href="../public/jarvis-evaluator-brief.md">Criterios para evaluar la experiencia</a> · <a href="../public/jarvis-adoption-guide.md">Adopción por etapas</a></details>
+<p class="lead" style="margin-top:1.5rem">Que el próximo «¿quién escribió esto?» termine en una decisión recuperada, no en otra expedición arqueológica.</p>
+</section>
+<section class="chapter" id="fuentes" tabindex="-1" aria-labelledby="titulo-fuentes">
+<p class="eyebrow">Apéndice / Para continuar y comprobar</p><h2 id="titulo-fuentes">La historia engancha.<br><span class="highlight">Las fuentes sostienen.</span></h2>
+<div class="grid"><div class="card"><h3>Evaluar y adoptar</h3><ul><li><a href="../public/jarvis-overview.md">Visión del ecosistema</a></li><li><a href="../public/jarvis-evaluator-brief.md">Evaluación del piloto</a></li><li><a href="../public/jarvis-adoption-guide.md">Adopción gradual</a></li><li><a href="../public/jarvis-security-and-privacy.md">Seguridad y privacidad</a></li></ul></div><div class="card"><h3>Usar y operar</h3><ul><li><a href="../hive/local-memory-guide.md">Memoria local y daemon</a></li><li><a href="../hive/sync-guide.md">Sincronización de memoria</a></li><li><a href="../hive/api-operator-guide.md">Operación de Hive API</a></li><li><a href="../hive/dashboard-guide.md">Despliegue y límites del dashboard</a></li><li><a href="../sdd-user-guide.md">Flujo SDD</a></li><li><a href="../setup-recovery.md">Recuperación del setup</a></li><li><a href="../getting-started.md">Primeros pasos</a></li></ul></div></div>
+<details><summary>Procedencia visual y alcance de la evidencia</summary><p>Las tres imágenes PNG son copias sin alterar de <code>docs/presentaciones/capturas/</code>: <code>WizardTUI.png</code>, <code>SeleccionHiveMode.png</code> y <code>SDDModelConfigs.png</code>. Se incluyen en <code>jarvis-ecosystem-assets/</code> para que este documento no dependa de otras guías. No documentan una ejecución realizada para esta presentación.</p><p>Paleta y emblema N inspirados en las guías de onboarding del repositorio; superficies y gradiente en <a href="../../hive-dashboard/src/styles.css">styles.css del dashboard</a>. Las viñetas y el esquema del dashboard son ilustraciones originales en HTML, no capturas. Sin recursos remotos ni reproducción del vídeo de referencia.</p><p>Esta presentación no sustituye una demostración ensayada ni un dossier de evidencia real. No afirma retornos medidos, tiempos de resolución ni certificaciones de plataforma.</p></details>
+</section>
+</main>
+<footer><span class="brand">NEXUS</span><p class="small">Jarvis Dev · recordar el motivo, compartir con criterio, verificar el cambio.</p><p class="small key-hint">Con navegación activa: ← / → o Re Pág / Av Pág · Inicio / Fin. Los controles de formularios y enlaces conservan sus teclas habituales. También puedes desplazarte normalmente.</p></footer>
+<nav class="controls" aria-label="Navegación entre capítulos" hidden>
+<div class="control-inner"><button type="button" id="anterior" aria-label="Capítulo anterior">← Anterior</button><div class="meter"><label for="progreso" id="estado" aria-live="polite" aria-atomic="true"></label><progress id="progreso" value="1" max="11"></progress></div><button type="button" id="siguiente" aria-label="Capítulo siguiente">Siguiente →</button><a class="small" href="#indice">Índice</a></div>
+</nav>
+<script>
+(() => {
+  'use strict';
+  const chapters = [...document.querySelectorAll('.chapter')];
+  const controls = document.querySelector('.controls');
+  const previous = document.getElementById('anterior');
+  const next = document.getElementById('siguiente');
+  const status = document.getElementById('estado');
+  const progress = document.getElementById('progreso');
+  const index = document.getElementById('indice');
+  let current = 0;
+  function update(value) {
+    current = Math.max(0, Math.min(chapters.length - 1, value));
+    previous.disabled = current === 0;
+    next.disabled = current === chapters.length - 1;
+    progress.max = chapters.length;
+    progress.value = current + 1;
+    status.textContent = `${current + 1} / ${chapters.length} · ${chapters[current].querySelector('.eyebrow').textContent.split('/').slice(1).join('/').trim()}`;
+  }
+  function go(value) {
+    update(value);
+    const chapter = chapters[current];
+    if (location.hash !== `#${chapter.id}`) history.pushState(null, '', `#${chapter.id}`);
+    chapter.focus({preventScroll: true});
+    chapter.scrollIntoView({block: 'start'});
+  }
+  function fromHash() {
+    const target = chapters.findIndex(chapter => `#${chapter.id}` === location.hash);
+    if (target >= 0) update(target);
+    if (location.hash === '#indice') index.open = true;
+  }
+  previous.addEventListener('click', () => go(current - 1));
+  next.addEventListener('click', () => go(current + 1));
+  window.addEventListener('hashchange', fromHash);
+  window.addEventListener('popstate', fromHash);
+  document.addEventListener('click', event => {
+    if (event.target.closest('a[href="#indice"]')) index.open = true;
+  });
+  document.addEventListener('keydown', event => {
+    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.target.closest('a,button,input,textarea,select,summary,[contenteditable], [role="textbox"]')) return;
+    const keys = {ArrowRight: current + 1, PageDown: current + 1, ArrowLeft: current - 1, PageUp: current - 1, Home: 0, End: chapters.length - 1};
+    if (!Object.prototype.hasOwnProperty.call(keys, event.key)) return;
+    event.preventDefault();
+    go(keys[event.key]);
+  });
+  let scheduled = false;
+  window.addEventListener('scroll', () => {
+    if (scheduled) return;
+    scheduled = true;
+    requestAnimationFrame(() => {
+      scheduled = false;
+      let visible = 0;
+      chapters.forEach((chapter, position) => {
+        if (chapter.getBoundingClientRect().top <= window.innerHeight * .4) visible = position;
+      });
+      if (visible !== current) update(visible);
+    });
+  }, {passive: true});
+  update(0);
+  fromHash();
+  controls.hidden = false;
+})();
+</script>
+</body>
+</html>
