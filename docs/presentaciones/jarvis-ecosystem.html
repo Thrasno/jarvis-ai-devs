@@ -41,19 +41,17 @@ header,main,footer{width:min(1160px,100%);margin:auto;padding:1.5rem}header{disp
 <li><a href="#skill-sdd-design">Design</a></li><li><a href="#skill-sdd-tasks">Tasks</a></li>
 <li><a href="#skill-sdd-apply">Apply</a></li><li><a href="#skill-sdd-verify">Verify</a></li>
 <li><a href="#skill-sdd-archive">Archive</a></li><li><a href="#entregas">Estoy cansado, jefe</a></li>
-<li><a href="#coleccion">Cómo leer la colección</a></li><li><a href="#skill-sdd-onboard">SDD Onboard</a></li>
+<li><a href="#coleccion">Cómo leer la colección</a></li>
 </ul>
 <h3>Continuidad y entrega · skills de equipo</h3>
 <ul>
-<li><a href="#skill-hive">Hive Memory</a></li><li><a href="#skill-issue-creation">Issue Creation</a></li>
-<li><a href="#skill-git-workflow">Git Workflow</a></li><li><a href="#skill-work-unit-commits">Work Unit Commits</a></li>
-<li><a href="#skill-chained-pr">Chained PR</a></li><li><a href="#skill-branch-pr">Branch &amp; PR</a></li>
+<li><a href="#skill-hive">Hive Memory</a></li><li><a href="#apoyo-entrega">Apoyo a la entrega</a></li>
 <li><a href="#skill-judgment-day">Judgment Day</a></li><li><a href="#skill-qa-checklist">QA Checklist</a></li>
 <li><a href="#skill-comment-writer">Comment Writer</a></li><li><a href="#skill-cognitive-doc-design">Cognitive Doc Design</a></li>
 </ul>
 <h3>PHP y Zoho · skills por dominio</h3>
 <ul>
-<li><a href="#skill-laravel-architecture">Laravel Architecture</a></li><li><a href="#skill-phpunit-testing">PHPUnit Testing</a></li>
+<li><a href="#skill-phpunit-testing">PHPUnit Testing</a></li>
 <li><a href="#skill-zoho-deluge">Zoho Deluge</a></li><li><a href="#skill-zoho-crm">Zoho CRM</a></li>
 <li><a href="#skill-zoho-books">Zoho Books</a></li><li><a href="#skill-zoho-creator">Zoho Creator</a></li>
 <li><a href="#skill-zoho-analytics">Zoho Analytics</a></li><li><a href="#skill-zoho-people">Zoho People</a></li>
@@ -86,8 +84,8 @@ header,main,footer{width:min(1160px,100%);margin:auto;padding:1.5rem}header{disp
 <p class="eyebrow">Hive local / Ticket antiguo, recuerdo nuevo</p>
 <h2 id="titulo-pasado">«¿Quién escribió esto?»<br><span class="highlight">«Ah, yo.»</span></h2>
 <div class="grid">
-<div><p class="lead">Reabren una clase de incidencia que arreglaste hace mucho.</p><p>«¿Dónde estaba esto y por qué puse este <code>if</code>?». Git encuentra tu nombre. Hive puede recuperar el motivo que registraste.</p><p>En nuestro ejemplo ficticio, una API devuelve HTTP 200 pero el resultado aún no es procesable. Tratar todo 200 como éxito descartaba trabajo pendiente.</p></div>
-<div class="comic"><div class="bubble"><span class="speaker">YO DE HOY</span>Este if parece innecesario. Casi como mi reunión de las ocho.</div><div class="bubble reply"><span class="speaker">YO DEL PASADO</span>No lo borres todavía. Dejé una nota sobre la respuesta de la API.</div><div class="bubble"><span class="speaker">NARRADOR</span>Por una vez, el yo del pasado ha dejado algo más que deuda técnica.</div></div>
+<div><p class="lead">Vuelves a un ticket antiguo y tardas un rato en encontrar el código.</p><p>Al mirar el historial reconoces el cambio: lo escribiste tú. Hay un <code>if</code> que parece innecesario, pero ya no recuerdas por qué lo pusiste.</p><p>Antes de borrarlo, buscas en Hive la explicación que dejaste registrada al resolver aquel ticket.</p></div>
+<div class="card"><h3>La nota aclara el motivo</h3><p>La API podía devolver HTTP 200 aunque el documento siguiera pendiente. Ese <code>if</code> evitaba marcarlo como procesado antes de poder usarlo.</p><p>Ahora sabes qué comprobar: la respuesta actual de la API y el test que protege ese caso. Con eso puedes decidir si la condición sigue siendo necesaria.</p></div>
 </div>
 <p class="takeaway">La memoria útil no dice solo qué cambiaste. Dice qué problema evitabas.</p>
 <p class="note">Caso inventado para explicar el mecanismo; no representa una API, cliente o incidente real.</p>
@@ -133,7 +131,7 @@ si status != "ready" o document == null:
 <p class="eyebrow">Ecosistema / Jarvis CLI</p>
 <h2 id="titulo-entrada">Una entrada común.<br><span class="highlight">No un ritual de copiar prompts.</span></h2>
 <div class="grid">
-<div class="card"><h3>Instalar y configurar</h3><p><code>jarvis</code> abre la entrada interactiva; <code>jarvis init</code> genera la configuración gestionada para el proveedor elegido.</p><p>Modelos por fase, integración de memoria, instrucciones y skills desde fuentes versionadas, preservando claves del usuario mediante merge.</p></div>
+<div class="card"><h3>Instalar, configurar y gestionar</h3><p><code>jarvis</code> abre la interfaz interactiva para instalar, configurar y gestionar el ecosistema.</p><p>Modelos por fase, integración de memoria, instrucciones y skills desde fuentes versionadas, preservando claves del usuario mediante merge.</p></div>
 <div class="card"><h3>Guiar, no decidir por ti</h3><p>Claude Code y OpenCode v1 reciben una base coherente. El equipo sigue eligiendo alcance, modelos, contexto que registra y qué comparte.</p><p>Las fases SDD no son una promesa de autonomía sin revisión.</p></div>
 </div>
 <details><summary>Una elección visible: local o local + cloud</summary>
@@ -250,17 +248,8 @@ si status != "ready" o document == null:
 <p class="eyebrow">Skills / Una caja de herramientas, no una pared de prompts</p>
 <h2 id="titulo-coleccion">La instrucción adecuada,<br><span class="highlight">cuando toca.</span></h2>
 <p class="lead">Una skill es un contrato de trabajo para la IA: cuándo activarse, qué comprobar, qué no inventar y qué devolver.</p>
-<div class="grid"><div class="card"><h3>Esta colección</h3><p>El catálogo empaquetado contiene 33 skills. Aquí recorremos 32: Go Testing queda fuera de esta presentación por elección expresa.</p><p>Las nueve fases SDD que acabamos de ver ya son sus nueve diapositivas individuales. Seguimos con onboarding, continuidad, entrega, PHP, Zoho y mantenimiento de skills.</p></div><div class="card"><h3>Instalación ≠ cargarlo todo siempre</h3><p>Hive y las nueve fases SDD son core. Las demás son optional; PHP y el pack Zoho tienen selección interactiva. Otras optional se preseleccionan en el setup actual.</p><p>Se cargan instrucciones relevantes al trabajo. «Por qué existe» describe intención de diseño visible en sus reglas, no una historia inventada del autor.</p></div></div>
+<div class="grid"><div class="card"><h3>Herramientas para el trabajo diario</h3><p>Las fases SDD organizan el cambio. Hive ayuda a conservar sus razones. Otras skills apoyan la revisión, las pruebas, la documentación y las integraciones con Zoho.</p><p>Veamos qué aporta cada una y en qué situaciones resulta útil.</p></div><div class="card"><h3>Instalar no es cargarlo todo siempre</h3><p>Hive y las nueve fases SDD forman la base. Las skills opcionales se eligen durante la configuración; PHP y Zoho tienen selección interactiva y otras vienen preseleccionadas.</p><p>En cada tarea se cargan las instrucciones relevantes. El equipo conserva sus decisiones sobre herramientas y forma de trabajar.</p></div></div>
 <details><summary>Catálogo frente a índice de carga</summary><p>El instalador registra los <code>SKILL.md</code> embebidos, salvo <code>_shared</code>. El registro de proyecto es otro índice: descubre rutas cargables y convenciones para delegar, y excluye las fases SDD de su scan de coding skills.</p><a href="../../jarvis-cli/internal/skills/registry.go">Catálogo instalable</a> · <a href="../../jarvis-cli/internal/tui/skills_selection.go">Selección de setup</a></details>
-</section>
-
-<section class="chapter" id="skill-sdd-onboard" data-skill="sdd-onboard" tabindex="-1" aria-labelledby="titulo-sdd-onboard">
-<p class="eyebrow">Skills / Aprender el flujo</p>
-<h2 id="titulo-sdd-onboard">SDD Onboard:<br><span class="highlight">aprender haciendo.</span></h2>
-<p class="lead">Un walkthrough narrado de un ciclo SDD sobre una mejora real, pequeña y de bajo riesgo.</p>
-<div class="grid"><div class="card"><h3>Qué aporta</h3><p>Explica cada artefacto y enseña cómo una especificación acaba en pruebas. Ejemplo: validar un dato fiscal ausente, no empezar por toda la integración contable.</p></div><div class="card"><h3>Por qué está separado</h3><p>Sus instrucciones priorizan enseñar con narraciones cortas, revisión de propuesta y parada ante bloqueos. Es apoyo de onboarding, no una décima fase canónica ni requisito core.</p></div></div>
-<p class="takeaway">Un cambio de verdad con acompañamiento, no un tutorial que nunca toca el proyecto.</p>
-<p class="note"><a href="../../jarvis-cli/embed/skills/sdd-onboard/SKILL.md">Fuente · SDD Onboard</a> · Optional.</p>
 </section>
 
 <section class="chapter" id="skill-hive" data-skill="hive" tabindex="-1" aria-labelledby="titulo-hive">
@@ -271,44 +260,12 @@ si status != "ready" o document == null:
 <p class="note"><a href="../../jarvis-cli/embed/skills/hive/SKILL.md">Fuente · Hive Memory</a> · Core.</p>
 </section>
 
-<section class="chapter" id="skill-issue-creation" data-skill="issue-creation" tabindex="-1" aria-labelledby="titulo-issue-creation">
-<p class="eyebrow">Skills / Del problema al backlog</p>
-<h2 id="titulo-issue-creation">Issue Creation:<br><span class="highlight">que el bug se pueda reproducir.</span></h2>
-<p class="lead">Guía para crear y triagear issues con plantillas, contexto y búsqueda de duplicados.</p>
-<div class="grid"><div class="card"><h3>Qué aporta · ejemplo</h3><p>«Dos peticiones generan dos borradores»: pasos mínimos, esperado frente a actual y entorno, sin volcar secretos ni datos reales de clientes.</p></div><div class="card"><h3>Por qué existe</h3><p>El contrato issue-first pide problema completo y aprobación antes de PR; evita implementar sobre un ticket vacío o repetido.</p><p>Etiquetas y automatismos son convenciones del workflow descrito: hay que adaptarlos a la política del repositorio destino, no asumir que GitHub los crea universalmente.</p></div></div>
-<p class="note"><a href="../../jarvis-cli/embed/skills/issue-creation/SKILL.md">Fuente · Issue Creation</a> · Optional.</p>
-</section>
-
-<section class="chapter" id="skill-git-workflow" data-skill="git-workflow" tabindex="-1" aria-labelledby="titulo-git-workflow">
-<p class="eyebrow">Skills / Historial comprensible</p>
-<h2 id="titulo-git-workflow">Git Workflow:<br><span class="highlight">el historial cuenta algo.</span></h2>
-<p class="lead">Convenciones de commits, ramas y preparación para merge.</p>
-<div class="grid"><div class="card"><h3>Qué aporta · ejemplo</h3><p><code>fix(invoicing): prevent duplicate drafts</code> cuenta el resultado mejor que «cosas» o «final_final_ahora_sí».</p><p>Cambios lógicos pequeños, CI y revisión antes de integrar.</p></div><div class="card"><h3>Por qué existe</h3><p>Sus reglas buscan historia legible y protegen main/master de force push. Las convenciones de rama se reconcilian con las reglas del proyecto y la skill de PR; no se mezclan sin pensar.</p></div></div>
-<p class="note"><a href="../../jarvis-cli/embed/skills/git-workflow/SKILL.md">Fuente · Git Workflow</a> · Optional.</p>
-</section>
-
-<section class="chapter" id="skill-work-unit-commits" data-skill="work-unit-commits" tabindex="-1" aria-labelledby="titulo-work-unit-commits">
-<p class="eyebrow">Skills / Unidad de entrega</p>
-<h2 id="titulo-work-unit-commits">Work Unit Commits:<br><span class="highlight">no separar el test de su motivo.</span></h2>
-<p class="lead">Planifica commits por comportamiento entregable, no por extensión de archivo.</p>
-<div class="grid"><div class="card"><h3>Qué aporta · ejemplo</h3><p>Validación de datos fiscales + tests de rechazo + guía de campos requeridos en la misma unidad. No «models», después «services», luego «tests» sin nada completo.</p></div><div class="card"><h3>Por qué existe</h3><p>Sus reglas conservan evidencia y documentación con el comportamiento. Facilitan revisión, rollback acotado y convertir una unidad en PR cuando el cambio crece.</p></div></div>
-<p class="note"><a href="../../jarvis-cli/embed/skills/work-unit-commits/SKILL.md">Fuente · Work Unit Commits</a> · Optional.</p>
-</section>
-
-<section class="chapter" id="skill-chained-pr" data-skill="chained-pr" tabindex="-1" aria-labelledby="titulo-chained-pr">
-<p class="eyebrow">Skills / Cuidar al reviewer</p>
-<h2 id="titulo-chained-pr">Chained PR:<br><span class="highlight">la feature tiene capítulos.</span></h2>
-<p class="lead">Organiza cambios grandes en PRs encadenadas con dependencias y límites explícitos.</p>
-<div class="grid"><div class="card"><h3>Qué aporta · ejemplo</h3><p>Validación → generación → recuperación → integración CRM. Cada PR conserva tests/docs y explica qué empieza, qué termina y de qué depende.</p></div><div class="card"><h3>Por qué existe</h3><p>Activa el control de carga ante más de unas 400 líneas cambiadas y exige cadena o excepción aceptada. Mantiene un diff centrado en la unidad actual.</p><p>La estrategia se acuerda: slices que pueden integrarse en orden o rama de feature con tracker draft/no-merge. No cambia de estrategia por su cuenta.</p></div></div>
-<p class="note"><a href="../../jarvis-cli/embed/skills/chained-pr/SKILL.md">Fuente · Chained PR</a> · Optional.</p>
-</section>
-
-<section class="chapter" id="skill-branch-pr" data-skill="branch-pr" tabindex="-1" aria-labelledby="titulo-branch-pr">
-<p class="eyebrow">Skills / Preparar la revisión</p>
-<h2 id="titulo-branch-pr">Branch &amp; PR:<br><span class="highlight">un diff con instrucciones de lectura.</span></h2>
-<p class="lead">Prepara rama y pull request con issue aprobado, tipo, resumen y plan de pruebas.</p>
-<div class="grid"><div class="card"><h3>Qué aporta · ejemplo</h3><p>La PR de idempotencia enlaza el problema, explica el cambio, enumera archivos y deja claro cómo se probó el doble intento.</p></div><div class="card"><h3>Por qué existe</h3><p>Su contrato evita PRs vacías y exige checks antes de merge. El reviewer no debería reconstruir la intención solo mirando el diff.</p><p>Plantillas, labels y checks nombrados pertenecen a la convención empaquetada; se contrastan con el repositorio donde se usa.</p></div></div>
-<p class="note"><a href="../../jarvis-cli/embed/skills/branch-pr/SKILL.md">Fuente · Branch &amp; PR</a> · Optional.</p>
+<section class="chapter" id="apoyo-entrega" tabindex="-1" aria-labelledby="titulo-apoyo-entrega">
+<p class="eyebrow">Skills / Apoyo a la entrega</p>
+<h2 id="titulo-apoyo-entrega">Del cambio terminado<br><span class="highlight">a la revisión del equipo.</span></h2>
+<p class="lead">Terminas un cambio y toca explicar el problema, ordenar los commits y preparar la PR para quien la va a revisar.</p>
+<p>También hay skills para redactar issues, trabajar con Git, agrupar commits por unidad de trabajo y preparar PRs, incluidas las encadenadas. Están disponibles según el flujo del equipo; no obligan a adoptar un proceso nuevo.</p>
+<details><summary>Fuentes de estas herramientas</summary><p><a href="../../jarvis-cli/embed/skills/issue-creation/SKILL.md">Issues</a> · <a href="../../jarvis-cli/embed/skills/git-workflow/SKILL.md">Git</a> · <a href="../../jarvis-cli/embed/skills/work-unit-commits/SKILL.md">Unidades de trabajo</a> · <a href="../../jarvis-cli/embed/skills/branch-pr/SKILL.md">Preparación de PRs</a> · <a href="../../jarvis-cli/embed/skills/chained-pr/SKILL.md">PRs encadenadas</a></p></details>
 </section>
 
 <section class="chapter" id="skill-judgment-day" data-skill="judgment-day" tabindex="-1" aria-labelledby="titulo-judgment-day">
@@ -341,14 +298,6 @@ si status != "ready" o document == null:
 <p class="lead">Estructura guías y documentos para reducir carga cognitiva mediante bloques y detalle progresivo.</p>
 <div class="grid"><div class="card"><h3>Qué aporta · ejemplo</h3><p>Guía de facturación: quién puede generar, datos necesarios y camino feliz primero; errores y notas técnicas desplegables después.</p></div><div class="card"><h3>Por qué existe</h3><p>Sus patrones favorecen reconocimiento sobre memoria, señalización y empatía con el reviewer. Una decisión no debería requerir arqueología documental.</p></div></div>
 <p class="note"><a href="../../jarvis-cli/embed/skills/cognitive-doc-design/SKILL.md">Fuente · Cognitive Doc Design</a> · Optional.</p>
-</section>
-
-<section class="chapter" id="skill-laravel-architecture" data-skill="laravel-architecture" tabindex="-1" aria-labelledby="titulo-laravel-architecture">
-<p class="eyebrow">Skills / PHP · estructura de aplicación</p>
-<h2 id="titulo-laravel-architecture">Laravel Architecture:<br><span class="highlight">el controller no es el universo.</span></h2>
-<p class="lead">Convenciones Laravel: controllers finos, FormRequest, servicios, repositorios y jobs para trabajo lento.</p>
-<div class="grid"><div class="card"><h3>Qué aporta · ejemplo</h3><p>En una integración de facturas: FormRequest valida/autoriza, servicio aplica reglas, repositorio accede a datos y job atiende la operación externa lenta.</p></div><div class="card"><h3>Por qué existe</h3><p>Sus instrucciones separan HTTP, negocio y acceso a datos para mantener responsabilidades visibles y testeables. Evitan meter validación, persistencia y efectos externos en un único controller.</p></div></div>
-<p class="note"><a href="../../jarvis-cli/embed/skills/laravel-architecture/SKILL.md">Fuente · Laravel Architecture</a> · Optional · selección PHP.</p>
 </section>
 
 <section class="chapter" id="skill-phpunit-testing" data-skill="phpunit-testing" tabindex="-1" aria-labelledby="titulo-phpunit-testing">
