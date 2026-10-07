@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="480" viewBox="0 0 760 480" role="img" aria-labelledby="title desc">
+  <title id="title">Pánico en la oficina: las remesas de Portic se han roto</title>
+  <desc id="desc">Dos figuras de palo preocupadas ante un monitor con una alerta. Una pide ayuda a Fran; la otra recuerda que está en un festival.</desc>
+  <defs>
+    <linearGradient id="wall" x2="1" y2="1"><stop stop-color="#121a2b"/><stop offset="1" stop-color="#080a10"/></linearGradient>
+  </defs>
+  <rect width="760" height="480" rx="20" fill="url(#wall)"/>
+  <path d="M30 425H730" stroke="#34415a" stroke-width="3"/>
+  <g fill="#121a2b" stroke="#34415a" stroke-width="3">
+    <rect x="540" y="35" width="170" height="120" rx="5"/>
+    <path d="M625 35V155M540 95H710"/>
+  </g>
+  <g fill="#e6edf3" font-family="system-ui, sans-serif" font-size="25" font-weight="600">
+    <text x="36" y="46" fill="#ff94bc">PORTIC · REMESAS</text>
+  </g>
+  <!-- Authored speech balloons, integrated with the scene rather than chat UI. -->
+  <path d="M40 72H342Q360 72 360 90V149Q360 167 342 167H191L172 192L174 167H58Q40 167 40 149Z" fill="#e6edf3"/>
+  <g fill="#0e1320" font-family="system-ui, sans-serif" font-size="24" font-weight="600">
+    <text x="60" y="108">¡Se han roto!</text>
+    <text x="60" y="143">¿Dónde está Fran?</text>
+  </g>
+  <path d="M390 180H708Q726 180 726 198V235Q726 253 708 253H480L454 278L459 253H408Q390 253 390 235Z" fill="#a8caff"/>
+  <text x="410" y="225" fill="#0e1320" font-family="system-ui, sans-serif" font-size="24" font-weight="600">En el Resurrection Fest.</text>
+  <!-- Desk and failing terminal. -->
+  <g stroke="#bbc7d8" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M210 348H440M230 349V424M420 349V424"/>
+    <rect x="272" y="243" width="146" height="92" rx="8" fill="#080a10"/>
+    <path d="M345 335V347"/>
+  </g>
+  <path d="M342 260L368 308H316Z" fill="#e0246f"/>
+  <path d="M342 277V292M342 300V302" stroke="#fff" stroke-width="4"/>
+  <!-- Panicked colleague, raised arms and sweat marks. -->
+  <g fill="none" stroke="#e6edf3" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="167" cy="231" r="30"/>
+    <path d="M166 261V343L124 418M166 343L203 419M166 284L117 267L94 215M166 284L210 269L230 207"/>
+    <path d="M155 237Q166 226 179 237" stroke-width="3"/>
+  </g>
+  <g stroke="#e0a22e" stroke-width="4" stroke-linecap="round">
+    <path d="M121 195L111 183M153 185L151 171M200 197L212 184"/>
+  </g>
+  <!-- Colleague consulting the situation, not repairing it automatically. -->
+  <g fill="none" stroke="#a8caff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="536" cy="294" r="28"/>
+    <path d="M536 322V367L500 420M536 367L573 421M536 342L493 327L472 294M536 342L576 350L603 328"/>
+  </g>
+  <text x="293" y="458" fill="#bbc7d8" font-family="system-ui, sans-serif" font-size="21">Una incidencia. El experto no está.</text>
+</svg>

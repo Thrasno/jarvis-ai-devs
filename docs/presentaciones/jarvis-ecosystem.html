@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Jarvis Dev: memoria local y compartida, SDD y skills para desarrollar con contexto. Presentación Nexus para compañeros desarrolladores.">
+<title>NEXUS · Jarvis Dev: que el contexto no se vaya de vacaciones</title>
+<style>
+:root{color-scheme:dark;--bg:#080a10;--panel:#0e1320;--raised:#121a2b;--text:#e6edf3;--muted:#bbc7d8;--line:#34415a;--accent:#e0246f;--amber:#e0a22e;--blue:#a8caff;--gradient:linear-gradient(110deg,#e0246f,#8b5cf0,#3b82e8)}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:2rem}body{margin:0;background:var(--bg);color:var(--text);font:1.08rem/1.65 system-ui,-apple-system,"Segoe UI",sans-serif}a{color:var(--blue);text-underline-offset:.22em}a:hover{color:#fff}button,summary,a{touch-action:manipulation}:focus-visible{outline:3px solid var(--amber);outline-offset:5px}.skip{position:absolute;left:1rem;top:-10rem;z-index:5;background:var(--panel);padding:1rem}.skip:focus{top:1rem}
+header,main,footer{width:min(1160px,100%);margin:auto;padding:1.5rem}header{display:flex;justify-content:space-between;align-items:center;gap:1rem}.brand{display:flex;gap:.65rem;align-items:center;font-weight:800;letter-spacing:.16em}.brand svg{width:36px;height:36px}.small,.note,figcaption{font-size:.88rem;color:var(--muted)}.eyebrow{font:700 .8rem/1.5 ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}h1,h2,h3,p{margin-top:0}h1,h2{font-size:clamp(2.25rem,5.4vw,4.5rem);line-height:1.08;letter-spacing:-.035em;max-width:22ch;margin-bottom:1.5rem}h3{font-size:1.18rem;line-height:1.3}p{max-width:65ch}strong{color:var(--text)}.lead{font-size:clamp(1.2rem,2.3vw,1.6rem);line-height:1.5}.highlight{color:#ff94bc}.chapter{position:relative;min-height:78vh;padding:clamp(1.4rem,4.8vw,4rem);margin-bottom:2rem;border:1px solid var(--line);border-radius:24px;background:linear-gradient(150deg,var(--raised),var(--panel) 65%);scroll-margin-bottom:6rem}.chapter:before{content:"";position:absolute;top:0;left:2rem;right:2rem;height:3px;background:var(--gradient)}.chapter:focus{outline:2px solid var(--amber);outline-offset:4px}.hero{background:radial-gradient(ellipse at 95% 0%,#35214c 0,transparent 58%),var(--panel)}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.2rem}.thirds{grid-template-columns:repeat(3,minmax(0,1fr))}.card{padding:1.4rem;border:1px solid var(--line);border-radius:16px;background:var(--bg)}.card p:last-child{margin-bottom:0}.pill{display:inline-block;border:1px solid var(--line);border-radius:99px;padding:.25rem .8rem;margin:0 .3rem .5rem 0;font-size:.82rem;color:var(--muted)}.takeaway{border-left:4px solid var(--accent);padding:.6rem 1rem;margin-top:1.6rem;font-size:1.2rem;background:var(--raised)}.comic{display:grid;gap:.8rem;align-content:center}.bubble{border:1px solid var(--line);padding:1rem 1.3rem;border-radius:18px 18px 18px 3px;background:var(--raised)}.bubble.reply{margin-left:2rem;border-color:#8b5cf0;border-radius:18px 18px 3px 18px}.speaker{display:block;font:.8rem ui-monospace,monospace;color:var(--muted);margin-bottom:.4rem}.scene{font-size:3.4rem;line-height:1.2}.step{color:var(--amber);font:700 .85rem ui-monospace,monospace}figure{margin:1.2rem 0}img{display:block;max-width:100%;height:auto;border:1px solid var(--line);border-radius:10px}figcaption{margin-top:.65rem}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere;color:#c7dcff}pre{overflow:auto;padding:1.1rem;border:1px solid var(--line);border-radius:10px;background:var(--bg);line-height:1.7}details{margin-top:1.5rem;border-top:1px solid var(--line);padding-top:1rem}summary{cursor:pointer;color:var(--blue);font-weight:650}details[open] summary{margin-bottom:1rem}ul,ol{padding-left:1.3rem}li{margin:.5rem 0}.index ul{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.25rem 2rem}.index{margin:0 0 2rem;padding:1.4rem;border:1px solid var(--line);border-radius:16px}.index summary{font-size:1rem}.dashboard{border:1px solid var(--line);border-radius:16px;overflow:hidden;background:var(--bg)}.dash-head{padding:1rem;border-bottom:1px solid var(--line);font-weight:800;letter-spacing:.1em}.dash-body{display:grid;grid-template-columns:130px 1fr;min-height:220px}.dash-menu{padding:1rem;border-right:1px solid var(--line);font-size:.8rem;color:var(--muted);line-height:2}.dash-content{padding:1.2rem}.record{margin:.6rem 0;padding:.7rem;border-left:3px solid #8b5cf0;background:var(--raised)}
+.controls{position:sticky;bottom:0;z-index:3;background:#0e1320f5;border-top:1px solid var(--line);padding:.6rem 1rem}.controls[hidden]{display:none}.control-inner{max-width:1112px;margin:auto;display:flex;align-items:center;gap:1rem}.controls button{font:inherit;background:var(--raised);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:.55rem 1rem;cursor:pointer}.controls button:disabled{opacity:.5;cursor:default}.meter{flex:1;min-width:0}.meter label{display:block;font-size:.8rem}progress{display:block;width:100%;height:6px;accent-color:var(--accent);margin-top:.4rem}footer{padding-bottom:2rem}noscript p{padding:1rem;border:1px solid var(--line)}
+@media(max-width:760px){header{align-items:flex-start}.grid,.thirds{grid-template-columns:minmax(0,1fr)}.grid>*{min-width:0}.chapter{min-height:auto;margin-bottom:1rem}.index ul{grid-template-columns:1fr}.control-inner{gap:.5rem}.controls button{padding:.55rem .6rem;font-size:.85rem}.controls .key-hint{display:none}.dash-body{grid-template-columns:1fr}.dash-menu{border-right:0;border-bottom:1px solid var(--line)}h1,h2{max-width:none}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{animation:none!important;transition:none!important}}
+@page{size:A4;margin:15mm}
+@media print{:root{color-scheme:light;--bg:#fff;--panel:#fff;--raised:#f1f5fa;--text:#172d43;--muted:#40546b;--line:#b3c1d1;--blue:#1555a0}body{font-size:11pt}header,main,footer{width:100%;padding:0}.chapter{min-height:0;border-radius:0;background:white;padding:1rem 0;break-before:page;margin:0}.chapter:first-child{break-before:auto}h1,h2{font-size:30pt}.controls,.skip,.index,.key-hint{display:none!important}.grid{display:block}.card,figure,.dashboard{break-inside:avoid;margin-bottom:1rem}.highlight{color:#9d1649}code{color:#1555a0}.hero{background:white}.bubble{background:#f1f5fa}.chapter:before{display:none}details{display:block}details::details-content{content-visibility:visible}details>*{display:block!important}summary{color:var(--text)}a{text-decoration:underline}pre{white-space:pre-wrap}footer{margin-top:1rem}}
+.document-figure{margin:1.8rem 0}
+.document-figure a{display:block}
+.document-figure img{width:100%}
+.document-figure figcaption a{display:inline}
+.document-detail{max-width:902px;margin:1.8rem auto}
+.review-grid{grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);align-items:start}
+.review-grid>*{min-width:0}
+@media(max-width:760px){.review-grid{grid-template-columns:minmax(0,1fr)}}
+.scene-figure{margin:0}
+.scene-figure img,.admin-figure img{width:100%}
+.admin-figure{max-width:880px;margin:1.2rem auto}
+</style>
+</head>
+<body>
+<a class="skip" href="#inicio">Saltar al contenido</a>
+<header>
+<div class="brand" aria-label="Nexus"><svg viewBox="0 0 100 100" aria-hidden="true" focusable="false"><polygon points="9,11 30,11 30,89 9,89" fill="#22b85c"/><polygon points="70,11 91,11 91,89 70,89" fill="#e0246f"/><polygon points="30,11 49,11 70,89 51,89" fill="#3b82e8"/></svg>NEXUS</div>
+<span class="small">Jarvis Dev · para quienes construyen software</span>
+</header>
+<main>
+<details class="index" id="indice">
+<summary>El recorrido · <span id="total-capitulos">ecosistema, SDD y colección de skills</span></summary>
+<nav aria-label="Índice de la presentación">
+<h3>Ecosistema · preparar, recordar y compartir</h3>
+<ul>
+<li><a href="#inicio">Qué es Jarvis Dev</a></li>
+<li><a href="#yo-del-pasado">SNG: recuperar el histórico salarial</a></li>
+<li><a href="#vacaciones">Fran está en el Resurrection Fest</a></li><li><a href="#dashboard">Nexus Hive: memoria compartida</a></li>
+<li><a href="#entrada">Instalar y configurar</a></li>
+<li><a href="#sdd">Facturas desde oportunidades CRM</a></li><li><a href="#almacen">Dónde vive el plan</a></li>
+</ul>
+<h3>SDD · de las preguntas a la evidencia (skills de fase)</h3>
+<ul>
+<li><a href="#skill-sdd-init">Init</a></li><li><a href="#skill-sdd-explore">Explore</a></li>
+<li><a href="#skill-sdd-propose">Proposal</a></li><li><a href="#skill-sdd-spec">Spec</a></li>
+<li><a href="#skill-sdd-design">Design</a></li><li><a href="#skill-sdd-tasks">Tasks</a></li>
+<li><a href="#skill-sdd-apply">Apply</a></li><li><a href="#skill-sdd-verify">Verify</a></li>
+<li><a href="#skill-sdd-archive">Archive</a></li><li><a href="#entregas">Estoy cansado, jefe</a></li>
+</ul>
+<h3>Continuidad y entrega · skills de equipo</h3>
+<ul>
+<li><a href="#skill-hive">Hive Memory</a></li><li><a href="#apoyo-entrega">Apoyo a la entrega</a></li>
+<li><a href="#skill-judgment-day">Judgment Day</a></li><li><a href="#skill-qa-checklist">QA Checklist</a></li>
+<li><a href="#skill-comment-writer">Comment Writer</a></li><li><a href="#skill-cognitive-doc-design">Cognitive Doc Design</a></li>
+</ul>
+<h3>PHP y Zoho · skills por dominio</h3>
+<ul>
+<li><a href="#skill-phpunit-testing">PHPUnit Testing</a></li>
+<li><a href="#skill-zoho-deluge">Deluge y aplicaciones Zoho</a></li>
+</ul>
+<h3>Mantener las instrucciones · skills y cierre</h3>
+<ul>
+<li><a href="#skill-skill-creator">Skill Creator</a></li><li><a href="#skill-skill-improver">Skill Improver</a></li>
+<li><a href="#skill-skill-registry">Skill Registry</a></li><li><a href="#experiencia">Dos meses de beta</a></li>
+</ul>
+</nav>
+</details>
+<noscript><p>Esta presentación se lee completa sin JavaScript. Usa el índice o desplázate; todas las diapositivas están visibles.</p></noscript>
+
+<section class="chapter hero" id="inicio" tabindex="-1" aria-labelledby="titulo-inicio">
+<p class="eyebrow">Ecosistema / Qué estamos construyendo</p>
+<h1 id="titulo-inicio">Jarvis Dev: el contexto <span class="highlight">también es infraestructura.</span></h1>
+<p class="lead">Un ecosistema para desarrollar con IA sin empezar de cero en cada sesión: instala y configura herramientas, conserva conocimiento y guía cambios desde la intención hasta la verificación.</p>
+<div class="grid">
+<div class="card"><h3>Jarvis CLI · preparar y guiar</h3><p>Instalación y comandos de entrada; configuración de Claude Code y OpenCode en v1, modelos por fase, flujo SDD y distribución de la colección de skills.</p></div>
+<div class="card"><h3>Hive · recordar en local</h3><p><code>hive-daemon</code> sirve memoria de proyecto en SQLite. Recupera contexto registrado incluso sin conexión al servicio compartido.</p></div>
+<div class="card"><h3>Hive Cloud / Hive API · compartir</h3><p>El mismo conocimiento puede llegar al equipo mediante sincronización configurada. «Cloud» nombra la capa compartida; disponibilidad y garantías dependen de su despliegue.</p></div>
+<div class="card"><h3>Nexus Hive · ver y administrar</h3><p>Dashboard de la memoria <strong>compartida</strong> en Hive API. No abre directamente tu SQLite local ni controla tu daemon.</p></div>
+</div>
+</section>
+
+<section class="chapter" id="yo-del-pasado" tabindex="-1" aria-labelledby="titulo-pasado">
+<p class="eyebrow">Hive local / Recuperar detalles que ya registramos</p>
+<h2 id="titulo-pasado">Lo resolviste una vez.<br><span class="highlight">No empieces de cero.</span></h2>
+<p class="lead">En el equipo te preguntan por aquel cambio del histórico salarial de SNG. Recuerdas lo básico: conservamos los salarios anteriores y sus periodos de vigencia. Los nombres de funciones y campos, no tanto.</p>
+<p>Se lo preguntas al agente. Recupera el contexto registrado: <code>activateDeactivateSalary.dg</code>, el módulo <code>salary</code> y los campos que delimitan cada periodo.</p>
+<figure class="document-figure">
+<a href="jarvis-ecosystem-assets/sng-recuerdo-agente.png" aria-label="Abrir la captura real de la respuesta del agente a tamaño completo">
+<img src="jarvis-ecosystem-assets/sng-recuerdo-agente.png" width="1130" height="272" loading="lazy" alt="Respuesta real del agente: identifica activateDeactivateSalary.dg, el módulo salary y Validity_start_date_salary / Validity_end_date_salary; enumera también otros históricos de Zoho People.">
+</a>
+<figcaption>Respuesta del agente sobre el histórico salarial. <a href="jarvis-ecosystem-assets/sng-recuerdo-agente.png">Abrir a tamaño completo</a>.</figcaption>
+</figure>
+<details><summary>La continuidad depende de lo registrado</summary><p>El agente recupera las memorias relevantes de Hive; no hace falta buscar cada día a mano en un dashboard. El daemon conserva memoria en SQLite local y puede trabajar sin Hive API. No ingiere todo el código ni reconstruye detalles que nunca se guardaron.</p><a href="../hive/local-memory-guide.md">Guía de Hive local</a></details>
+</section>
+
+<section class="chapter" id="vacaciones" tabindex="-1" aria-labelledby="titulo-vacaciones">
+<p class="eyebrow">Hive Cloud / Historia ilustrativa propuesta por el equipo</p>
+<h2 id="titulo-vacaciones">Las remesas de Portic.<br><span class="highlight">Y Fran en el Resurrection Fest.</span></h2>
+<div class="grid">
+<figure class="scene-figure">
+<img src="jarvis-ecosystem-assets/remesas-oficina.svg" width="760" height="480" loading="lazy" alt="Dos compañeros en una oficina, alarmados ante las remesas de Portic rotas: «¿Dónde está Fran?»">
+<figcaption>Oficina: una incidencia y el experto fuera. Ilustración original.</figcaption>
+</figure>
+<figure class="scene-figure">
+<img src="jarvis-ecosystem-assets/fran-resurrection.svg" width="760" height="480" loading="lazy" alt="Fran levanta los brazos entre el público del Resurrection Fest, frente a un escenario con guitarrista.">
+<figcaption>Fran: entre guitarras, no pendiente del móvil. Ilustración original.</figcaption>
+</figure>
+</div>
+<p class="lead">«Pidamos al agente las causas y soluciones que dejamos registradas».</p>
+<p>Si las notas de Fran se sincronizaron con la memoria compartida, el equipo puede recuperarlas con el agente, localizar código y pruebas y contrastar el fallo actual. Son pistas para investigar, no una reparación automática.</p>
+<details><summary>Lo que debe estar preparado antes</summary><p>Hive API disponible, endpoint y credenciales configurados fuera de Git, daemon reiniciado tras cambios y proyecto autorizado para compartir. Sync manual mediante <code>mem_sync</code>; el fondo automático requiere habilitación explícita. Solo se recupera lo registrado y sincronizado.</p><p>Es una historia ilustrativa aportada por el usuario, sin datos de cliente, payloads reales ni tiempos de resolución.</p><a href="../hive/sync-guide.md">Guía de sincronización de memoria</a></details>
+</section>
+
+<section class="chapter" id="dashboard" tabindex="-1" aria-labelledby="titulo-dashboard">
+<p class="eyebrow">Nexus Hive / Ver y administrar conocimiento compartido</p>
+<h2 id="titulo-dashboard">La memoria del equipo,<br><span class="highlight">a la vista.</span></h2>
+<p class="lead">Administrar la memoria compartida: observar su actividad, inspeccionar proyectos y cuidar quién participa.</p>
+<figure class="admin-figure">
+<img src="jarvis-ecosystem-assets/nexus-administracion.svg" width="1000" height="560" loading="lazy" alt="Mapa ilustrado de Hive API con memorias y sesiones, actividad y salud de sincronización, inspección de proyectos, usuarios y cuarentena bajo supervisión humana.">
+<figcaption>Ilustración original de capacidades verificadas; no es una captura del dashboard ni muestra métricas de un despliegue real.</figcaption>
+</figure>
+<p>Resumen de memorias y proyectos activos; memorias, sesiones y última actividad por proyecto. La vista administrativa añade usuarios sincronizando, proyectos degradados, crecimiento del conocimiento y salud de sincronización.</p>
+<details><summary>Supervisión, no limpieza automática</summary><p>Inspeccionar proyectos permite revisar posibles duplicados. Nexus no ofrece fusión o borrado web de proyectos ni detección o deduplicación automática. Usuarios y cuarentena requieren permisos; poner un proyecto en cuarentena exige motivo y confirmación de su clave canónica.</p><p><strong>Es Hive API lo que ves:</strong> el dashboard no administra directamente el SQLite de tu portátil ni arranca tu daemon local.</p><p class="small">Capacidades contrastadas en <a href="../../hive-dashboard/src/views/Overview.ts">Overview</a> y <a href="../../hive-dashboard/src/views/Projects.ts">Projects</a>.</p></details>
+<details><summary>Despliegue y límites</summary><p>Interfaz opcional servida por Hive API con assets configurados, autenticación y controles de acceso adecuados. La disponibilidad compartida depende del despliegue; la resiliencia offline corresponde al Hive local.</p><a href="../hive/dashboard-guide.md">Guía del dashboard</a> · <a href="../public/jarvis-security-and-privacy.md">Seguridad y privacidad</a></details>
+</section>
+
+<section class="chapter" id="entrada" tabindex="-1" aria-labelledby="titulo-entrada">
+<p class="eyebrow">Ecosistema / Jarvis CLI</p>
+<h2 id="titulo-entrada">Una entrada común.<br><span class="highlight">No un ritual de copiar prompts.</span></h2>
+<div class="grid">
+<div class="card"><h3>Instalar, configurar y gestionar</h3><p><code>jarvis</code> abre la interfaz interactiva para instalar, configurar y gestionar el ecosistema.</p><p>Modelos por fase, integración de memoria, instrucciones y skills desde fuentes versionadas, preservando claves del usuario mediante merge.</p></div>
+<div class="card"><h3>Guiar, no decidir por ti</h3><p>Claude Code y OpenCode v1 reciben una base coherente. El equipo sigue eligiendo alcance, modelos, contexto que registra y qué comparte.</p><p>Las fases SDD no son una promesa de autonomía sin revisión.</p></div>
+</div>
+<details><summary>Una elección visible: local o local + cloud</summary>
+<figure><a href="jarvis-ecosystem-assets/SeleccionHiveMode.png"><img src="jarvis-ecosystem-assets/SeleccionHiveMode.png" width="1770" height="239" loading="lazy" alt="Captura del repositorio: selector de ámbito local-only o local+cloud."></a><figcaption>Captura existente, sin alterar. Elegir ámbito no acredita conexión ni sincronización completada.</figcaption></figure>
+<p><a href="../installation.md">Instalación</a> · <a href="../getting-started.md">Primeros pasos</a></p>
+</details>
+</section>
+
+<section class="chapter hero" id="sdd" tabindex="-1" aria-labelledby="titulo-sdd">
+<p class="eyebrow">SDD / Un caso, nueve fases</p>
+<h2 id="titulo-sdd">«Generar factura desde<br><span class="highlight">la oportunidad del CRM».</span></h2>
+<p class="lead">No vamos a construir «solo un botón». Vamos a acordar qué significa facturar y cómo demostrarlo.</p>
+<div class="grid">
+<div class="card"><h3>Las preguntas de negocio</h3><p>¿Cuándo se puede facturar? ¿Qué datos fiscales y líneas son obligatorios? ¿Quién decide impuestos y redondeo? ¿Quién tiene permiso?</p></div>
+<div class="card"><h3>Las preguntas que evitan sustos</h3><p>¿Qué pasa al pulsar dos veces? ¿Y si la API falla o devuelve timeout después de crear? ¿Cómo conciliamos antes de reintentar?</p></div>
+</div>
+<p class="takeaway">Init → Explore → Proposal → Spec → Design → Tasks → Apply → Verify → Archive.</p>
+<p class="note">Recorrido didáctico: reglas y artefactos de ejemplo, no requisitos aprobados de un cliente ni contratos inventados de Zoho.</p>
+</section>
+
+<section class="chapter" id="almacen" tabindex="-1" aria-labelledby="titulo-almacen">
+<p class="eyebrow">SDD / Decisiones antes de arrancar</p>
+<h2 id="titulo-almacen">El plan no vive <span class="highlight">solo en el chat.</span></h2>
+<div class="grid">
+<div class="card"><h3>Activación deliberada</h3><p>El preflight acuerda almacenamiento, modo de ejecución y estrategia de entrega. En modo interactivo, Proposal abre preguntas y confirma respuestas; en auto omite esa ronda.</p><p>Automatizar fases no elimina las decisiones pendientes ni los límites de escritura.</p></div>
+<div class="card"><h3>Cuatro modos de artefactos</h3><p><code>hive</code>: por defecto, artefactos en Hive.<br><code>openspec</code>: archivos de proyecto.<br><code>hybrid</code>: ambos, coherentes.<br><code>none</code>: resultado inline, sin persistencia SDD.</p><p>El binding persistido por proyecto/cambio no se cambia silenciosamente. Una divergencia hybrid bloquea; no gana la copia «más cómoda».</p></div>
+</div>
+
+</section>
+
+<section class="chapter" id="skill-sdd-init" data-skill="sdd-init" tabindex="-1" aria-labelledby="titulo-sdd-init">
+<p class="eyebrow">SDD / Init · calibrar el proyecto</p>
+<h2 id="titulo-sdd-init">Antes del plano,<br><span class="highlight">mira el terreno.</span></h2>
+<p class="lead">SDD Init detecta stack, arquitectura, convenciones y capacidades de pruebas reales.</p>
+<div class="grid"><div class="card"><h3>En nuestra facturación</h3><p>Localizar integración CRM, servicio de facturación, tests y comandos existentes. Si es Laravel, detectar PHPUnit en vez de inventar un runner.</p><p><strong>Output:</strong> contexto de proyecto, capacidades de testing y <code>.jarvis/skill-registry.md</code>; en OpenSpec, bootstrap/configuración.</p></div><div class="card"><h3>Valor y razón de diseño</h3><p>Evita diseñar para un proyecto imaginario. Sus instrucciones exigen detectar, no adivinar, y guardar las capacidades para las fases posteriores.</p><p>Strict TDD se resuelve desde configuración; sin marcador pero con runner, se activa por defecto. Sin runner, se explica su ausencia.</p></div></div>
+<p class="note"><a href="../../jarvis-cli/embed/skills/sdd-init/SKILL.md">Fuente · SDD Init</a> · Core · fase canónica 1/9.</p>
+</section>
+
+<section class="chapter" id="skill-sdd-explore" data-skill="sdd-explore" tabindex="-1" aria-labelledby="titulo-sdd-explore">
+<p class="eyebrow">SDD / Explore · investigar sin implementar</p>
+<h2 id="titulo-sdd-explore">¿Cuándo una oportunidad<br><span class="highlight">es facturable?</span></h2>
+<p class="lead">SDD Explore lee código, compara opciones y revela restricciones antes de comprometer alcance.</p>
+<div class="grid"><div class="card"><h3>Preguntas de nuestro caso</h3><p>¿Disparo manual o por estado? ¿Dónde están los datos fiscales? ¿Hay función estándar compatible? ¿Qué falla hoy?</p><p><strong>Output:</strong> <code>explore.md</code> para el cambio nombrado: estado actual, áreas afectadas, alternativas, recomendación y riesgos.</p></div><div class="card"><h3>Valor y razón de diseño</h3><p>Nos permite descubrir que faltan datos antes de escribir 1.000 líneas. La skill prohíbe modificar código y pide reconocer información insuficiente.</p><p>La exploración puede recomendar un borrador manual como primer alcance, pero esa decisión debe acordarse.</p></div></div>
+<p class="note"><a href="../../jarvis-cli/embed/skills/sdd-explore/SKILL.md">Fuente · SDD Explore</a> · Core · fase canónica 2/9.</p>
+</section>
+
+<section class="chapter" id="skill-sdd-propose" data-skill="sdd-propose" tabindex="-1" aria-labelledby="titulo-sdd-propose">
+<p class="eyebrow">SDD / Proposal · acordar el porqué y el alcance</p>
+<h2 id="titulo-sdd-propose">Facturar sí.<br><span class="highlight">Rehacer contabilidad, no.</span></h2>
+<p class="lead">En modo interactivo, SDD Propose abre una o más rondas de preguntas: tus respuestas afinan requisitos y límites hasta acordar una propuesta documentada.</p>
+<div class="grid"><div class="card"><h3>Propuesta ilustrativa</h3><p>Crear un borrador bajo acción autorizada, con datos validados y control de duplicados. Fuera: envío automático, cobros y migración histórica.</p><p><strong>Output:</strong> <code>proposal.md</code>: capacidades nuevas/modificadas, impacto, riesgos, dependencias, rollback y éxito observable.</p></div><div class="card"><h3>Valor y razón de diseño</h3><p>Da un contrato a Spec y evita el «ya que estamos». Sus instrucciones obligan a declarar exclusiones, rollback y criterios de éxito.</p><p>En modo auto no hace esas rondas interactivas. Las incógnitas no se convierten por ello en hechos verificados.</p></div></div>
+<figure class="document-figure">
+<a href="jarvis-ecosystem-assets/sdd-propose-documento.png" aria-label="Abrir la propuesta real a tamaño completo"><img src="jarvis-ecosystem-assets/sdd-propose-documento.png" width="1607" height="628" loading="lazy" alt="Fragmento de propuesta real: circuito CRM, cola Creator y Flow; diferencia espera, disponibilidad de pedidos y reintentos."></a>
+<figcaption>Propuesta real de facturación: alcance y enfoque acordados. <a href="jarvis-ecosystem-assets/sdd-propose-documento.png">Abrir a tamaño completo</a>.</figcaption>
+</figure>
+<p class="note"><a href="../../jarvis-cli/embed/skills/sdd-propose/SKILL.md">Fuente · SDD Propose</a> · Core · fase canónica 3/9.</p>
+</section>
+
+<section class="chapter" id="skill-sdd-spec" data-skill="sdd-spec" tabindex="-1" aria-labelledby="titulo-sdd-spec">
+<p class="eyebrow">SDD / Spec · definir comportamiento observable</p>
+<h2 id="titulo-sdd-spec">«Funciona» necesita<br><span class="highlight">un entonces.</span></h2>
+<p class="lead">SDD Spec escribe requisitos y escenarios Given / When / Then, no detalles de implementación.</p>
+<div class="grid"><div class="card"><h3>Escenarios del ejemplo</h3><p><strong>Dado</strong> un borrador ya asociado a la oportunidad, <strong>cuando</strong> se repite la petición, <strong>entonces</strong> se recupera el existente sin duplicarlo.</p><p>Otros escenarios: datos fiscales ausentes, permiso denegado, redondeo según regla acordada y fallo de API sin falso éxito.</p></div><div class="card"><h3>Output, valor y razón</h3><p>Specs de dominio, nuevas o delta: ADDED / MODIFIED / REMOVED / RENAMED. Cada requisito tiene escenarios comprobables.</p><p>Existe para separar el <em>qué</em> del <em>cómo</em>. Exige caminos felices y errores; un MODIFIED conserva el bloque completo para no perder escenarios al archivar.</p></div></div>
+<figure class="document-figure document-detail">
+<a href="jarvis-ecosystem-assets/sdd-spec-escenarios.png" aria-label="Abrir los escenarios reales a tamaño completo"><img src="jarvis-ecosystem-assets/sdd-spec-escenarios.png" width="801" height="849" loading="lazy" alt="Spec real con escenarios Given, When y Then: primer pedido, pedidos relacionados, concurrencia y evaluación de estados."></a>
+<figcaption>Spec real: cada escenario concreta qué debe ocurrir. <a href="jarvis-ecosystem-assets/sdd-spec-escenarios.png">Abrir a tamaño completo</a>.</figcaption>
+</figure>
+<p class="note"><a href="../../jarvis-cli/embed/skills/sdd-spec/SKILL.md">Fuente · SDD Spec</a> · Core · fase canónica 4/9.</p>
+</section>
+
+<section class="chapter" id="skill-sdd-design" data-skill="sdd-design" tabindex="-1" aria-labelledby="titulo-sdd-design">
+<p class="eyebrow">SDD / Design · decidir cómo y explicar por qué</p>
+<h2 id="titulo-sdd-design">Un timeout no autoriza<br><span class="highlight">otra factura.</span></h2>
+<p class="lead">SDD Design define arquitectura, flujo de datos, contratos, archivos y estrategia de pruebas.</p>
+<div class="grid"><div class="card"><h3>Diseño ilustrativo</h3><p>Separar validación, generación y adaptador externo. Mantener una referencia estable por oportunidad y conciliar un resultado incierto antes de reintentar.</p><p>Elegir cómo asegurar idempotencia según contratos comprobados del sistema real; no asumir que la API la ofrece.</p></div><div class="card"><h3>Output, valor y razón</h3><p><code>design.md</code>: decisiones y alternativas, flujo, cambios concretos, pruebas y rollout.</p><p>Reduce improvisación durante Apply. La skill exige leer el código existente, justificar cada decisión y señalar preguntas bloqueantes en lugar de resolverlas por imaginación.</p></div></div>
+<figure class="document-figure document-detail">
+<a href="jarvis-ecosystem-assets/sdd-design-flujo.png" aria-label="Abrir el diagrama real de diseño a tamaño completo"><img src="jarvis-ecosystem-assets/sdd-design-flujo.png" width="868" height="911" loading="lazy" alt="Diagrama real del circuito CRM, Creator y Flow: clasifica pedidos, genera factura o espera, con reintentos y estado de error."></a>
+<figcaption>Design real: flujo completo y rutas de salida. <a href="jarvis-ecosystem-assets/sdd-design-flujo.png">Abrir a tamaño completo</a>.</figcaption>
+</figure>
+<figure class="document-figure document-detail">
+<a href="jarvis-ecosystem-assets/sdd-design-mecanismo.png" aria-label="Abrir el mecanismo real de diseño a tamaño completo"><img src="jarvis-ecosystem-assets/sdd-design-mecanismo.png" width="722" height="743" loading="lazy" alt="Detalle real de diseño: aviso de diferencias de importe, precondiciones, ruta de factura y comportamiento no bloqueante."></a>
+<figcaption>Design real: reglas y precondiciones del aviso de importe en este cambio. <a href="jarvis-ecosystem-assets/sdd-design-mecanismo.png">Abrir a tamaño completo</a>.</figcaption>
+</figure>
+<p class="note"><a href="../../jarvis-cli/embed/skills/sdd-design/SKILL.md">Fuente · SDD Design</a> · Core · fase canónica 5/9.</p>
+</section>
+
+<section class="chapter" id="skill-sdd-tasks" data-skill="sdd-tasks" tabindex="-1" aria-labelledby="titulo-sdd-tasks">
+<p class="eyebrow">SDD / Tasks · convertir diseño en unidades revisables</p>
+<h2 id="titulo-sdd-tasks">«Implementar facturas»<br><span class="highlight">no es una tarea.</span></h2>
+<p class="lead">SDD Tasks crea un checklist concreto, ordenado por dependencias y verificable.</p>
+<div class="grid"><div class="card"><h3>Tareas del ejemplo</h3><ol><li>Validación de oportunidad y datos, con casos de rechazo.</li><li>Generación de borrador y cálculo acordado, con tests.</li><li>Control de duplicados y recuperación del fallo externo.</li><li>Acción autorizada en CRM, pruebas integradas y guía de uso.</li></ol></div><div class="card"><h3>Output, valor y razón</h3><p><code>tasks.md</code> y previsión de carga de revisión: líneas estimadas, riesgo, unidades y estrategia de entrega.</p><p>Existe para que un humano pueda revisar entregas completas. Si se prevé superar unas 400 líneas cambiadas, pide cadena o excepción aceptada, no troceado ciego.</p></div></div>
+<p class="note"><a href="../../jarvis-cli/embed/skills/sdd-tasks/SKILL.md">Fuente · SDD Tasks</a> · Core · fase canónica 6/9.</p>
+</section>
+
+<section class="chapter" id="skill-sdd-apply" data-skill="sdd-apply" tabindex="-1" aria-labelledby="titulo-sdd-apply">
+<p class="eyebrow">SDD / Apply · implementar solo el trabajo asignado</p>
+<h2 id="titulo-sdd-apply">Ahora sí,<br><span class="highlight">código con contrato.</span></h2>
+<p class="lead">SDD Apply implementa tareas según Spec y Design, con límites de escritura y evidencia de progreso.</p>
+<div class="grid"><div class="card"><h3>Ejemplo test-first</h3><p>Con Strict TDD activo: test que falla porque una petición repetida crea otro borrador → cambio mínimo que devuelve el existente → caso alternativo de oportunidad distinta → refactor con tests verdes.</p><p>RED → GREEN → TRIANGULATE → REFACTOR, con ejecución observada, no etiquetas decorativas.</p></div><div class="card"><h3>Output, valor y razón</h3><p>Tarea asignada → implementación → checks ejecutados → evidencia de progreso registrada y confirmada → tarea completada.</p><p>Antes de marcarla, el checkpoint debe confirmar que su evidencia quedó persistida y cubre esa tarea. Un check fallido o un bloqueo la deja pendiente; una casilla marcada no demuestra nada por sí sola.</p><p>La skill exige status nativo, dependencias listas y raíces permitidas. Evita «ya de paso arreglé otra cosa» y confundir checkboxes con pruebas.</p></div></div>
+<p class="note">Si se eligió almacenamiento <code>none</code>, Apply devuelve la evidencia inline: no afirma haber persistido progreso.</p>
+<figure class="document-figure document-detail">
+<a href="jarvis-ecosystem-assets/sdd-apply-checks.png" aria-label="Abrir los checks reales de Apply a tamaño completo"><img src="jarvis-ecosystem-assets/sdd-apply-checks.png" width="902" height="739" loading="lazy" alt="Checklist real de verificaciones durante Apply: nombres de campos, base fiscal, destinatario del aviso y límites entre plataformas; las casillas están pendientes."></a>
+<figcaption>Checks que deben contrastarse durante Apply; no es el plan completo de tareas ni evidencia de ejecución. <a href="jarvis-ecosystem-assets/sdd-apply-checks.png">Abrir a tamaño completo</a>.</figcaption>
+</figure>
+<p class="note"><a href="../../jarvis-cli/embed/skills/sdd-apply/SKILL.md">Fuente · SDD Apply</a> · Core · fase canónica 7/9.</p>
+</section>
+
+<section class="chapter" id="skill-sdd-verify" data-skill="sdd-verify" tabindex="-1" aria-labelledby="titulo-sdd-verify">
+<p class="eyebrow">SDD / Verify · prueba independiente</p>
+<h2 id="titulo-sdd-verify">«Claudito dice que está»<br><span class="highlight">no es un test.</span></h2>
+<p class="lead">SDD Verify contrasta implementación con specs, diseño, tareas y progreso; ejecuta pruebas relevantes.</p>
+<div class="grid"><div class="card"><h3>Matriz del ejemplo</h3><p>Datos inválidos → rechazo esperado.<br>Dos peticiones → un borrador.<br>Sin permiso → sin creación.<br>Timeout → estado incierto, no éxito inventado.</p><p>Cada escenario apunta a evidencia ejecutada; lo no probado queda UNTESTED.</p></div><div class="card"><h3>Output, valor y razón</h3><p><code>verify-report.md</code>, evidencias y veredicto PASS / PASS WITH WARNINGS / FAIL.</p><p>Existe para no confundir inspección estática con comportamiento demostrado. No arregla problemas durante la verificación; los devuelve para corregir y volver a comprobar.</p></div></div>
+<p class="note"><a href="../../jarvis-cli/embed/skills/sdd-verify/SKILL.md">Fuente · SDD Verify</a> · Core · fase canónica 8/9.</p>
+</section>
+
+<section class="chapter" id="skill-sdd-archive" data-skill="sdd-archive" tabindex="-1" aria-labelledby="titulo-sdd-archive">
+<p class="eyebrow">SDD / Archive · cerrar sin perder el porqué</p>
+<h2 id="titulo-sdd-archive">La próxima sesión<br><span class="highlight">no empieza de cero.</span></h2>
+<p class="lead">SDD Archive consolida conocimiento del cambio y, en modo de archivos, integra los deltas en specs principales.</p>
+<div class="grid"><div class="card"><h3>Lo que conservamos</h3><p>Reglas de facturación acordadas, porqué de la conciliación, decisiones y pruebas. Así el próximo cambio sabe qué debe respetar.</p><p><strong>Output:</strong> archive-report; OpenSpec conserva la topología del cambio en archivo fechado, Hive conserva referencias y reporte de cierre lógico.</p></div><div class="card"><h3>Valor y razón de diseño</h3><p>Convierte la entrega en contexto durable, no en chat perdido. Exige tareas completas, progreso coherente y verificación vigente sin críticos pendientes.</p><p>No archiva «aunque falte un poquito». En hybrid exige ambos lados coherentes, sin prometer atomicidad distribuida; none solo cierra inline.</p></div></div>
+<p class="note"><a href="../../jarvis-cli/embed/skills/sdd-archive/SKILL.md">Fuente · SDD Archive</a> · Core · fase canónica 9/9.</p>
+</section>
+
+<section class="chapter hero" id="entregas" tabindex="-1" aria-labelledby="titulo-entregas">
+<p class="eyebrow">Entregas pequeñas / El reviewer también tiene batería</p>
+<h2 id="titulo-entregas">«Estoy cansado, jefe».<br><span class="highlight">Claudito: toma 1.000 líneas.</span></h2>
+<p class="lead">El agente puede escribir más rápido de lo que una persona cansada puede revisar. El cuello de botella es entender y contrastar el cambio, no producir líneas.</p>
+<div class="grid review-grid">
+<figure class="scene-figure">
+<img src="jarvis-ecosystem-assets/revision-con-bateria.svg" width="760" height="660" loading="lazy" alt="Una revisora agotada ante una montaña de diff; después examina un paquete coherente de reglas, pruebas y documentación mientras los siguientes esperan su revisión.">
+<figcaption>Menos carga de golpe, no menos responsabilidad. Ilustración original.</figcaption>
+</figure>
+<div class="card"><h3>Mejor: unidades con sentido</h3><ol><li><strong>Validar:</strong> reglas, rechazos, tests y documentación de datos.</li><li><strong>Generar:</strong> borrador/cálculo acordado, tests y contrato.</li><li><strong>Recuperar:</strong> duplicados, timeout y conciliación, pruebas y guía de fallos.</li><li><strong>Integrar:</strong> acción y permisos CRM, pruebas de extremo a extremo y uso.</li></ol></div></div>
+<p class="takeaway">No «las primeras 250 líneas». Comportamiento + tests + docs que se pueden entender juntos.</p>
+<p>Las dependencias indican el orden; revisión humana y pruebas siguen siendo necesarias. Una unidad pequeña no garantiza calidad: permite examinarla mejor.</p>
+</section>
+
+<section class="chapter" id="skill-hive" data-skill="hive" tabindex="-1" aria-labelledby="titulo-hive">
+<p class="eyebrow">Skills / Continuidad</p>
+<h2 id="titulo-hive">Hive Memory:<br><span class="highlight">guardar razones, no ruido.</span></h2>
+<p class="lead">Protocolo para registrar decisiones, buscar contexto y cerrar sesiones con conocimiento recuperable.</p>
+<div class="grid"><div class="card"><h3>Guardar el porqué</h3><p>Al trabajar con un Quote de Zoho CRM, dejamos registrada la decisión: «Usamos <code>invokeurl</code> porque, en este caso, la integration task no devolvía correctamente las líneas».</p><p>Conservar el contexto y los archivos afectados permite entender la elección más adelante. No es una limitación universal de la API.</p></div><div class="card"><h3>Recuperarlo sin arqueología</h3><p>En otra sesión preguntas: «¿Por qué usamos <code>invokeurl</code> para este Quote?». El agente busca en Hive y recupera la razón registrada, sin que tengas que localizar la nota a mano.</p><p>Ejemplo de registro y recuperación: solo puede recuperar lo que se haya guardado; si faltan datos o hay ambigüedad, lo señala.</p></div></div>
+<p class="note"><a href="../../jarvis-cli/embed/skills/hive/SKILL.md">Fuente · Hive Memory</a> · Core.</p>
+</section>
+
+<section class="chapter" id="apoyo-entrega" tabindex="-1" aria-labelledby="titulo-apoyo-entrega">
+<p class="eyebrow">Skills / Apoyo a la entrega</p>
+<h2 id="titulo-apoyo-entrega">Del cambio terminado<br><span class="highlight">a la revisión del equipo.</span></h2>
+<p class="lead">Código, pruebas y documentación viajan juntos: commits con sentido, una PR que se entiende y una persona que puede revisarla.</p>
+<figure class="document-figure">
+<a href="jarvis-ecosystem-assets/entrega-revisable.svg" aria-label="Abrir el diagrama de entrega a tamaño completo"><img src="jarvis-ecosystem-assets/entrega-revisable.svg" width="760" height="800" loading="lazy" alt="Diagrama de entrega: código con pruebas y documentación se agrupa en commits coherentes; una PR muestra objetivo, cambios y checks; una persona examina el diff antes de decidir."></a>
+<figcaption>Del trabajo a la revisión humana. Diagrama original. <a href="jarvis-ecosystem-assets/entrega-revisable.svg">Abrir a tamaño completo</a>.</figcaption>
+</figure>
+<p>Las skills de Git, unidades de trabajo y preparación de PRs ayudan a ordenar y explicar el cambio; las PRs encadenadas mantienen visibles sus dependencias. Hacer commit, publicar o fusionar requiere la autorización que corresponda: la ayuda del agente no la sustituye.</p>
+</section>
+
+<section class="chapter" id="skill-judgment-day" data-skill="judgment-day" tabindex="-1" aria-labelledby="titulo-judgment-day">
+<p class="eyebrow">Skills / Revisión adversarial explícita</p>
+<h2 id="titulo-judgment-day">Judgment Day:<br><span class="highlight">dos miradas, sin copiarse.</span></h2>
+<p class="lead">Bajo petición expresa, lanza dos revisores ciegos con el mismo objetivo y criterios.</p>
+<div class="grid"><div class="card"><h3>Qué aporta · ejemplo</h3><p>Revisar la recuperación tras timeout: un juez mira consistencia, otro también recibe el mismo contrato sin conocer su conclusión.</p><p>Los resultados se clasifican en confirmados, sospechosos o contradicciones.</p></div><div class="card"><h3>Por qué existe</h3><p>Sus reglas evitan una falsa unanimidad y obligan a re-juzgar tras correcciones. Pide autorización antes de arreglar hallazgos iniciales y escala si persisten tras dos iteraciones.</p><p>No sustituye tests ni aprobación humana, ni se activa porque «suena importante».</p></div></div>
+<p class="note"><a href="../../jarvis-cli/embed/skills/judgment-day/SKILL.md">Fuente · Judgment Day</a> · Optional.</p>
+</section>
+
+<section class="chapter" id="skill-qa-checklist" data-skill="qa-checklist" tabindex="-1" aria-labelledby="titulo-qa-checklist">
+<p class="eyebrow">Skills / Planificar QA a petición</p>
+<h2 id="titulo-qa-checklist">QA Checklist:<br><span class="highlight">¿qué debería probar?</span></h2>
+<p class="lead">Prepara una batería concreta de checks manuales y recomendaciones automatizadas.</p>
+<div class="grid"><div class="card"><h3>Qué aporta · ejemplo</h3><p>Factura con datos incompletos, usuario sin permiso, doble clic, redondeo acordado y respuesta externa incierta, cada uno con resultado esperado.</p></div><div class="card"><h3>Por qué existe</h3><p>Sus reglas separan plan de ejecución: un checklist sin ejecutar no es evidencia. Se activa bajo petición y no añade una fase SDD ni reemplaza Verify.</p></div></div>
+<p class="note"><a href="../../jarvis-cli/embed/skills/qa-checklist/SKILL.md">Fuente · QA Checklist</a> · Optional.</p>
+</section>
+
+<section class="chapter" id="skill-comment-writer" data-skill="comment-writer" tabindex="-1" aria-labelledby="titulo-comment-writer">
+<p class="eyebrow">Skills / Colaboración sin fricción innecesaria</p>
+<h2 id="titulo-comment-writer">Comment Writer:<br><span class="highlight">directo no significa borde.</span></h2>
+<p class="lead">Ayuda a redactar feedback breve, cálido, accionable y con razón técnica.</p>
+<div class="grid"><div class="card"><h3>Qué aporta · ejemplo</h3><p>«Separaría la conciliación del timeout en otra unidad: mezcla una regla nueva con la UI. Así podremos revisar sus tests sin ruido».</p></div><div class="card"><h3>Por qué existe</h3><p>Sus reglas empiezan por lo útil y evitan recapitulaciones y pile-ons. Una petición clara y su motivo ayudan más que veinte preferencias menores.</p><p>El tono y el idioma se ajustan al contexto y a las normas del equipo; el ejemplo usa español de España.</p></div></div>
+<p class="note"><a href="../../jarvis-cli/embed/skills/comment-writer/SKILL.md">Fuente · Comment Writer</a> · Optional.</p>
+</section>
+
+<section class="chapter" id="skill-cognitive-doc-design" data-skill="cognitive-doc-design" tabindex="-1" aria-labelledby="titulo-cognitive-doc-design">
+<p class="eyebrow">Skills / Documentación que se deja leer</p>
+<h2 id="titulo-cognitive-doc-design">Cognitive Doc Design:<br><span class="highlight">respuesta primero, novela después.</span></h2>
+<p class="lead">Estructura guías y documentos para reducir carga cognitiva mediante bloques y detalle progresivo.</p>
+<div class="grid"><div class="card"><h3>Qué aporta · ejemplo</h3><p>Guía de facturación: quién puede generar, datos necesarios y camino feliz primero; errores y notas técnicas desplegables después.</p></div><div class="card"><h3>Por qué existe</h3><p>Sus patrones favorecen reconocimiento sobre memoria, señalización y empatía con el reviewer. Una decisión no debería requerir arqueología documental.</p></div></div>
+<p class="note"><a href="../../jarvis-cli/embed/skills/cognitive-doc-design/SKILL.md">Fuente · Cognitive Doc Design</a> · Optional.</p>
+</section>
+
+<section class="chapter" id="skill-phpunit-testing" data-skill="phpunit-testing" tabindex="-1" aria-labelledby="titulo-phpunit-testing">
+<p class="eyebrow">Skills / PHP · pruebas con intención</p>
+<h2 id="titulo-phpunit-testing">PHPUnit Testing:<br><span class="highlight">un concepto por test.</span></h2>
+<p class="lead">Patrones Arrange / Act / Assert, factories, aislamiento de base de datos y mocks de servicios externos.</p>
+<div class="grid"><div class="card"><h3>Qué aporta · ejemplo</h3><p>Preparar oportunidad con factory → generar borrador → comprobar el total acordado. Otro test demuestra que repetir la petición no duplica.</p><p>API externa simulada: ninguna factura real de cliente durante el test.</p></div><div class="card"><h3>Por qué existe</h3><p>Sus reglas mantienen casos legibles y datos reproducibles, con efectos externos controlados. Ayudan a detectar qué comportamiento se ha roto sin una aserción de todo a la vez.</p></div></div>
+<p class="note"><a href="../../jarvis-cli/embed/skills/phpunit-testing/SKILL.md">Fuente · PHPUnit Testing</a> · Optional · selección PHP.</p>
+</section>
+
+<section class="chapter" id="skill-zoho-deluge" data-skill="zoho-deluge" tabindex="-1" aria-labelledby="titulo-zoho-deluge">
+<p class="eyebrow">Skills / Deluge y aplicaciones Zoho</p>
+<h2 id="titulo-zoho-deluge">Un lenguaje.<br><span class="highlight">Cada aplicación, su contrato.</span></h2>
+<p class="lead">Las skills reúnen reglas y referencias para reducir búsquedas repetidas. No sustituyen la documentación oficial ni los datos del entorno real.</p>
+<div class="grid">
+<div class="card"><h3>Deluge · cómo escribirlo</h3><p>Sintaxis, tipos, listas y mapas, fechas, validación de valores nulos, errores y uso de <code>invokeurl</code>. Son reglas del lenguaje, no nombres de módulos ni endpoints de una aplicación.</p><p><strong>Ejemplo:</strong> comprobar que el importe del Quote existe antes de convertirlo y mantener un retorno coherente.</p></div>
+<div class="card"><h3>Aplicación · qué llamar</h3><p>CRM aporta referencias de nombres API de módulos y campos; Books, Creator, Analytics, People y Projects tienen sus propias guías y catálogos de operaciones, integration tasks o endpoints, según el producto.</p><p>No todos cubren lo mismo. Las referencias orientan; los nombres, permisos y disponibilidad del entorno deben comprobarse.</p></div>
+</div>
+<p>Para leer un Quote en Deluge, el agente combina Deluge + CRM: reglas de sintaxis por un lado, campos y operación compatibles por otro. Si faltan hechos, consulta la documentación oficial o pide el dato; no inventa una llamada.</p>
+<p class="note">Fuentes empaquetadas · pack Zoho opcional: <a href="../../jarvis-cli/embed/skills/zoho-deluge/SKILL.md">Deluge</a> · <a href="../../jarvis-cli/embed/skills/zoho-crm/SKILL.md">CRM</a> · <a href="../../jarvis-cli/embed/skills/zoho-books/SKILL.md">Books</a> · <a href="../../jarvis-cli/embed/skills/zoho-creator/SKILL.md">Creator</a> · <a href="../../jarvis-cli/embed/skills/zoho-analytics/SKILL.md">Analytics</a> · <a href="../../jarvis-cli/embed/skills/zoho-people/SKILL.md">People</a> · <a href="../../jarvis-cli/embed/skills/zoho-projects/SKILL.md">Projects</a>.</p>
+</section>
+
+<section class="chapter" id="skill-skill-creator" data-skill="skill-creator" tabindex="-1" aria-labelledby="titulo-skill-creator">
+<p class="eyebrow">Skills / Convertir patrones en instrucciones</p>
+<h2 id="titulo-skill-creator">Skill Creator:<br><span class="highlight">no otro manual infinito.</span></h2>
+<p class="lead">Crea contratos LLM-first para comportamientos reutilizables, con triggers y outputs claros.</p>
+<div class="grid"><div class="card"><h3>Qué aporta · ejemplo</h3><p>Una skill de conciliación de facturas: cuándo cargarla, comprobar antes de reintentar, cuándo parar y qué evidencia devolver. No una instrucción de usar una sola vez.</p></div><div class="card"><h3>Por qué existe</h3><p>Sus reglas exigen frontmatter válido, instrucciones compactas y referencias locales para el detalle. Un trigger reconocible permite cargar el contrato oportuno sin pegar un libro entero.</p></div></div>
+<p class="note"><a href="../../jarvis-cli/embed/skills/skill-creator/SKILL.md">Fuente · Skill Creator</a> · Optional.</p>
+</section>
+
+<section class="chapter" id="skill-skill-improver" data-skill="skill-improver" tabindex="-1" aria-labelledby="titulo-skill-improver">
+<p class="eyebrow">Skills / Mantener contratos de trabajo</p>
+<h2 id="titulo-skill-improver">Skill Improver:<br><span class="highlight">auditar antes de reescribir.</span></h2>
+<p class="lead">Revisa triggers, estructura, seguridad, referencias y contrato de salida de una skill existente.</p>
+<div class="grid"><div class="card"><h3>Qué aporta · ejemplo</h3><p>Detectar que la skill de facturas no explica qué hacer con un timeout: hallazgo con evidencia y propuesta mínima de mejora.</p></div><div class="card"><h3>Por qué existe</h3><p>Su modo por defecto es audit-only y exige aprobación explícita para editar. Protege instrucciones del usuario de cambios «porque me parecían mejores» y evita motores de reescritura en segundo plano.</p></div></div>
+<p class="note"><a href="../../jarvis-cli/embed/skills/skill-improver/SKILL.md">Fuente · Skill Improver</a> · Optional.</p>
+</section>
+
+<section class="chapter" id="skill-skill-registry" data-skill="skill-registry" tabindex="-1" aria-labelledby="titulo-skill-registry">
+<p class="eyebrow">Skills / Descubrir y delegar con contexto exacto</p>
+<h2 id="titulo-skill-registry">Skill Registry:<br><span class="highlight">una dirección, no «busca por ahí».</span></h2>
+<p class="lead">Construye el índice de skills y convenciones del proyecto con rutas exactas a cada SKILL.md.</p>
+<div class="grid"><div class="card"><h3>Qué aporta · ejemplo</h3><p>Para delegar una integración CRM→Books en Deluge, resolver e inyectar las tres rutas de skills aplicables; el ejecutor las lee antes de trabajar.</p><p>La copia de proyecto tiene preferencia sobre otra global duplicada.</p></div><div class="card"><h3>Por qué existe</h3><p>Su diseño index-first/path-first evita redescubrir el catálogo en cada delegación. Siempre escribe <code>.jarvis/skill-registry.md</code>; persiste además en Hive si está disponible.</p><p>Los compact rules orientan compatibilidad; las rutas exactas son el contrato runtime. El índice es caché local, gitignored por defecto.</p></div></div>
+<p class="note"><a href="../../jarvis-cli/embed/skills/skill-registry/SKILL.md">Fuente · Skill Registry</a> · Optional.</p>
+</section>
+
+<section class="chapter hero" id="experiencia" tabindex="-1" aria-labelledby="titulo-experiencia">
+<p class="eyebrow">Experiencia / Uso mientras lo desarrollamos</p>
+<h2 id="titulo-experiencia">Dos meses de beta.<br><span class="highlight">Proyectos reales, contexto real.</span></h2>
+<p class="lead">Dos compañeros hemos probado el ecosistema durante dos meses en proyectos reales, mientras lo desarrollábamos. En nuestra experiencia, funciona.</p>
+<p>Nos sirve para recuperar decisiones y trabajar con alcance, pruebas y cambios revisables. Es nuestra experiencia de uso, no una medición de productividad ni una garantía para todos los proyectos.</p>
+</section>
+</main>
+<nav class="controls" aria-label="Navegación entre capítulos" hidden>
+<div class="control-inner"><button type="button" id="anterior" aria-label="Capítulo anterior">← Anterior</button><div class="meter"><label for="progreso" id="estado" aria-live="polite" aria-atomic="true"></label><progress id="progreso" value="1" max="1"></progress></div><button type="button" id="siguiente" aria-label="Capítulo siguiente">Siguiente →</button><a class="small" href="#indice">Índice</a></div>
+</nav>
+<script>
+(() => {
+  'use strict';
+  const chapters = [...document.querySelectorAll('.chapter')];
+  const controls = document.querySelector('.controls');
+  const previous = document.getElementById('anterior');
+  const next = document.getElementById('siguiente');
+  const status = document.getElementById('estado');
+  const progress = document.getElementById('progreso');
+  const index = document.getElementById('indice');
+  document.getElementById('total-capitulos').textContent = `${chapters.length} diapositivas · índice por flujo y dominio`;
+  let current = 0;
+  function update(value) {
+    current = Math.max(0, Math.min(chapters.length - 1, value));
+    previous.disabled = current === 0;
+    next.disabled = current === chapters.length - 1;
+    progress.max = chapters.length;
+    progress.value = current + 1;
+    status.textContent = `${current + 1} / ${chapters.length} · ${chapters[current].querySelector('.eyebrow').textContent.split('/').slice(1).join('/').trim()}`;
+  }
+  function go(value) {
+    update(value);
+    const chapter = chapters[current];
+    if (location.hash !== `#${chapter.id}`) history.pushState(null, '', `#${chapter.id}`);
+    chapter.focus({preventScroll: true});
+    chapter.scrollIntoView({block: 'start'});
+  }
+  function fromHash() {
+    const target = chapters.findIndex(chapter => `#${chapter.id}` === location.hash);
+    if (target >= 0) update(target);
+    if (location.hash === '#indice') index.open = true;
+  }
+  previous.addEventListener('click', () => go(current - 1));
+  next.addEventListener('click', () => go(current + 1));
+  window.addEventListener('hashchange', fromHash);
+  window.addEventListener('popstate', fromHash);
+  document.addEventListener('click', event => {
+    if (event.target.closest('a[href="#indice"]')) index.open = true;
+  });
+  document.addEventListener('keydown', event => {
+    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.target.closest('a,button,input,textarea,select,summary,[contenteditable], [role="textbox"]')) return;
+    const keys = {ArrowRight: current + 1, PageDown: current + 1, ArrowLeft: current - 1, PageUp: current - 1, Home: 0, End: chapters.length - 1};
+    if (!Object.prototype.hasOwnProperty.call(keys, event.key)) return;
+    event.preventDefault();
+    go(keys[event.key]);
+  });
+  let scheduled = false;
+  window.addEventListener('scroll', () => {
+    if (scheduled) return;
+    scheduled = true;
+    requestAnimationFrame(() => {
+      scheduled = false;
+      let visible = 0;
+      chapters.forEach((chapter, position) => {
+        if (chapter.getBoundingClientRect().top <= window.innerHeight * .4) visible = position;
+      });
+      if (visible !== current) update(visible);
+    });
+  }, {passive: true});
+  update(0);
+  fromHash();
+  controls.hidden = false;
+})();
+</script>
+</body>
+</html>

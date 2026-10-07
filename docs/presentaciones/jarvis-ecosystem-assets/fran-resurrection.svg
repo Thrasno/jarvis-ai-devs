@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="480" viewBox="0 0 760 480" role="img" aria-labelledby="title desc">
+  <title id="title">Fran disfruta del Resurrection Fest</title>
+  <desc id="desc">Fran, una figura de palo entre el público, levanta los brazos ante un escenario con guitarrista. El conocimiento registrado queda disponible para el equipo.</desc>
+  <defs>
+    <linearGradient id="night" x2="0" y2="1"><stop stop-color="#35214c"/><stop offset="1" stop-color="#080a10"/></linearGradient>
+  </defs>
+  <rect width="760" height="480" rx="20" fill="url(#night)"/>
+  <g font-family="system-ui, sans-serif" text-anchor="middle">
+    <text x="380" y="48" font-size="29" font-weight="800" fill="#ff94bc">RESURRECTION FEST</text>
+    <text x="380" y="80" font-size="21" fill="#bbc7d8">Mientras tanto, Fran…</text>
+  </g>
+  <!-- Stage lights and guitar cameo: authored art, not festival photography. -->
+  <path d="M120 114L230 348H38ZM634 114L724 348H522Z" fill="#8b5cf0" opacity=".2"/>
+  <path d="M225 115L412 348H216ZM530 115L576 348H380Z" fill="#e0246f" opacity=".15"/>
+  <g stroke="#34415a" stroke-width="6" fill="none">
+    <path d="M52 350V105H704V350M52 129H704M96 106L122 129L148 106L174 129L200 106M551 106L577 129L603 106L629 129L655 106"/>
+    <path d="M40 352H718"/>
+  </g>
+  <g fill="#e0a22e"><circle cx="120" cy="114" r="9"/><circle cx="225" cy="114" r="9"/><circle cx="530" cy="114" r="9"/><circle cx="634" cy="114" r="9"/></g>
+  <g fill="none" stroke="#bbc7d8" stroke-width="6" stroke-linecap="round">
+    <circle cx="375" cy="180" r="22"/>
+    <path d="M375 202V278L350 339M375 278L408 339M375 222L340 254M375 224L423 251"/>
+  </g>
+  <g transform="rotate(-35 381 257)">
+    <ellipse cx="370" cy="267" rx="22" ry="30" fill="#e0246f"/>
+    <rect x="366" y="214" width="8" height="65" rx="3" fill="#e0a22e"/>
+    <rect x="361" y="199" width="18" height="24" rx="4" fill="#e0a22e"/>
+  </g>
+  <g fill="#121a2b" stroke="#34415a" stroke-width="3">
+    <rect x="75" y="267" width="80" height="83" rx="5"/><circle cx="115" cy="312" r="24"/>
+    <rect x="603" y="267" width="80" height="83" rx="5"/><circle cx="643" cy="312" r="24"/>
+  </g>
+  <!-- Silhouettes frame Fran in the foreground. -->
+  <g fill="#34415a">
+    <circle cx="90" cy="399" r="28"/><path d="M45 480V448Q90 407 135 448V480Z"/>
+    <circle cx="220" cy="418" r="27"/><path d="M176 480V455Q220 418 264 455V480Z"/>
+    <circle cx="568" cy="411" r="27"/><path d="M524 480V453Q568 414 612 453V480Z"/>
+    <circle cx="685" cy="396" r="29"/><path d="M640 480V448Q685 407 730 448V480Z"/>
+  </g>
+  <g fill="none" stroke="#ff94bc" stroke-width="8" stroke-linecap="round">
+    <circle cx="393" cy="370" r="28"/>
+    <path d="M393 399V477M393 418L340 384L326 330M393 418L446 383L458 330"/>
+    <path d="M321 332V316M331 332V315M452 332V315M463 332V315" stroke-width="4"/>
+  </g>
+  <rect x="427" y="281" width="112" height="40" rx="20" fill="#e6edf3"/>
+  <text x="483" y="309" text-anchor="middle" font-family="system-ui, sans-serif" font-size="24" font-weight="700" fill="#0e1320">¡Fran!</text>
+</svg>
