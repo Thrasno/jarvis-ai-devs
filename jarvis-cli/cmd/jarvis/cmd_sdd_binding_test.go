@@ -341,6 +341,78 @@ func TestResolveBoundStatusSourceAt_SelectsEffectiveStoreAcrossBindings(t *testi
 	}
 }
 
+func TestResolveBoundStatusSourceAt_InitialHybridWithMissingProgress(t *testing.T) {
+	for _, planning := range []bool{false, true} {
+		t.Run(fmt.Sprintf("planning=%t", planning), func(t *testing.T) {
+			workspace := t.TempDir()
+			dir := filepath.Join(workspace, "openspec", "changes", "fresh")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if planning {
+				if err := os.WriteFile(filepath.Join(dir, "design.md"), []byte("# Local design\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			adoptions := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/sdd/changes/fresh/store-binding":
+					requireSDDRequest(t, r, http.MethodGet, r.URL.Path, "project=project", "")
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = fmt.Fprint(w, `{"code":"not_found"}`)
+				case "/sdd/changes/fresh/store-binding/adopt":
+					adoptions++
+					requireSDDRequest(t, r, http.MethodPost, r.URL.Path, "", `{"project":"project","mode":"hybrid","provenance":"initial:environment:JARVIS_SDD_STORE_MODE"}`)
+					w.WriteHeader(http.StatusCreated)
+					_, _ = fmt.Fprint(w, `{"binding":{"project":"project","change":"fresh","schema_version":"1","mode":"hybrid","provenance":"initial:environment:JARVIS_SDD_STORE_MODE","created_at":"2026-08-01T10:00:00Z"},"created":true}`)
+				case "/sdd/changes/fresh/artifacts":
+					requireSDDRequest(t, r, http.MethodGet, r.URL.Path, "project=project", "")
+					if planning {
+						_, _ = fmt.Fprint(w, `{"artifacts":[{"artifact":"proposal","content":"# Hive proposal"}]}`)
+					} else {
+						_, _ = fmt.Fprint(w, `{"artifacts":[]}`)
+					}
+				case "/sdd/changes/fresh/apply-progress":
+					requireSDDRequest(t, r, http.MethodGet, r.URL.Path, "project=project", "")
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = fmt.Fprint(w, `{"outcome":"not_found","code":"not_found","recovery":"initialize apply progress before advancing"}`)
+				default:
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			t.Cleanup(server.Close)
+			t.Setenv("HIVE_DAEMON_URL", server.URL)
+			t.Setenv("JARVIS_SDD_STORE_MODE", "hybrid")
+
+			change, source, binding, err := resolveBoundStatusSourceAt(context.Background(), "project", "fresh", workspace)
+			if err != nil {
+				t.Fatalf("initial hybrid binding: %v", err)
+			}
+			if change != "fresh" || binding.Mode != sddruntime.StoreModeHybrid || !binding.Persisted || binding.Provenance != "initial:environment:JARVIS_SDD_STORE_MODE" {
+				t.Fatalf("resolution = change:%q binding:%#v", change, binding)
+			}
+			if _, ok := source.(*sddstatus.HybridSource); !ok {
+				t.Fatalf("source = %T, want hybrid", source)
+			}
+			if adoptions != 1 {
+				t.Fatalf("adoptions = %d, want 1", adoptions)
+			}
+			status, err := buildStatusWithBinding(change, source, string(binding.Mode), nil, bindingStatus(binding))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if planning && (status.Artifacts[sddstatus.ArtifactProposal] != sddstatus.ArtifactDone || status.Artifacts[sddstatus.ArtifactDesign] != sddstatus.ArtifactDone) {
+				t.Fatalf("planning artifacts lost: %#v", status.Artifacts)
+			}
+			if status.Artifacts[sddstatus.ArtifactApplyProgress] != sddstatus.ArtifactMissing {
+				t.Fatalf("fresh progress state = %q, want missing", status.Artifacts[sddstatus.ArtifactApplyProgress])
+			}
+		})
+	}
+}
+
 func TestSddStatusAndContinue_UsePersistedBindingBeforeInvalidEnvironmentSelection(t *testing.T) {
 	workspace := t.TempDir()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
