@@ -83,6 +83,7 @@ type opencodeConfigTemplateData struct {
 	OrchestratorVariant string
 	Agents              []opencodeGeneratedAgent
 	TaskAllows          []string
+	BashPermission      string
 }
 
 type opencodeGeneratedAgent struct {
@@ -114,6 +115,10 @@ func (a *OpenCodeAgent) MergeGeneratedConfig(models state.PhaseModels) error {
 	patchBytes, err := a.renderGeneratedConfigPatch(models, includeSchema)
 	if err != nil {
 		return err
+	}
+	patchBytes, err = preserveOpenCodePermissionPolicies(existingBytes, patchBytes)
+	if err != nil {
+		return fmt.Errorf("preserve opencode.json permissions: %w", err)
 	}
 	merged, err := MergeJSON(existingBytes, patchBytes)
 	if err != nil {
@@ -158,6 +163,7 @@ func (a *OpenCodeAgent) renderGeneratedConfigPatch(models state.PhaseModels, inc
 		OrchestratorModel:   modelForGeneratedAgent(assignments, "orchestrator"),
 		OrchestratorVariant: variants["orchestrator"],
 		Agents:              agents,
+		BashPermission:      openCodeBashPermission,
 		TaskAllows:          append([]string{"general", "explore"}, append(openCodeSDDSubagents(), openCodeJudgmentDaySubagents()...)...),
 	}
 
@@ -203,7 +209,7 @@ func buildOpenCodeGeneratedAgents(assignments, variants map[string]string) []ope
 			Model:       modelForGeneratedAgent(assignments, "default"),
 			Variant:     variants["default"],
 			Prompt:      judgmentDayPrompt("jd-judge-a"),
-			Permission:  `{"task":"deny","edit":"deny","bash":"ask"}`,
+			Permission:  openCodeDefaultAgentPermission("deny"),
 		},
 		opencodeGeneratedAgent{
 			Name:        "jd-judge-b",
@@ -213,7 +219,7 @@ func buildOpenCodeGeneratedAgents(assignments, variants map[string]string) []ope
 			Model:       modelForGeneratedAgent(assignments, "default"),
 			Variant:     variants["default"],
 			Prompt:      judgmentDayPrompt("jd-judge-b"),
-			Permission:  `{"task":"deny","edit":"deny","bash":"ask"}`,
+			Permission:  openCodeDefaultAgentPermission("deny"),
 		},
 		opencodeGeneratedAgent{
 			Name:        "jd-fix-agent",
@@ -223,7 +229,7 @@ func buildOpenCodeGeneratedAgents(assignments, variants map[string]string) []ope
 			Model:       modelForGeneratedAgent(assignments, "sdd-apply"),
 			Variant:     variants["sdd-apply"],
 			Prompt:      judgmentDayPrompt("jd-fix-agent"),
-			Permission:  `{"task":"deny","edit":"allow","bash":{"*":"ask","go test *":"allow"}}`,
+			Permission:  openCodeDefaultAgentPermission("allow"),
 		},
 	)
 	return agents
@@ -252,12 +258,15 @@ func buildOpenCodeSDDGeneratedAgents(assignments, variants map[string]string) []
 }
 
 func withOpenCodeHiveMCPPermissions(raw string) (string, error) {
-	var permission map[string]any
-	if err := json.Unmarshal([]byte(raw), &permission); err != nil {
+	permission, err := parseOrderedJSON([]byte(raw))
+	if err != nil {
 		return "", err
 	}
+	if permission.object == nil {
+		return "", fmt.Errorf("OpenCode permission must be an object")
+	}
 	for _, tool := range RequiredOpenCodeHiveMCPTools() {
-		permission[tool] = "allow"
+		permission.object.set(tool, orderedValue{scalar: "allow"})
 	}
 	out, err := json.Marshal(permission)
 	if err != nil {

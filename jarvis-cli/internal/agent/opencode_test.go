@@ -537,8 +537,8 @@ func TestOpenCodeAgent_MergeGeneratedConfig_RendersTopologyPermissionsAndPreserv
 	}
 	permission := settings["permission"].(map[string]any)
 	bash := permission["bash"].(map[string]any)
-	if bash["*"] != "allow" || bash["git push --force*"] != "ask" || bash["git push * --force*"] != "ask" || bash["git push * --force-with-lease*"] != "ask" || bash["git reset --hard*"] != "ask" {
-		t.Fatalf("unexpected bash permissions: %#v", bash)
+	if len(bash) != 1 || bash["custom-tool *"] != "allow" {
+		t.Fatalf("existing bash policy changed: %#v", bash)
 	}
 	read := permission["read"].(map[string]any)
 	if read["*"] != "allow" {
@@ -623,17 +623,13 @@ func TestOpenCodeAgent_MergeGeneratedConfig_PreservesExistingPermissionGuardrail
 	if bash["*"] != "ask" || bash["git push --force*"] != "deny" {
 		t.Fatalf("existing bash guardrails were not preserved: %#v", bash)
 	}
-	if bash["git reset --hard*"] != "ask" {
-		t.Fatalf("missing generated bash guardrail: %#v", bash)
-	}
-	if bash["git push * --force*"] != "ask" || bash["git push * --force-with-lease*"] != "ask" {
-		t.Fatalf("missing generated later-position force-push guardrail: %#v", bash)
+	if len(bash) != 2 {
+		t.Fatalf("generated rules must not extend an existing bash policy: %#v", bash)
 	}
 	read := permission["read"].(map[string]any)
-	if read["*"] != "deny" || read["**/*secret*"] != "deny" {
+	if len(read) != 2 || read["*"] != "deny" || read["**/*secret*"] != "deny" {
 		t.Fatalf("existing read guardrails were not preserved: %#v", read)
 	}
-	assertOpenCodeReadDenyCoverage(t, read)
 }
 
 func TestOpenCodeAgent_MergeGeneratedConfig_PreservesStrictHiveWildcardGuardrailsAndExactExceptions(t *testing.T) {
