@@ -423,8 +423,10 @@ func (h *HiveSource) FetchArtifacts(ctx context.Context, changeName string) (map
 			// contract, not malformed v2 data.
 			if content := contents[ArtifactApplyProgress]; content != "" {
 				artifacts[ArtifactApplyProgress] = applyProgressState(content, contents[ArtifactTasks])
-				return artifacts, contents, nil
 			}
+			// Preserve exact-topic row membership, including a present empty row.
+			// Without a row there is no protected progress to synthesize.
+			return artifacts, contents, nil
 		}
 		if typed.Result.Code == "unavailable" {
 			// A live daemon explicitly reporting unavailable is a fetch failure;
