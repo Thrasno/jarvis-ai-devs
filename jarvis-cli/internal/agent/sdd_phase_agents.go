@@ -75,7 +75,7 @@ func SDDPhaseAgentDefinitions() []SDDPhaseAgentDefinition {
 			SkillID:            "sdd-init",
 			Description:        "Initialize SDD context, testing capabilities, registry, and persistence.",
 			ModelKey:           "sdd-init",
-			OpenCodePermission: `{"task":"deny","edit":"allow","bash":{"*":"ask","go test *":"allow"}}`,
+			OpenCodePermission: openCodeDefaultAgentPermission("allow"),
 			ClaudeTools:        writeTools,
 		},
 		{
@@ -83,7 +83,7 @@ func SDDPhaseAgentDefinitions() []SDDPhaseAgentDefinition {
 			SkillID:            "sdd-explore",
 			Description:        "Explore SDD ideas and codebase context before committing to a change.",
 			ModelKey:           "sdd-explore",
-			OpenCodePermission: `{"task":"deny","edit":"deny","bash":"ask"}`,
+			OpenCodePermission: openCodeDefaultAgentPermission("deny"),
 			ClaudeTools:        readTools,
 		},
 		{
@@ -91,7 +91,7 @@ func SDDPhaseAgentDefinitions() []SDDPhaseAgentDefinition {
 			SkillID:            "sdd-propose",
 			Description:        "Create SDD change proposals with intent, scope, and approach.",
 			ModelKey:           "sdd-propose",
-			OpenCodePermission: `{"task":"deny","edit":"allow","bash":"ask"}`,
+			OpenCodePermission: openCodeDefaultAgentPermission("allow"),
 			ClaudeTools:        writeTools,
 		},
 		{
@@ -99,7 +99,7 @@ func SDDPhaseAgentDefinitions() []SDDPhaseAgentDefinition {
 			SkillID:            "sdd-spec",
 			Description:        "Write SDD delta specifications with requirements and scenarios.",
 			ModelKey:           "sdd-spec",
-			OpenCodePermission: `{"task":"deny","edit":"allow","bash":"ask"}`,
+			OpenCodePermission: openCodeDefaultAgentPermission("allow"),
 			ClaudeTools:        writeTools,
 		},
 		{
@@ -107,7 +107,7 @@ func SDDPhaseAgentDefinitions() []SDDPhaseAgentDefinition {
 			SkillID:            "sdd-design",
 			Description:        "Create technical designs and architecture approaches for SDD changes.",
 			ModelKey:           "sdd-design",
-			OpenCodePermission: `{"task":"deny","edit":"allow","bash":"ask"}`,
+			OpenCodePermission: openCodeDefaultAgentPermission("allow"),
 			ClaudeTools:        writeTools,
 		},
 		{
@@ -115,7 +115,7 @@ func SDDPhaseAgentDefinitions() []SDDPhaseAgentDefinition {
 			SkillID:            "sdd-tasks",
 			Description:        "Break SDD changes into implementation tasks and reviewable PR slices.",
 			ModelKey:           "sdd-tasks",
-			OpenCodePermission: `{"task":"deny","edit":"allow","bash":"ask"}`,
+			OpenCodePermission: openCodeDefaultAgentPermission("allow"),
 			ClaudeTools:        writeTools,
 		},
 		{
@@ -123,7 +123,7 @@ func SDDPhaseAgentDefinitions() []SDDPhaseAgentDefinition {
 			SkillID:            "sdd-apply",
 			Description:        "Implement assigned SDD tasks using the active testing contract.",
 			ModelKey:           "sdd-apply",
-			OpenCodePermission: `{"task":"deny","edit":"allow","bash":{"*":"ask","go test *":"allow"}}`,
+			OpenCodePermission: openCodeDefaultAgentPermission("allow"),
 			ClaudeTools:        writeTools,
 		},
 		{
@@ -131,7 +131,7 @@ func SDDPhaseAgentDefinitions() []SDDPhaseAgentDefinition {
 			SkillID:            "sdd-verify",
 			Description:        "Verify implementation against SDD specs, design, tasks, and tests.",
 			ModelKey:           "sdd-verify",
-			OpenCodePermission: `{"task":"deny","edit":"deny","bash":{"*":"ask","go test *":"allow","go vet *":"allow"}}`,
+			OpenCodePermission: openCodeDefaultAgentPermission("deny"),
 			ClaudeTools:        readTools,
 		},
 		{
@@ -139,7 +139,7 @@ func SDDPhaseAgentDefinitions() []SDDPhaseAgentDefinition {
 			SkillID:            "sdd-archive",
 			Description:        "Archive completed SDD changes by syncing delta specs and closing artifacts.",
 			ModelKey:           "sdd-archive",
-			OpenCodePermission: `{"task":"deny","edit":"allow","bash":"ask"}`,
+			OpenCodePermission: openCodeDefaultAgentPermission("allow"),
 			ClaudeTools:        writeTools,
 		},
 		{
@@ -147,7 +147,7 @@ func SDDPhaseAgentDefinitions() []SDDPhaseAgentDefinition {
 			SkillID:            "sdd-onboard",
 			Description:        "Walk users through the SDD workflow on the real codebase.",
 			ModelKey:           "sdd-onboard",
-			OpenCodePermission: `{"task":"deny","edit":"deny","bash":"ask"}`,
+			OpenCodePermission: openCodeDefaultAgentPermission("deny"),
 			ClaudeTools:        readTools,
 		},
 	}
