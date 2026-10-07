@@ -677,6 +677,88 @@ func TestOpenSpecSourceStatusDetectsStagingWithoutApplyProgressHead(t *testing.T
 	}
 }
 
+func TestHiveSourceAbsentProgressRemainsAbsent(t *testing.T) {
+	for _, response := range []struct{ name, body string }{
+		{"typed not found", `{"outcome":"not_found","code":"not_found","recovery":"initialize apply progress before advancing"}`},
+		{"typed compatibility", `{"outcome":"unavailable","code":"compatibility"}`},
+		{"older daemon plain 404", "404 page not found\n"},
+	} {
+		for _, planning := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/planning=%t", response.name, planning), func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method != http.MethodGet || r.URL.Query().Get("project") != "jarvis-dev" {
+						t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+					}
+					switch r.URL.Path {
+					case "/sdd/changes/fresh/artifacts":
+						if planning {
+							_, _ = fmt.Fprint(w, `{"artifacts":[{"artifact":"proposal","content":"# Proposal"}]}`)
+						} else {
+							_, _ = fmt.Fprint(w, `{"artifacts":[]}`)
+						}
+					case "/sdd/changes/fresh/apply-progress":
+						w.WriteHeader(http.StatusNotFound)
+						_, _ = fmt.Fprint(w, response.body)
+					default:
+						t.Errorf("unexpected path %q", r.URL.Path)
+						w.WriteHeader(http.StatusNotFound)
+					}
+				}))
+				t.Cleanup(server.Close)
+				source := newHiveSource(t, server.URL)
+				artifacts, contents, err := source.FetchArtifacts(context.Background(), "fresh")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, present := artifacts[sddstatus.ArtifactApplyProgress]; present {
+					t.Errorf("synthesized absent progress: %#v", artifacts)
+				}
+				if _, present := contents[sddstatus.ArtifactApplyProgress]; present {
+					t.Errorf("synthesized absent content: %#v", contents)
+				}
+				if planning && (artifacts[sddstatus.ArtifactProposal] != sddstatus.ArtifactDone || contents[sddstatus.ArtifactProposal] != "# Proposal") {
+					t.Errorf("lost planning artifact: %#v, %#v", artifacts, contents)
+				}
+				observation, err := sddstatus.ObserveLegacyProgress(context.Background(), source, "fresh")
+				if err != nil || observation.Present {
+					t.Fatalf("observation = %#v, err = %v; want absent", observation, err)
+				}
+				if !sddstatus.LegacyProgressEquivalent(observation, observation) {
+					t.Fatal("absent progress failed self-validation")
+				}
+			})
+		}
+	}
+}
+
+func TestHiveSourceExistingProgressRemainsProtected(t *testing.T) {
+	for _, code := range []string{"not_found", "compatibility"} {
+		for _, content := range []string{"", " \t\n", `{"schema":"jarvis.sdd-apply-progress/v2"`, "[]"} {
+			t.Run(code+"/"+content, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					switch r.URL.Path {
+					case "/sdd/changes/existing/artifacts":
+						_, _ = fmt.Fprintf(w, `{"artifacts":[{"artifact":"apply-progress","content":%q}]}`, content)
+					case "/sdd/changes/existing/apply-progress":
+						w.WriteHeader(http.StatusNotFound)
+						_, _ = fmt.Fprintf(w, `{"outcome":"not_found","code":%q}`, code)
+					default:
+						t.Errorf("unexpected path %q", r.URL.Path)
+					}
+				}))
+				t.Cleanup(server.Close)
+				observation, err := sddstatus.ObserveLegacyProgress(context.Background(), newHiveSource(t, server.URL), "existing")
+				if err != nil || !observation.Present {
+					t.Fatalf("existing progress lost: %#v, %v", observation, err)
+				}
+				if sddstatus.LegacyProgressEquivalent(observation, observation) || sddstatus.LegacyProgressEquivalent(observation, sddstatus.LegacyProgressObservation{}) {
+					t.Fatalf("invalid existing progress accepted: %#v", observation)
+				}
+			})
+		}
+	}
+}
+
 func TestHiveSourceRejectsJSONLegacyProgressOnTypedNotFound(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

@@ -71,4 +71,6 @@ When a change is likely to exceed roughly 400 changed lines or touches multiple 
 
 ## Next step
 
+For a Spanish illustrated walkthrough, read the [SDD visual guide](presentaciones/sdd-guia.pdf).
+
 Read existing SDD reference material in [`sdd-workflows/`](sdd-workflows/) and the architecture summary in [`reference/architecture.md`](reference/architecture.md).

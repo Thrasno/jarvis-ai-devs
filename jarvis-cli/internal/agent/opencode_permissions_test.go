@@ -109,7 +109,7 @@ func TestOpenCodePermissionDefaults(t *testing.T) {
 			t.Errorf("%s task elevated", pair.key)
 		}
 		switch pair.key {
-		case "sdd-explore", "sdd-verify", "sdd-onboard", "jd-judge-a", "jd-judge-b", "review-risk", "review-readability", "review-reliability", "review-resilience":
+		case "sdd-explore", "sdd-verify", "sdd-onboard", "jd-judge-a", "jd-judge-b":
 			if permissionAt(t, p, "edit").scalar != "deny" {
 				t.Errorf("%s edit elevated", pair.key)
 			}

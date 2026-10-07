@@ -141,7 +141,7 @@ func TestOpenCodeHiveTemplate_EarlyExitReportsStageWithoutCancellation(t *testin
 }
 
 func TestOpenCodeHiveTemplate_DelayedRunnerReadinessPreservesRequestWindow(t *testing.T) {
-	stages := hiveTemplateStages{ready: make(chan struct{})}
+	stages := newHiveTemplateStages(true)
 	finished := make(chan error, 1)
 	requests := make(chan hiveTemplateRequest, 1)
 	_, cancel := context.WithCancel(context.Background())
@@ -154,7 +154,7 @@ func TestOpenCodeHiveTemplate_DelayedRunnerReadinessPreservesRequestWindow(t *te
 	}
 	startup := make(chan error, 1)
 	go func() {
-		startup <- awaitHiveTemplateRunnerReady(&stages, finished, cancel, &bytes.Buffer{}, 30*time.Second)
+		startup <- awaitHiveTemplateRunnerReady(stages, finished, cancel, &bytes.Buffer{}, 30*time.Second)
 	}()
 	// Startup exceeds the one-second request deadline, with ample startup slack.
 	// Only the runner-ready marker permits the request timer to start.
@@ -180,7 +180,7 @@ func TestOpenCodeHiveTemplate_RunnerReadinessFailures(t *testing.T) {
 		{"early child exit", true, "child exited before runner readiness"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			stages := hiveTemplateStages{ready: make(chan struct{})}
+			stages := newHiveTemplateStages(true)
 			_, _ = stages.Write([]byte("HIVE_STAGE:import started\n"))
 			finished := make(chan error, 1)
 			ctx, cancel := context.WithCancel(context.Background())
@@ -190,9 +190,9 @@ func TestOpenCodeHiveTemplate_RunnerReadinessFailures(t *testing.T) {
 			} else {
 				go func() { <-ctx.Done(); finished <- fmt.Errorf("canceled") }()
 			}
-			err := awaitHiveTemplateRunnerReady(&stages, finished, cancel, &bytes.Buffer{}, 10*time.Millisecond)
-			if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "import started") {
-				t.Fatalf("runner readiness error = %v, want %q and stage", err, tc.want)
+			err := awaitHiveTemplateRunnerReady(stages, finished, cancel, &bytes.Buffer{}, 10*time.Millisecond)
+			if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "import started") || !strings.Contains(err.Error(), "timeline:") {
+				t.Fatalf("runner readiness error = %v, want %q, stage and timeline", err, tc.want)
 			}
 			if tc.exit && ctx.Err() != nil {
 				t.Fatalf("early exit unexpectedly canceled child: %v", ctx.Err())
@@ -201,6 +201,26 @@ func TestOpenCodeHiveTemplate_RunnerReadinessFailures(t *testing.T) {
 				t.Fatalf("missing readiness did not cancel child: %v", ctx.Err())
 			}
 		})
+	}
+}
+
+func TestOpenCodeHiveTemplate_StageTimelineRecordsElapsedStages(t *testing.T) {
+	stages := newHiveTemplateStages(false)
+	_, _ = stages.Write([]byte("HIVE_STAGE:import started\n"))
+	time.Sleep(5 * time.Millisecond)
+	// Split write: the second stage line arrives across two Write calls to
+	// prove the pending-buffer path assembles it correctly.
+	_, _ = stages.Write([]byte("HIVE_STAGE:import "))
+	_, _ = stages.Write([]byte("complete\n"))
+
+	timeline := stages.timeline()
+	startedIndex := strings.Index(timeline, "import started@")
+	completeIndex := strings.Index(timeline, "import complete@")
+	if startedIndex == -1 || completeIndex == -1 || startedIndex > completeIndex {
+		t.Fatalf("timeline() = %q, want both stages present in order with elapsed markers", timeline)
+	}
+	if latest := stages.latest(); latest != "import complete" {
+		t.Fatalf("latest() = %q, want %q", latest, "import complete")
 	}
 }
 
@@ -242,6 +262,64 @@ func TestOpenCodeHiveTemplate_DeclaresBoundedLifecycleContract(t *testing.T) {
 }
 
 func TestOpenCodeHiveTemplate_CoalescesCreatedAndKeepsPromptIndependent(t *testing.T) {
+	testOpenCodeCreatedLifecycle(t, false)
+}
+
+func TestOpenCodeHiveTemplate_RetryWithDelayedCancellationPublication(t *testing.T) {
+	testOpenCodeCreatedLifecycle(t, true)
+}
+
+func awaitHiveTemplateCancellationPublication(retryObserved <-chan time.Time, cleanup <-chan struct{}, deadline <-chan time.Time, now func() time.Time) (time.Time, error) {
+	select {
+	case <-retryObserved:
+		// The retry handler sends only after reading its request. Receiving
+		// that evidence establishes causality even if both clock values are
+		// equal. The timestamp is diagnostic only, never an ordering oracle.
+		return now(), nil
+	case <-cleanup:
+		return time.Time{}, fmt.Errorf("cancellation publication released by cleanup before retry observation")
+	case <-deadline:
+		return time.Time{}, fmt.Errorf("timed out waiting for retry observation before cancellation publication")
+	}
+}
+
+func TestOpenCodeHiveTemplate_CancellationPublicationControls(t *testing.T) {
+	// Model a clock whose resolution cannot distinguish these ordered events.
+	stamp := time.Unix(123, 0)
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{"equal clock retry", ""},
+		{"cleanup without retry", "released by cleanup"},
+		{"deadline without retry", "timed out waiting for retry observation"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			retry := make(chan time.Time, 1)
+			cleanup := make(chan struct{})
+			deadline := make(chan time.Time, 1)
+			switch tc.name {
+			case "equal clock retry":
+				retry <- stamp
+			case "cleanup without retry":
+				close(cleanup)
+			case "deadline without retry":
+				deadline <- stamp
+			}
+			publishedAt, err := awaitHiveTemplateCancellationPublication(retry, cleanup, deadline, func() time.Time { return stamp })
+			if tc.want == "" {
+				if err != nil || !publishedAt.Equal(stamp) {
+					t.Fatalf("causally ordered publication with equal timestamps = %s, %v", publishedAt, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.want) || !publishedAt.IsZero() {
+				t.Fatalf("publication without retry = %s, %v; want no publication and %q", publishedAt, err, tc.want)
+			}
+		})
+	}
+}
+
+func testOpenCodeCreatedLifecycle(t *testing.T, delayCancellation bool) {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("requires Node to execute the source-of-truth OpenCode template")
 	}
@@ -253,6 +331,9 @@ func TestOpenCodeHiveTemplate_CoalescesCreatedAndKeepsPromptIndependent(t *testi
 	promptRequests := make(chan hiveTemplateRequest, 3)
 	primaryStartCanceled := make(chan time.Time, 1)
 	releasePrimaryStart := make(chan struct{})
+	retryObserved := make(chan time.Time, 1)
+	cancellationPublication := make(chan error, 1)
+	var retryObservedOnce sync.Once
 	var primaryStartHeld atomic.Bool
 	var starts atomic.Int32
 	var governance atomic.Int32
@@ -269,9 +350,20 @@ func TestOpenCodeHiveTemplate_CoalescesCreatedAndKeepsPromptIndependent(t *testi
 			if isPrimaryOpenCodeStart(request) && primaryStartHeld.CompareAndSwap(false, true) {
 				select {
 				case <-r.Context().Done():
-					primaryStartCanceled <- time.Now()
+					if delayCancellation {
+						// Model an adverse handler schedule, not delayed client cancellation.
+						publishedAt, err := awaitHiveTemplateCancellationPublication(retryObserved, releasePrimaryStart, time.After(hiveTemplateRequestWait), time.Now)
+						cancellationPublication <- err
+						if err == nil {
+							primaryStartCanceled <- publishedAt
+						}
+					} else {
+						primaryStartCanceled <- time.Now()
+					}
 				case <-releasePrimaryStart:
 				}
+			} else if isPrimaryOpenCodeStart(request) {
+				retryObservedOnce.Do(func() { retryObserved <- request.observedAt })
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"ok":true}`))
@@ -290,7 +382,7 @@ func TestOpenCodeHiveTemplate_CoalescesCreatedAndKeepsPromptIndependent(t *testi
 
 	port := hiveTemplatePort(t, server.URL)
 	runner := filepath.Join(t.TempDir(), "run-hive-template.mjs")
-	if err := os.WriteFile(runner, []byte(`
+	if err := os.WriteFile(runner, []byte(hiveTemplateFetchObserver+`
 import { pathToFileURL } from "node:url";
 console.log("HIVE_STAGE:import started");
 const { Hive } = await import(pathToFileURL(process.argv[2]).href);
@@ -315,6 +407,13 @@ queueMicrotask(() => { globalThis.fetch = originalFetch; });
 await Promise.resolve();
 if (synchronousCreatedFetches !== 1) throw new Error("synchronous lifecycle fetches = " + synchronousCreatedFetches);
 if (unhandled.length !== 0) throw new Error("synchronous lifecycle failure was unhandled");
+const observation = observeLifecycleFetch(globalThis.fetch, (url, options) => {
+  if (new URL(url).pathname !== "/sessions") return false;
+  const payload = JSON.parse(options.body);
+  return payload.id === "session-42" && payload.project === "jarvis-dev" &&
+    payload.directory === "/workspace/jarvis-dev" && payload.client === "opencode";
+});
+globalThis.fetch = observation.fetch;
 const evidence = { id: "session-42", project: "jarvis-dev", directory: "/workspace/jarvis-dev" };
 const created = { event: { type: "session.created", id: "envelope-id", properties: { id: "unrelated-id", info: evidence } } };
 console.log("HIVE_STAGE:runner ready to dispatch");
@@ -352,6 +451,7 @@ plugin["event"](created);
 await new Promise((resolve) => setTimeout(resolve, 100));
 process.off("unhandledRejection", onUnhandled);
 if (unhandled.length !== 0) throw new Error("lifecycle callback produced an unhandled rejection");
+observation.assertComplete();
 `), 0600); err != nil {
 		t.Fatalf("write Node runner: %v", err)
 	}
@@ -362,14 +462,14 @@ if (unhandled.length !== 0) throw new Error("lifecycle callback produced an unha
 	cmd.Env = append(os.Environ(), "HIVE_HTTP_PORT="+port, "HIVE_OPENCODE_SESSION_ID=", "OPENCODE_SESSION_ID=", "SESSION_ID=", "HIVE_PROJECT=", "JARVIS_PROJECT=", "HIVE_PROJECT_DIRECTORY=", "JARVIS_WORKSPACE_DIRECTORY=", "PWD=")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	stages := hiveTemplateStages{ready: make(chan struct{})}
-	cmd.Stdout = &stages
+	stages := newHiveTemplateStages(true)
+	cmd.Stdout = stages
 	progress := func() string {
-		return fmt.Sprintf("%s; governance requests=%d; session requests=%d", stages.latest(), governance.Load(), starts.Load())
+		return fmt.Sprintf("%s; timeline: %s; governance requests=%d; session requests=%d", stages.latest(), stages.timeline(), governance.Load(), starts.Load())
 	}
 	finished := make(chan error, 1)
 	go func() { finished <- cmd.Run() }()
-	if err := awaitHiveTemplateRunnerReady(&stages, finished, cancel, &stderr, hiveTemplateRequestWait); err != nil {
+	if err := awaitHiveTemplateRunnerReady(stages, finished, cancel, &stderr, hiveTemplateStartupWait); err != nil {
 		t.Fatal(err)
 	}
 
@@ -405,11 +505,20 @@ if (unhandled.length !== 0) throw new Error("lifecycle callback produced an unha
 	numericPrompt := waitHiveTemplateChildRequest(t, promptRequests, finished, cancel, &stderr, "numeric text prompt", progress)
 	assertNoHiveTemplateRequest(t, promptRequests, 200*time.Millisecond, "a malformed non-array prompt request")
 	assertNoHiveTemplateRequest(t, startRequests, 200*time.Millisecond, "an immediate duplicate or no-evidence session start")
-	primaryCanceled := waitHiveTemplateTime(t, primaryStartCanceled, "primary start timeout cancellation")
 	secondStart := waitHiveTemplateChildRequest(t, startRequests, finished, cancel, &stderr, "retry after primary start timeout", progress)
-	if secondStart.observedAt.Before(primaryCanceled) {
-		t.Fatalf("retry start observed at %s before primary timeout cleanup at %s", secondStart.observedAt, primaryCanceled)
+	// Server observation is eventual evidence only: independently scheduled
+	// handlers cannot establish client-local abort/rejection/retry ordering.
+	if delayCancellation {
+		select {
+		case err := <-cancellationPublication:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(hiveTemplateRequestWait):
+			t.Fatal("timed out waiting for cancellation publication proof")
+		}
 	}
+	_ = waitHiveTemplateTime(t, primaryStartCanceled, "primary start timeout cancellation")
 	if _, err := awaitHiveTemplateRequest(nil, finished, cancel, &stderr, "OpenCode Hive template completion", hiveTemplateRequestWait, progress); err != nil {
 		t.Fatal(err)
 	}
@@ -486,17 +595,30 @@ func TestOpenCodeHiveTemplate_EndsDeletedSessionFromGenericEvent(t *testing.T) {
 
 	port := hiveTemplatePort(t, server.URL)
 	runner := filepath.Join(t.TempDir(), "run-hive-deletion-template.mjs")
-	if err := os.WriteFile(runner, []byte(`
+	if err := os.WriteFile(runner, []byte(hiveTemplateFetchObserver+`
 import { pathToFileURL } from "node:url";
+console.log("HIVE_STAGE:import started");
 const { Hive } = await import(pathToFileURL(process.argv[2]).href);
+console.log("HIVE_STAGE:import complete");
 const plugin = await Hive();
+console.log("HIVE_STAGE:plugin ready");
 process.env.PWD = "";
+// This observes the two scheduled deletions; it does not require deletion
+// coalescing or forbid overlapping deletions dispatched by other schedules.
+const observation = observeLifecycleFetch(globalThis.fetch, (url, options) => {
+  if (new URL(url).pathname !== "/sessions/session%20%2Fwith%3Freserved%25chars/end") return false;
+  const payload = JSON.parse(options.body);
+  return payload.project === "jarvis-dev" && payload.directory === "/workspace/jarvis-dev" &&
+    payload.client === "opencode";
+});
+globalThis.fetch = observation.fetch;
 const created = { event: { type: "session.created", properties: { info: {
   id: "created-pending", project: "jarvis-dev", directory: "/workspace/jarvis-dev"
 } } } };
 const deleted = { event: { type: "session.deleted", properties: { info: {
   id: "session /with?reserved%chars", project: "jarvis-dev", directory: "/workspace/jarvis-dev"
 } } } };
+console.log("HIVE_STAGE:runner ready to dispatch");
 plugin["event"](created);
 plugin["event"](deleted);
 await new Promise((resolve) => setTimeout(resolve, 1100));
@@ -507,6 +629,7 @@ plugin["event"]({ event: { type: "session.deleted", properties: { info: { id: "u
 globalThis.fetch = originalFetch;
 plugin["event"]({ event: { type: "session.deleted", properties: { info: {} } } });
 await new Promise((resolve) => setTimeout(resolve, 100));
+observation.assertComplete();
 `), 0600); err != nil {
 		t.Fatalf("write Node deletion runner: %v", err)
 	}
@@ -517,17 +640,22 @@ await new Promise((resolve) => setTimeout(resolve, 100));
 	cmd.Env = append(os.Environ(), "HIVE_HTTP_PORT="+port, "HIVE_OPENCODE_SESSION_ID=", "OPENCODE_SESSION_ID=", "SESSION_ID=")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	stages := newHiveTemplateStages(true)
+	cmd.Stdout = stages
+	progress := func() string {
+		return fmt.Sprintf("%s; timeline: %s", stages.latest(), stages.timeline())
+	}
 	finished := make(chan error, 1)
 	go func() { finished <- cmd.Run() }()
-
-	_ = waitHiveTemplateChildRequest(t, createdRequests, finished, cancel, &stderr, "pending session creation")
-	firstEnd := waitHiveTemplateChildRequest(t, endRequests, finished, cancel, &stderr, "first deleted-session end")
-	firstCanceled := waitHiveTemplateTime(t, firstEndCanceled, "first end timeout cancellation")
-	secondEnd := waitHiveTemplateChildRequest(t, endRequests, finished, cancel, &stderr, "repeat deleted-session end")
-	if secondEnd.observedAt.Before(firstCanceled) {
-		t.Fatalf("repeat end observed at %s before first timeout cleanup at %s", secondEnd.observedAt, firstCanceled)
+	if err := awaitHiveTemplateRunnerReady(stages, finished, cancel, &stderr, hiveTemplateStartupWait); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := awaitHiveTemplateRequest(nil, finished, cancel, &stderr, "OpenCode Hive deletion template completion", hiveTemplateRequestWait); err != nil {
+
+	_ = waitHiveTemplateChildRequest(t, createdRequests, finished, cancel, &stderr, "pending session creation", progress)
+	firstEnd := waitHiveTemplateChildRequest(t, endRequests, finished, cancel, &stderr, "first deleted-session end", progress)
+	secondEnd := waitHiveTemplateChildRequest(t, endRequests, finished, cancel, &stderr, "repeat deleted-session end", progress)
+	_ = waitHiveTemplateTime(t, firstEndCanceled, "first end timeout cancellation")
+	if _, err := awaitHiveTemplateRequest(nil, finished, cancel, &stderr, "OpenCode Hive deletion template completion", hiveTemplateRequestWait, progress); err != nil {
 		t.Fatal(err)
 	}
 	assertNoHiveTemplateRequest(t, endRequests, 200*time.Millisecond, "session end without an event ID")
@@ -646,6 +774,112 @@ if (unhandled.length !== 0) throw new Error("non-OK lifecycle response was unhan
 	}
 }
 
+// The wrapper delegates unchanged arguments to native fetch and preserves its
+// settlement. Failures are retained outside delivery's catch, then checked at
+// runner completion so the template cannot swallow an ordering violation.
+const hiveTemplateFetchObserver = `
+function observeLifecycleFetch(fetch, matches) {
+  let first;
+  let calls = 0;
+  const violations = [];
+  return {
+    fetch(url, options) {
+      if (!matches(url, options)) return fetch(url, options);
+      calls += 1;
+      if (calls === 1) {
+        first = { signal: options.signal, rejectedAfterAbort: false };
+      } else {
+        if (!first.signal?.aborted) violations.push("retry with live signal");
+        if (!first.rejectedAfterAbort) violations.push("retry before abort rejection");
+      }
+      const pending = fetch(url, options);
+      if (calls !== 1) return pending;
+      return pending.then(
+        (response) => response,
+        (error) => {
+          first.rejectedAfterAbort = first.signal?.aborted && error === first.signal.reason;
+          if (!first.rejectedAfterAbort) violations.push("first fetch failed without abort rejection");
+          throw error;
+        },
+      );
+    },
+    assertComplete() {
+      if (calls !== 2) violations.push("matching fetch count = " + calls + ", want 2");
+      if (!first?.signal?.aborted || !first.rejectedAfterAbort) violations.push("missing first abort rejection");
+      if (violations.length) throw new Error(violations.join("; "));
+    },
+  };
+}
+`
+
+func TestOpenCodeHiveTemplate_FetchObserverControls(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires Node to exercise the fetch observer")
+	}
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("Node is unavailable: fetch observer controls skipped")
+	}
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{"live signal", "retry with live signal"},
+		{"aborted pending", "retry before abort rejection"},
+		{"non-abort failure", "first fetch failed without abort rejection"},
+		{"abort rejection", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Synthetic settlement controls test the observer itself; lifecycle
+			// runners above still delegate to real native fetch and its timeout.
+			script := hiveTemplateFetchObserver + `
+const scenario = process.argv[1];
+const controller = new AbortController();
+let reject;
+const pending = new Promise((_, fail) => { reject = fail; });
+let calls = 0;
+const observation = observeLifecycleFetch(() => ++calls === 1 ? pending : Promise.resolve({}), () => true);
+const first = observation.fetch("http://fixture/sessions", { signal: controller.signal }).catch(() => {});
+if (scenario === "abort rejection") {
+  controller.abort();
+  reject(controller.signal.reason);
+  await first;
+} else if (scenario === "aborted pending") {
+  controller.abort();
+} else if (scenario === "non-abort failure") {
+  reject(new Error("network failure"));
+  await first;
+  controller.abort();
+}
+await observation.fetch("http://fixture/sessions", { signal: new AbortController().signal });
+// Settling after the retry must not erase the recorded violation.
+controller.abort();
+reject(controller.signal.reason);
+await first;
+try {
+  observation.assertComplete();
+  console.log("valid");
+} catch (error) {
+  console.log(error.message);
+}
+`
+			ctx, cancel := context.WithTimeout(context.Background(), hiveTemplateRequestWait)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "node", "--input-type=module", "-e", script, tc.name)
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("observer control: %v\n%s", err, output)
+			}
+			if tc.want == "" {
+				if strings.TrimSpace(string(output)) != "valid" {
+					t.Fatalf("valid abort/rejection/retry rejected: %s", output)
+				}
+			} else if !strings.Contains(string(output), tc.want) || strings.TrimSpace(string(output)) == "valid" {
+				t.Fatalf("observer diagnostic = %s, want %q", output, tc.want)
+			}
+		})
+	}
+}
+
 func readOpenCodeHiveTemplate(t *testing.T) string {
 	t.Helper()
 	content, err := os.ReadFile(filepath.Join("..", "..", "embed", "hooks", "opencode", "hive.ts"))
@@ -712,6 +946,28 @@ func hiveTemplateStartEvidence(t *testing.T, request hiveTemplateRequest) string
 
 const hiveTemplateRequestWait = 10 * time.Second
 
+// hiveTemplateStartupWait bounds only the runner-readiness gate. Node process
+// startup, ESM import, TypeScript stripping, and Hive() resolving its 1s
+// advisory governance fetch are environment-dominated costs, not product
+// behavior. Windows CI run 36299507753 observed every package running 2-3x
+// slower in attempt 1 than in attempt 2 at the same SHA (cmd/jarvis 124.9s vs
+// 80.5s, internal/projectregistry 33.6s vs 13.5s, internal/sddprogress 31.9s
+// vs 10.2s, internal/agent itself 70.4s vs 24.0s), which exceeded the prior
+// fixed 10s wait before a single stage transition was observed. Use this
+// allowance only for awaitHiveTemplateRunnerReady in the real Node tests;
+// every post-readiness wait keeps the 10s behavioral bound in
+// hiveTemplateRequestWait.
+const hiveTemplateStartupWait = 60 * time.Second
+
+func TestOpenCodeHiveTemplate_StartupAllowanceIsSeparateFromRequestWindow(t *testing.T) {
+	if hiveTemplateStartupWait <= hiveTemplateRequestWait {
+		t.Fatalf("hiveTemplateStartupWait = %s, want greater than hiveTemplateRequestWait = %s", hiveTemplateStartupWait, hiveTemplateRequestWait)
+	}
+	if hiveTemplateStartupWait < 60*time.Second {
+		t.Fatalf("hiveTemplateStartupWait = %s, want at least 60s", hiveTemplateStartupWait)
+	}
+}
+
 func waitHiveTemplateChildRequest(t *testing.T, requests <-chan hiveTemplateRequest, finished <-chan error, cancel context.CancelFunc, stderr *bytes.Buffer, description string, progress ...func() string) hiveTemplateRequest {
 	t.Helper()
 	request, err := awaitHiveTemplateRequest(requests, finished, cancel, stderr, description, hiveTemplateRequestWait, progress...)
@@ -755,15 +1011,16 @@ func awaitHiveTemplateRunnerReady(stages *hiveTemplateStages, finished <-chan er
 	case <-stages.ready:
 		return nil
 	case err := <-finished:
-		return fmt.Errorf("child exited before runner readiness: %v; stderr: %s; stage: %s", err, stderr.String(), stages.latest())
+		return fmt.Errorf("child exited before runner readiness: %v; stderr: %s; stage: %s; timeline: %s", err, stderr.String(), stages.latest(), stages.timeline())
 	case <-timer.C:
 		stage := stages.latest()
+		timeline := stages.timeline()
 		cancel()
 		select {
 		case err := <-finished:
-			return fmt.Errorf("timed out waiting for runner readiness (canceled after deadline: %v; stderr: %s; stage: %s)", err, stderr.String(), stage)
+			return fmt.Errorf("timed out waiting for runner readiness (canceled after deadline: %v; stderr: %s; stage: %s; timeline: %s)", err, stderr.String(), stage, timeline)
 		case <-time.After(time.Second):
-			return fmt.Errorf("timed out waiting for runner readiness (child cancellation pending; stage: %s)", stage)
+			return fmt.Errorf("timed out waiting for runner readiness (child cancellation pending; stage: %s; timeline: %s)", stage, timeline)
 		}
 	}
 }
@@ -775,17 +1032,38 @@ func hiveTemplateProgress(progress []func() string) string {
 	return progress[0]()
 }
 
+type hiveTemplateStageEvent struct {
+	name    string
+	elapsed time.Duration
+}
+
 type hiveTemplateStages struct {
-	mu      sync.Mutex
-	pending string
-	stage   string
-	ready   chan struct{}
-	once    sync.Once
+	mu        sync.Mutex
+	pending   string
+	stage     string
+	startedAt time.Time
+	history   []hiveTemplateStageEvent
+	ready     chan struct{}
+	once      sync.Once
+}
+
+// newHiveTemplateStages constructs a stage recorder. Pass ready=true to
+// create the readiness channel closed by the "runner ready to dispatch"
+// stage; pass false when a test only needs stage/timeline recording.
+func newHiveTemplateStages(ready bool) *hiveTemplateStages {
+	s := &hiveTemplateStages{startedAt: time.Now()}
+	if ready {
+		s.ready = make(chan struct{})
+	}
+	return s
 }
 
 func (s *hiveTemplateStages) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.startedAt.IsZero() {
+		s.startedAt = time.Now()
+	}
 	s.pending += string(p)
 	for {
 		line, rest, found := strings.Cut(s.pending, "\n")
@@ -795,6 +1073,7 @@ func (s *hiveTemplateStages) Write(p []byte) (int, error) {
 		s.pending = rest
 		if stage, ok := strings.CutPrefix(strings.TrimSpace(line), "HIVE_STAGE:"); ok {
 			s.stage = stage
+			s.history = append(s.history, hiveTemplateStageEvent{name: stage, elapsed: time.Since(s.startedAt)})
 			if stage == "runner ready to dispatch" && s.ready != nil {
 				s.once.Do(func() { close(s.ready) })
 			}
@@ -810,6 +1089,22 @@ func (s *hiveTemplateStages) latest() string {
 		return "runner not started"
 	}
 	return s.stage
+}
+
+// timeline renders every recorded stage in order with its elapsed time since
+// the recorder was created, such as "import started@0.81s; import
+// complete@9.20s". It returns "runner not started" when no stage was seen.
+func (s *hiveTemplateStages) timeline() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.history) == 0 {
+		return "runner not started"
+	}
+	parts := make([]string, len(s.history))
+	for i, event := range s.history {
+		parts[i] = fmt.Sprintf("%s@%.2fs", event.name, event.elapsed.Seconds())
+	}
+	return strings.Join(parts, "; ")
 }
 
 func assertNoHiveTemplateRequest(t *testing.T, requests <-chan hiveTemplateRequest, duration time.Duration, description string) {

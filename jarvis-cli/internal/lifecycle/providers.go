@@ -82,7 +82,6 @@ func fakeCompliantOpenCodeConfig() sddruntime.ObservedOpenCodeConfig {
 		"sdd-tasks", "sdd-apply", "sdd-verify", "sdd-archive",
 		"sdd-init", "sdd-onboard",
 		"jd-judge-a", "jd-judge-b", "jd-fix-agent",
-		"review-risk", "review-readability", "review-reliability", "review-resilience",
 	}
 	hiveGrantEvidence := make(map[string][]sddruntime.OpenCodePermissionEvidence, len(sddSubagents))
 	for _, subagent := range sddSubagents {

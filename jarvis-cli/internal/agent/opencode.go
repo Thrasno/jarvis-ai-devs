@@ -164,7 +164,7 @@ func (a *OpenCodeAgent) renderGeneratedConfigPatch(models state.PhaseModels, inc
 		OrchestratorVariant: variants["orchestrator"],
 		Agents:              agents,
 		BashPermission:      openCodeBashPermission,
-		TaskAllows:          append([]string{"general", "explore"}, append(openCodeSDDSubagents(), append(openCodeJudgmentDaySubagents(), openCodeReviewSubagents()...)...)...),
+		TaskAllows:          append([]string{"general", "explore"}, append(openCodeSDDSubagents(), openCodeJudgmentDaySubagents()...)...),
 	}
 
 	tmpl, err := template.New("opencode.json.tmpl").Funcs(template.FuncMap{"json": jsonTemplateValue}).Parse(string(templateBytes))
@@ -231,46 +231,6 @@ func buildOpenCodeGeneratedAgents(assignments, variants map[string]string) []ope
 			Prompt:      judgmentDayPrompt("jd-fix-agent"),
 			Permission:  openCodeDefaultAgentPermission("allow"),
 		},
-		opencodeGeneratedAgent{
-			Name:        "review-risk",
-			Description: "R1 — security, secrets, injection, privilege boundaries, dependency risk",
-			Mode:        "subagent",
-			Hidden:      true,
-			Model:       modelForGeneratedAgent(assignments, "default"),
-			Variant:     variants["default"],
-			Prompt:      reviewAgentPrompt("review-risk"),
-			Permission:  openCodeDefaultAgentPermission("deny"),
-		},
-		opencodeGeneratedAgent{
-			Name:        "review-readability",
-			Description: "R2 — naming clarity, dead code, duplication, complexity, intention",
-			Mode:        "subagent",
-			Hidden:      true,
-			Model:       modelForGeneratedAgent(assignments, "default"),
-			Variant:     variants["default"],
-			Prompt:      reviewAgentPrompt("review-readability"),
-			Permission:  openCodeDefaultAgentPermission("deny"),
-		},
-		opencodeGeneratedAgent{
-			Name:        "review-reliability",
-			Description: "R3 — test contract coverage, edge cases, determinism, regressions",
-			Mode:        "subagent",
-			Hidden:      true,
-			Model:       modelForGeneratedAgent(assignments, "default"),
-			Variant:     variants["default"],
-			Prompt:      reviewAgentPrompt("review-reliability"),
-			Permission:  openCodeDefaultAgentPermission("deny"),
-		},
-		opencodeGeneratedAgent{
-			Name:        "review-resilience",
-			Description: "R4 — fallbacks, timeouts, observability, rollback readiness, SLO",
-			Mode:        "subagent",
-			Hidden:      true,
-			Model:       modelForGeneratedAgent(assignments, "default"),
-			Variant:     variants["default"],
-			Prompt:      reviewAgentPrompt("review-resilience"),
-			Permission:  openCodeDefaultAgentPermission("deny"),
-		},
 	)
 	return agents
 }
@@ -326,17 +286,6 @@ func openCodeSDDSubagents() []string {
 
 func openCodeJudgmentDaySubagents() []string {
 	return []string{"jd-judge-a", "jd-judge-b", "jd-fix-agent"}
-}
-
-// openCodeReviewSubagents returns the 4 R1-R4 review agent names that are
-// installed as OpenCode subagents. These names must be kept in sync with the
-// entries added in buildOpenCodeGeneratedAgents and the cleanup allow-list.
-func openCodeReviewSubagents() []string {
-	return []string{"review-risk", "review-readability", "review-reliability", "review-resilience"}
-}
-
-func reviewAgentPrompt(name string) string {
-	return "Read and follow the Jarvis agent definition for `" + name + "` before reviewing. Keep findings language-agnostic, use the severity schema (BLOCKER/CRITICAL/WARNING/SUGGESTION), and write generated output in English."
 }
 
 func modelForGeneratedAgent(assignments map[string]string, phase string) string {

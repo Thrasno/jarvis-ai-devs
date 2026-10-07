@@ -10,7 +10,7 @@ for this policy. Claude permissions are unchanged.
 | Surface | Default |
 | --- | --- |
 | `external_directory` | `allow` for every path, not just the current project |
-| Global and generated SDD/Judgment Day/review agent `bash` | Ordinary commands allowed, including tests, commits and normal pushes |
+| Global and generated SDD/Judgment Day agent `bash` | Ordinary commands allowed, including tests, commits and normal pushes |
 | Destructive shell patterns | Ask for removal/deletion, forced pushes, hard resets, cleaning, history rewrite, branch deletion, file restoration and dangerous filesystem commands |
 | `read` | Allow ordinary files; retain the existing deny patterns for environment files, secret/token/credential paths, SSH keys, PEM and key files |
 | Read-only agents | Keep `edit: deny` and `task: deny`; shell defaults do not grant either tool |
