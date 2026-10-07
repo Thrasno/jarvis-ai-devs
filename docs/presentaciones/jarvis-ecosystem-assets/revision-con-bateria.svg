@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="660" viewBox="0 0 760 660" role="img" aria-labelledby="title desc">
+  <title id="title">La atención humana también tiene límites</title>
+  <desc id="desc">Arriba, una revisora agotada al final del día se enfrenta a una montaña de cambios. Abajo, examina un paquete coherente de comportamiento, pruebas y documentación; otros paquetes esperan su turno.</desc>
+  <defs>
+    <linearGradient id="edge" x2="1" y2="1">
+      <stop stop-color="#e0246f"/>
+      <stop offset=".5" stop-color="#8b5cf0"/>
+      <stop offset="1" stop-color="#3b82e8"/>
+    </linearGradient>
+    <pattern id="diff" width="170" height="44" patternUnits="userSpaceOnUse">
+      <path d="M12 10h132M12 32h105" stroke="#ff94bc" stroke-width="7" opacity=".65"/>
+      <path d="M12 10h18M12 32h18" stroke="#e0246f" stroke-width="7"/>
+    </pattern>
+  </defs>
+  <rect width="760" height="660" rx="22" fill="#080a10"/>
+  <rect x="18" y="18" width="724" height="302" rx="18" fill="#121a2b" stroke="#34415a"/>
+  <text x="42" y="56" fill="#ff94bc" font-family="system-ui,sans-serif" font-size="26" font-weight="700">Al final del día · 1.000+ líneas</text>
+  <!-- El reloj y la taza sitúan el cansancio; el diff desborda el monitor. -->
+  <circle cx="681" cy="98" r="26" fill="#080a10" stroke="#bbc7d8" stroke-width="2"/>
+  <path d="M681 79v19l-13 7" fill="none" stroke="#e0a22e" stroke-width="3" stroke-linecap="round"/>
+  <g transform="translate(377 82) rotate(8)">
+    <rect x="34" y="-7" width="211" height="179" rx="8" fill="#0e1320" stroke="#8b5cf0"/>
+    <rect x="17" y="8" width="211" height="179" rx="8" fill="#0e1320" stroke="#e0246f"/>
+    <rect y="24" width="211" height="185" rx="8" fill="#0e1320" stroke="#ff94bc" stroke-width="2"/>
+    <rect x="13" y="37" width="184" height="158" fill="url(#diff)"/>
+  </g>
+  <path d="M353 227h233v55H353z" fill="#080a10" stroke="#34415a" stroke-width="3"/>
+  <path d="M469 282v18m-42 0h84" stroke="#bbc7d8" stroke-width="5"/>
+  <path d="M63 292h618" stroke="#34415a" stroke-width="8" stroke-linecap="round"/>
+  <path d="M124 289q-8-84 39-95 52-12 101 66l-54 29" fill="#8b5cf0"/>
+  <path d="M197 215l59 39 47-15" fill="none" stroke="#c9977d" stroke-width="20" stroke-linecap="round"/>
+  <path d="M180 210l-26-27 33-28" fill="none" stroke="#c9977d" stroke-width="17" stroke-linecap="round"/>
+  <ellipse cx="213" cy="164" rx="40" ry="47" transform="rotate(22 213 164)" fill="#dbad91"/>
+  <path d="M172 158q-13-61 37-57 46 2 45 58l-22-21-30 3-18 28" fill="#25354c"/>
+  <path d="M206 168l13 3m13 4 12 3m-33 13q9-5 18 2" fill="none" stroke="#604b4a" stroke-width="3" stroke-linecap="round"/>
+  <path d="M143 91l-13-15m21 4-3-19m-25 41-18-4" stroke="#e0a22e" stroke-width="3"/>
+  <rect x="83" y="247" width="31" height="38" rx="5" fill="#bbc7d8"/>
+  <path d="M114 255q20-2 17 15-1 8-17 5" fill="none" stroke="#bbc7d8" stroke-width="5"/>
+  <rect x="44" y="330" width="672" height="3" rx="1" fill="url(#edge)"/>
+  <rect x="18" y="345" width="724" height="297" rx="18" fill="#0e1320" stroke="#34415a"/>
+  <text x="42" y="384" fill="#a8caff" font-family="system-ui,sans-serif" font-size="26" font-weight="700">Un cambio con sentido cada vez</text>
+  <!-- Una mirada concentrada, no una aprobación automática. -->
+  <path d="M57 608v-80q10-48 54-48t58 48v80" fill="#3b82e8"/>
+  <ellipse cx="113" cy="460" rx="36" ry="43" fill="#dbad91"/>
+  <path d="M77 457q-9-60 38-54 38 4 36 45l-22-21-37 12" fill="#25354c"/>
+  <path d="M96 459h12m15 0h12m-28 24h17" stroke="#604b4a" stroke-width="3" stroke-linecap="round"/>
+  <path d="M150 538l53 18 33-17" fill="none" stroke="#dbad91" stroke-width="17" stroke-linecap="round"/>
+  <g font-family="system-ui,sans-serif">
+    <rect x="208" y="414" width="246" height="192" rx="12" fill="#121a2b" stroke="#a8caff" stroke-width="2"/>
+    <text x="230" y="447" fill="#e6edf3" font-size="24" font-weight="700">Validar</text>
+    <path d="M231 469h197" stroke="#34415a"/>
+    <text x="231" y="500" fill="#a8caff" font-size="23">{ } Reglas</text>
+    <text x="231" y="539" fill="#c4b5fd" font-size="23">◇ Pruebas</text>
+    <text x="231" y="578" fill="#e0a22e" font-size="23">▤ Documentación</text>
+    <rect x="480" y="430" width="215" height="70" rx="10" fill="#121a2b" stroke="#34415a"/>
+    <text x="501" y="458" fill="#e6edf3" font-size="23">Generar</text>
+    <text x="501" y="485" fill="#bbc7d8" font-size="20">Reglas · tests · docs</text>
+    <rect x="480" y="518" width="215" height="70" rx="10" fill="#121a2b" stroke="#34415a"/>
+    <text x="501" y="546" fill="#e6edf3" font-size="23">Recuperar</text>
+    <text x="501" y="573" fill="#bbc7d8" font-size="20">Reglas · tests · docs</text>
+    <text x="486" y="618" fill="#bbc7d8" font-size="21">Esperan su revisión</text>
+  </g>
+</svg>

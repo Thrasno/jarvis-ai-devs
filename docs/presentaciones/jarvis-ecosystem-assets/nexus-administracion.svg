@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="560" viewBox="0 0 1000 560" role="img" aria-labelledby="title desc">
+  <title id="title">Mapa de administración de la memoria compartida</title>
+  <desc id="desc">Una administradora observa Hive API: conocimiento y sesiones, actividad y salud de sincronización, proyectos y usuarios. Una lupa representa inspección de posibles duplicados; un escudo representa cuarentena. No muestra cifras ni una interfaz real.</desc>
+  <rect width="1000" height="560" rx="20" fill="#080a10"/>
+  <!-- Branches connect administrative concerns to the shared service. -->
+  <g fill="none" stroke="#34415a" stroke-width="4">
+    <path d="M490 253L235 135M490 253L760 135M490 253L235 402M490 253L760 402"/>
+  </g>
+  <circle cx="490" cy="253" r="100" fill="#121a2b" stroke="#8b5cf0" stroke-width="3"/>
+  <!-- Shared knowledge database, not local SQLite. -->
+  <g fill="#121a2b" stroke="#a8caff" stroke-width="3">
+    <path d="M452 198V259C452 285 528 285 528 259V198"/>
+    <ellipse cx="490" cy="198" rx="38" ry="13"/>
+    <path d="M452 228C452 249 528 249 528 228"/>
+  </g>
+  <g fill="#e6edf3" font-family="system-ui, sans-serif" text-anchor="middle">
+    <text x="490" y="311" font-size="26" font-weight="700">Hive API</text>
+    <text x="490" y="335" font-size="18" fill="#bbc7d8">Compartido</text>
+  </g>
+  <!-- Knowledge volumes and sessions. -->
+  <g fill="#121a2b" stroke="#a8caff" stroke-width="3">
+    <path d="M124 85H176V158H124ZM182 75H234V158H182ZM240 96H292V158H240Z"/>
+    <path d="M135 99H164M135 111H164M193 89H223M193 101H223M251 110H280"/>
+  </g>
+  <g fill="#e6edf3" font-family="system-ui, sans-serif" text-anchor="middle" font-size="24">
+    <text x="210" y="199">Memorias y sesiones</text>
+    <text x="210" y="226" fill="#bbc7d8" font-size="19">Volumen por proyecto</text>
+  </g>
+  <!-- Activity trace and sync arrows carry no invented numerical values. -->
+  <g fill="none" stroke="#22b85c" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M658 122H688L708 93L730 147L750 122H782"/>
+    <path d="M809 98A34 34 0 0 1 854 133L844 122M854 133L866 122M851 155A34 34 0 0 1 806 120L797 132M806 120L817 132"/>
+  </g>
+  <g fill="#e6edf3" font-family="system-ui, sans-serif" text-anchor="middle" font-size="24">
+    <text x="760" y="199">Actividad y sync</text>
+    <text x="760" y="226" fill="#bbc7d8" font-size="19">Salud y proyectos degradados</text>
+  </g>
+  <!-- Two folders with a magnifier: inspection, not automatic deduplication. -->
+  <g fill="#121a2b" stroke="#e0a22e" stroke-width="3" stroke-linejoin="round">
+    <path d="M123 352H158L172 365H230V418H123Z"/>
+    <path d="M166 328H201L215 341H272V391H166Z"/>
+    <circle cx="273" cy="393" r="25" fill="#080a10"/>
+    <path d="M291 412L313 436" stroke-width="7"/>
+  </g>
+  <g fill="#e6edf3" font-family="system-ui, sans-serif" text-anchor="middle" font-size="24">
+    <text x="210" y="472">Inspeccionar proyectos</text>
+    <text x="210" y="501" fill="#bbc7d8" font-size="19">Revisar posibles duplicados</text>
+  </g>
+  <!-- Users and governance shield. -->
+  <g fill="none" stroke="#ff94bc" stroke-width="3" stroke-linecap="round">
+    <circle cx="697" cy="352" r="18"/><path d="M670 402V389Q697 362 724 389V402"/>
+    <circle cx="749" cy="352" r="18"/><path d="M722 402V389Q749 362 776 389V402"/>
+    <path d="M795 346L830 331L865 346V381Q863 405 830 423Q797 405 795 381Z"/>
+    <path d="M818 375H842" stroke-width="6"/>
+  </g>
+  <g fill="#e6edf3" font-family="system-ui, sans-serif" text-anchor="middle" font-size="24">
+    <text x="760" y="472">Usuarios y cuarentena</text>
+    <text x="760" y="501" fill="#bbc7d8" font-size="19">Administración con permisos</text>
+  </g>
+  <!-- Human oversight at the centre-bottom. -->
+  <g fill="none" stroke="#bbc7d8" stroke-width="4" stroke-linecap="round">
+    <circle cx="490" cy="421" r="21"/><path d="M456 493V466Q490 437 524 466V493"/>
+    <path d="M445 499H536L528 536H452Z"/>
+  </g>
+  <text x="490" y="42" fill="#bbc7d8" font-family="system-ui, sans-serif" font-size="20" text-anchor="middle">MAPA DE CAPACIDADES · ILUSTRACIÓN ORIGINAL, NO CAPTURA</text>
+</svg>

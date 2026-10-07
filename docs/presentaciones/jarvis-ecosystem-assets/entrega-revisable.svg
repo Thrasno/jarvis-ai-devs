@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="800" viewBox="0 0 760 800" role="img" aria-labelledby="title desc">
+  <title id="title">Una entrega que se puede revisar</title>
+  <desc id="desc">Código, pruebas y documentación forman unidades de trabajo coherentes. Una PR explica el objetivo y los checks. Una persona revisa el diff y decide; el diagrama no representa publicación automática.</desc>
+  <defs>
+    <linearGradient id="nexus" x2="1" y2="1">
+      <stop stop-color="#e0246f"/>
+      <stop offset=".5" stop-color="#8b5cf0"/>
+      <stop offset="1" stop-color="#3b82e8"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="7" refY="4" orient="auto">
+      <path d="M0 0 8 4 0 8" fill="none" stroke="#a8caff" stroke-width="2"/>
+    </marker>
+  </defs>
+  <rect width="760" height="800" rx="20" fill="#080a10"/>
+  <path d="M28 24H732" stroke="url(#nexus)" stroke-width="4"/>
+  <g font-family="system-ui, sans-serif" fill="#e6edf3">
+    <text x="32" y="70" font-size="30" font-weight="700">Una unidad completa, no un trozo de diff</text>
+    <rect x="28" y="98" width="310" height="272" rx="18" fill="#121a2b" stroke="#34415a"/>
+    <text x="48" y="140" font-size="26" font-weight="700">1 · Código y pruebas</text>
+    <rect x="52" y="165" width="140" height="115" rx="10" fill="#080a10" stroke="#a8caff"/>
+    <g fill="none" stroke="#a8caff" stroke-width="5" stroke-linecap="round">
+      <path d="m82 190-16 20 16 20m66-40 16 20-16 20m-38 10 16-40"/>
+      <path d="M69 254h42m13 0h43" stroke="#8b5cf0"/>
+    </g>
+    <rect x="205" y="179" width="107" height="118" rx="8" fill="#0e1320" stroke="#8b5cf0"/>
+    <path d="m223 201 8 8 15-18m-23 43 8 8 15-18" fill="none" stroke="#22b85c" stroke-width="4"/>
+    <path d="M257 203h38m-38 34h38m-72 35h72" stroke="#bbc7d8" stroke-width="4"/>
+    <text x="48" y="337" font-size="26">Pruebas y docs incluidas</text>
+    <rect x="422" y="98" width="310" height="272" rx="18" fill="#121a2b" stroke="#34415a"/>
+    <text x="442" y="140" font-size="26" font-weight="700">2 · Commits con sentido</text>
+    <path d="M465 181v108" stroke="#a8caff" stroke-width="4"/>
+    <g fill="#080a10" stroke="#8b5cf0" stroke-width="3">
+      <circle cx="465" cy="197" r="10"/>
+      <circle cx="465" cy="245" r="10"/>
+      <rect x="489" y="178" width="217" height="39" rx="7"/>
+      <rect x="489" y="226" width="217" height="39" rx="7"/>
+    </g>
+    <text x="502" y="205" font-size="24">Validar + tests</text>
+    <text x="502" y="253" font-size="24">Generar + tests</text>
+    <text x="442" y="337" font-size="24">Cada unidad tiene sentido</text>
+    <rect x="422" y="434" width="310" height="284" rx="18" fill="#121a2b" stroke="#34415a"/>
+    <text x="442" y="476" font-size="28" font-weight="700">3 · PR clara</text>
+    <rect x="455" y="495" width="244" height="190" rx="10" fill="#080a10" stroke="#3b82e8"/>
+    <path d="M455 528h244" stroke="#34415a"/>
+    <circle cx="472" cy="512" r="4" fill="#e0246f"/>
+    <circle cx="487" cy="512" r="4" fill="#e0a22e"/>
+    <circle cx="502" cy="512" r="4" fill="#22b85c"/>
+    <text x="475" y="561" font-size="26">Objetivo</text>
+    <text x="475" y="603" font-size="26">Qué cambia</text>
+    <text x="475" y="645" font-size="26">Checks y límites</text>
+    <rect x="28" y="434" width="310" height="284" rx="18" fill="#121a2b" stroke="#34415a"/>
+    <text x="48" y="476" font-size="26" font-weight="700">4 · Revisión humana</text>
+    <rect x="49" y="507" width="140" height="95" rx="8" fill="#080a10" stroke="#a8caff"/>
+    <path d="M61 527h83m-83 18h115m-115 18h96m-96 18h72" stroke="#22b85c" stroke-width="4"/>
+    <path d="M90 610h61m-30-8v8" stroke="#a8caff" stroke-width="4"/>
+    <path d="M214 555q-9-42 28-44 40 0 30 44" fill="#35214c"/>
+    <circle cx="243" cy="545" r="22" fill="#d8aa87"/>
+    <path d="M229 541h10m9 0h10" stroke="#080a10" stroke-width="3"/>
+    <path d="M208 609q0-41 34-41t36 41v13h-70Z" fill="#8b5cf0"/>
+    <path d="m213 585-26 17h-16" fill="none" stroke="#d8aa87" stroke-width="10" stroke-linecap="round"/>
+    <path d="M45 624h257" stroke="#34415a" stroke-width="5"/>
+    <text x="48" y="679" font-size="26">Leer, contrastar, decidir</text>
+    <text x="32" y="768" font-size="26" fill="#bbc7d8">Preparar no autoriza publicar ni fusionar.</text>
+  </g>
+  <g fill="none" stroke="#a8caff" stroke-width="3" marker-end="url(#arrow)">
+    <path d="M350 236h57"/>
+    <path d="M577 382v38"/>
+    <path d="M410 574h-57"/>
+  </g>
+</svg>
