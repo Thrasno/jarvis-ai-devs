@@ -29,12 +29,16 @@ pending.add("first");
 pending.add("second");
 ```
 
-Literal forms are equivalent and read well for small fixed shapes:
+Assigned literals remain valid and read well for small fixed shapes. Never invoke methods directly on Map/List literals; assign the literal to a variable, then invoke the method. Constructor forms above are optional alternatives. This compatibility convention is explained in [conventions.md](conventions.md), not asserted as a universal parser restriction.
 
 ```deluge
 result = {"ok": true, "count": 2};
+resultText = result.toString();
 codes = {"alpha", "beta"};
+hasAlpha = codes.contains("alpha");
 ```
+
+Avoid `{"alpha", "beta"}.contains("alpha")` and `{"ok": true}.toString()` as direct collection receivers. Text literal methods remain valid, for example `" alpha ".trim()`.
 
 ## Map access
 
