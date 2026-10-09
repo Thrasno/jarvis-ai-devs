@@ -2568,6 +2568,61 @@ func TestCatalogContract_ZohoDelugeSkillCarriesRoutingAnchors(t *testing.T) {
 	}
 }
 
+// TestCatalogContract_ZohoDelugeCollectionReceiverConvention protects packaged
+// compatibility guidance, not a claim about any host's parser behavior.
+func TestCatalogContract_ZohoDelugeCollectionReceiverConvention(t *testing.T) {
+	t.Parallel()
+
+	const base = "embed/skills/zoho-deluge/"
+	tests := []struct {
+		path     string
+		required []string
+	}{
+		{"SKILL.md", []string{
+			"Never invoke methods directly on Map/List literals; assign the literal to a variable, then invoke the method.",
+			"compatibility convention",
+			"Text literal methods remain valid.",
+		}},
+		{"references/conventions.md", []string{
+			"Never invoke methods directly on Map/List literals",
+			"Assigned literals remain valid",
+			"optional",
+			"not a universal documented parser rejection",
+			"Text literal methods remain valid",
+			`codes = {"alpha", "beta"};`,
+			`hasAlpha = codes.contains("alpha");`,
+			`result = {"ok": true, "count": 2};`,
+			`resultText = result.toString();`,
+		}},
+		{"references/collections.md", []string{
+			"Never invoke methods directly on Map/List literals",
+			"Assigned literals remain valid",
+			"optional",
+			"Text literal methods remain valid",
+			`codes = {"alpha", "beta"};`,
+			`hasAlpha = codes.contains("alpha");`,
+			`result = {"ok": true, "count": 2};`,
+			`resultText = result.toString();`,
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			content := readEmbeddedSkillAsset(t, base+tt.path)
+			for _, required := range tt.required {
+				if !strings.Contains(content, required) {
+					t.Errorf("%s: missing collection receiver convention %q", tt.path, required)
+				}
+			}
+			// Restrict collection receivers only; do not reject text literal methods.
+			for _, block := range regexp.MustCompile("(?s)```deluge\\r?\\n(.*?)```").FindAllStringSubmatch(content, -1) {
+				if regexp.MustCompile(`\}\s*\)*\s*\.[A-Za-z][A-Za-z0-9_]*\s*\(`).MatchString(block[1]) {
+					t.Errorf("%s: fenced example invokes a method directly on a collection literal", tt.path)
+				}
+			}
+		})
+	}
+}
+
 // TestCatalogContract_ZohoDelugeIterationContractFailsClosed preserves the
 // application-neutral iteration forms verified by Zoho's Deluge documentation.
 // It checks forbidden forms only inside fenced Deluge examples, so explanatory

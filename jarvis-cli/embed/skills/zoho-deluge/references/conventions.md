@@ -55,12 +55,16 @@ Every path returns, and every return on that path has the same shape, so the cal
 
 ## 5. Declare collections explicitly
 
-Create the Map or List before filling it, so the shape is visible at the point of declaration.
+Never invoke methods directly on Map/List literals; assign the literal to a variable, then invoke the method. This is a generic compatibility convention, not a universal documented parser rejection. Assigned literals remain valid; `Map()` plus `put()` and `List()` plus `add()` are optional alternatives, not required replacements.
 
 ```deluge
-lineItems = List();
-totalsByCategory = Map();
+codes = {"alpha", "beta"};
+hasAlpha = codes.contains("alpha");
+result = {"ok": true, "count": 2};
+resultText = result.toString();
 ```
+
+Avoid direct receivers such as `{"alpha", "beta"}.contains("alpha")` and `{"ok": true}.toString()`. Text literal methods remain valid, for example `" alpha ".trim()`; the receiver convention is scoped to Map/List collections.
 
 ## 6. Filter and deduplicate before iterating
 
@@ -88,6 +92,7 @@ info "create attendee response: " + response.toString();
 - Is any comment sitting above a function definition?
 - Does every comment earn its place, or would a better name remove it?
 - Are there traceability or tracking identifiers in the comments?
+- Are Map/List literals assigned to variables before invoking methods on them?
 - Does every exit path return the same shape?
 - Are the guards at the top, or buried in nesting?
 - Are payload and response logged for every call that leaves the script?
