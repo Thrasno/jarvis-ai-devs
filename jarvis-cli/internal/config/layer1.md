@@ -82,6 +82,20 @@ and tooling consumes it; write it where the language's convention expects it.
 Comment language and persona non-leakage are owned elsewhere; this section
 governs volume and intent only.
 
+## Zoho MCP Usage Policy
+
+Zoho MCP servers available to you are connected to the company's internal Zoho accounts, never to client accounts.
+Client Zoho work does not run through them.
+
+- NEVER use any Zoho MCP server unless the user explicitly asks for it by name in the current request.
+  Other MCP servers are not affected by this policy.
+- Working on a Zoho project, or on a task where Zoho seems relevant, is not authorization.
+- Do NOT offer or suggest using a Zoho MCP server on your own initiative.
+- Authorization applies only to the request in which it is given. It never
+  carries over to later requests, even within the same task or session.
+- Before any write operation (create, update, delete), state what you will do and wait for confirmation.
+- NEVER copy data read from these accounts into code, fixtures, examples, commits, or client deliverables.
+
 ## Layer Boundary Rule (MVP)
 
 Layer1 is behavior/instruction policy only.
