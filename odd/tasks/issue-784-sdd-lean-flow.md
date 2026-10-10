@@ -19,7 +19,7 @@ Related: #781 operator handoff (approved), lands before the adaptive verify slic
 - [x] S2: Preflight as the single decision point (TDD mode, size policy, chain strategy); tasks and orchestrator stop re-asking; sticky size exception. Also close S1 advisory: an unfilled `Decision needed before apply: <one of: Yes, No>` placeholder leaves Required=false (gate fails open; pre-existing) and the verbatim-template test injects a literal Yes.
 - [x] S3: TDD detection only suggests (real test command required; Deluge suggests standard; one-line reason); apply consumes forwarded mode.
 - [x] S4: Question round single owner (orchestrator), offered in both modes, forced only for unusable scope.
-- [ ] S5a: Checkpoint CLI derives request id and stream digest; returns a `next` action.
+- [x] S5a: Checkpoint CLI derives request id and stream digest; returns a `next` action.
 - [ ] S5b: Checkpoint CLI accepts a compact per-task strict-TDD record and expands it into evidence entries.
 - [ ] S6: Trim apply prompts (one checkpoint per batch, follow `next`, compact TDD).
 - [ ] S7: #781 operator handoff (EvidenceOperator kind + tasks/apply/verify skills).
@@ -67,5 +67,15 @@ Related: #781 operator handoff (approved), lands before the adaptive verify slic
 - Worker: RED on TestSDDOrchestrator_OwnsTheProposalQuestionRoundInBothModes and TestCatalogContract_SDDProposeNeverRunsItsOwnQuestionRound, GREEN; full suite, vet, gofmt, diff --check clean.
 - Commit `feat(sdd): give the proposal question round a single owner in both modes`; review review-b2b4a8841de42803 approved + acknowledged. Advisories (headless offer handling, input value list) accepted as minor; propose already proceeds best-effort and reports not-run.
 
+### S4 delivery
+- PR #788 merged (squash b34b46f6), 14/14 checks.
+
+### S5a
+- Worker: RED (build failure: output.Next undefined, PlanOutcomes undefined), GREEN; jarvis-cli, hivederive, hive-daemon test suites ok; vet clean on jarvis-cli, hivederive, hive-api.
+- Derived ids: request_id = `ckpt-` + 32 hex over a domain-prefixed canonical payload (project/change included because Hive receipts are keyed globally by request_id); batch_id = `apb-` + 32 hex from request_id; stream_sha256 from planEntries. Base/Expected* stay required.
+- `next` actions: done, continue_stream, continue_tasks, stop_fix_entry, stop_new_change, stop_consolidate, refresh_and_retry, retry_new_request_id, fix_request, run_upgrade_continuation, retry_identical, stop_blocked; exhaustive mapping test plus AST guard on PlanOutcome constants.
+- Commits `feat(sdd): derive checkpoint identities and return a next action` (review review-6810382206a126a2 approved) and coverage restore 'test(sdd): keep coverage for stale explicit digests on reused request IDs' (review review-79b0cbefdf4a97a9 approved).
+- Prompt slice S6 must stop demanding stream_sha256/request_id/batch_id and follow `next`.
+
 ## Next step
-S4 push + PR + merge, then S5a (checkpoint CLI next + derived ids).
+S5a push + PR + merge, then S5b (compact strict-TDD record).
