@@ -58,21 +58,13 @@ Before selecting a progress backend, resolve or adopt the immutable `project/cha
 
 ## Status and Workspace Guard
 
-Before reading implementation files or writing code, consume the structured status provided by the orchestrator. If status is not provided but `jarvis sdd status <change> --json` is available, run it. If `jarvis sdd status <change> --json` is unavailable, STOP before editing. Manual recovery may inspect artifacts, but cannot invent workspace-edit authority or authorize an edit; report missing status dimensions: schema, blockers, dependencies, workspace-planning, artifact context, and allowed edit roots.
+Before reading implementation files or writing code: Apply the Native Status Gate from `_shared/sdd-phase-common.md` to the forwarded status; run `jarvis sdd status <change> --json` yourself only when no status was forwarded; STOP on any gate failure. Gate phase: `sdd-apply`; `dependencies["sdd-apply"]` must be exactly `ready`.
 
-- Confirm the status field `schema` is exactly `jarvis.sdd-status`.
-- Confirm `dependencies["sdd-apply"]` is exactly `ready`; otherwise STOP and return the phase-specific `blockedReasons`.
 - Read context from `contextFiles` and `artifactPaths` before reading implementation files. Do not assume fixed artifact filenames when status provides paths or Hive topics.
-- If status includes `blockedReasons`, review them first. If any blocker prevents apply, STOP and return `blocked` with those reasons.
-- Use dependency states to decide whether `sdd-apply` is blocked, ready, or already satisfied. If the `sdd-apply` dependency is blocked, STOP and return `blocked`.
 - Use `applyState.hasProgress` and `applyState.complete` to understand whether prior apply work exists and is complete. `hasProgress` means an apply-progress artifact exists. `complete` means canonical apply-progress is complete and authoritative task checkboxes are all checked; verify-report remains a separate dependency. Do not rename, remove, or invent extra `applyState` values beyond the Jarvis status contract.
 - If all assigned implementation is complete and the validated v2 snapshot coverage agrees with the frozen task manifest and persisted checkboxes, do not edit. Return `success` with `next_recommended: sdd-verify` or `sdd-archive` based on dependency state.
-- If the `sdd-apply` dependency is ready, proceed only on the assigned pending tasks.
-- If `actionContext.mode` is not exactly `workspace-edit`, treat linked repos and folders as read-only planning context. STOP before editing and return `blocked`.
-- Treat `actionContext.allowedEditRoots` from valid native status as the authoritative edit-root guard. If `actionContext.allowedEditRoots` is missing or empty, STOP before editing. Manual recovery or maintainer approval cannot substitute for this authority.
-- If `actionContext.allowedEditRoots` is present, write only inside those roots. If a needed edit is outside every `actionContext.allowedEditRoots` entry, STOP and report the unsafe path.
+- Once the gate passes, proceed only on the assigned pending tasks.
 - Use `phaseInstructions` to report the next phase command when returning; do not invent phase routing.
-- Generated artifacts are output, never sources of truth. Do not edit installed user-machine agent configuration, generated registries, or runtime copies to make apply or verification pass; change the source assets/templates instead.
 
 ## What to Do
 
@@ -84,13 +76,12 @@ Follow **Section A** from `skills/_shared/sdd-phase-common.md`.
 
 Before writing ANY code:
 
-1. Consume the structured status and confirm the `sdd-apply` dependency is ready for the assigned work.
-2. Enforce `actionContext.mode` and `allowedEditRoots`; stop on read-only planning mode, missing roots, or unsafe paths.
-3. Read every applicable artifact path/topic from `contextFiles` and `artifactPaths`.
-4. Read the specs — understand WHAT the code must do.
-5. Read the design — understand HOW to structure the code.
-6. Read existing code in affected files — understand current patterns.
-7. Check the project's coding conventions from `config.yaml` when available.
+1. Pass the Native Status Gate (see Status and Workspace Guard) for the assigned work.
+2. Read every applicable artifact path/topic from `contextFiles` and `artifactPaths`, using forwarded observation IDs or paths per shared Section B.
+3. Read the specs — understand WHAT the code must do.
+4. Read the design — understand HOW to structure the code.
+5. Read existing code in affected files — understand current patterns.
+6. Check the project's coding conventions from `config.yaml` when available.
 
 #### Step 2a: Enforce Review Workload Decision
 
@@ -281,8 +272,7 @@ Return to the orchestrator:
 - ALWAYS read specs before implementing — specs are your acceptance criteria
 - ALWAYS follow the design decisions — do not freelance a different approach
 - ALWAYS match existing code patterns and conventions in the project
-- ALWAYS consume or produce structured status before implementation; do not infer readiness from conversation alone
-- STOP on blocked `sdd-apply` dependency, unsafe `actionContext`, missing edit roots, or edits outside `allowedEditRoots`
+- STOP on any Native Status Gate failure; do not infer readiness from conversation alone
 - In `openspec` mode, mark tasks complete in `tasks.md` only after the guarded checkpoint commits matching task coverage
 - Before returning, re-read the persisted tasks artifact and ensure completed tasks are visibly marked `[x]`; internal todos are not completion evidence
 - If you discover the design is wrong or incomplete, NOTE IT in your return summary — do not silently deviate

@@ -60,18 +60,14 @@ Resolve or adopt the immutable `project/change` binding before selecting an arch
 
 ## Status and Archive Safety Gate
 
-Before syncing specs, moving folders, or writing an archive report, consume the structured status from `jarvis sdd status <change> --json`.
+Before syncing specs, moving folders, or writing an archive report: Apply the Native Status Gate from `_shared/sdd-phase-common.md` to the forwarded status; run `jarvis sdd status <change> --json` yourself only when no status was forwarded; STOP on any gate failure. Gate phase: `sdd-archive`; `dependencies["sdd-archive"]` must be exactly `ready`, except that `all_done` is acceptable only when the prepared archive report is present.
 
-- Confirm the actual `schema` field is exactly `jarvis.sdd-status`, `dependencies["sdd-archive"]` is exactly `ready`; `all_done` is acceptable only when the prepared archive report is present, and read `blockedReasons`, `taskProgress`, `applyState`, `artifacts`, `artifactPaths`, `contextFiles`, `actionContext`, and `phaseInstructions`.
+- Read `blockedReasons`, `taskProgress`, `applyState`, `artifacts`, `artifactPaths`, `contextFiles`, `actionContext`, and `phaseInstructions`.
 - Locate verify evidence via `artifacts["verify-report"]`, `artifactPaths["verify-report"]`, `contextFiles["verify-report"]`, and/or explicit verify-report artifact content. There is no top-level verify report status field.
 - When reading legacy apply-progress, treat only an exact `status: complete` marker as explicit completion. Any other marker, unknown, malformed, conflicting, or unmarked progress is incomplete unless structured status classified an unmarked artifact as done from deterministic all-complete task evidence. Legacy history is read-only during archive.
 - For `jarvis.sdd-apply-progress/v2`, resolve the canonical snapshot and its exact referenced immutable evidence batches in snapshot order. Require `done` progress (never `superseded`), matching identities, hashes, task-manifest coverage, and final serialized documents at or below 40,000 Unicode runes; orphaned or cumulative observations are never evidence. Historical completed v2 changes remain archiveable. Recheck readiness under the archive lock before moving any topology.
 - Any `continuation_required`, `evidence_item_too_large`, `snapshot_capacity_exhausted`, `lock_busy`, `legacy_upgrade_required`, conflict, migration, or `backend_diverged` result is incomplete: fail closed, preserve the topology unchanged, and return its typed recovery direction. Do not merge, rewrite, or repair evidence during archive.
-- If phase-specific `blockedReasons` apply to archive, STOP and return `blocked` with the reasons. Do not archive.
-- If `actionContext.mode` is not exactly `workspace-edit`, STOP. Do not move workspace changes into repo-local archives or edit linked repositories.
-- `actionContext.allowedEditRoots` must be non-empty. Every archive edit, spec merge, and folder move must stay inside those roots. If an edit would escape them, STOP.
-- If native status is unavailable, manual recovery may inspect artifacts but cannot invent workspace-edit authority; STOP before archive writes or report persistence.
-- Generated artifacts are output, never sources of truth. Never fix archive readiness by editing generated user-machine artifacts, installed skill copies, generated registries, or local runtime config. Change Jarvis source templates/assets instead.
+- Every archive edit, spec merge, and folder move must stay inside `actionContext.allowedEditRoots`; never move workspace changes into repo-local archives or edit linked repositories. If an edit would escape them, STOP.
 
 ### Verification Gate
 
@@ -211,7 +207,7 @@ Ready for the next change.
 
 ## Rules
 
-- ALWAYS consume structured `jarvis.sdd-status` before archive; do not infer archive readiness from conversation alone.
+- ALWAYS pass the Native Status Gate before archive; do not infer archive readiness from conversation alone.
 - NEVER archive a change that has unresolved CRITICAL issues in its verification report.
 - NEVER archive when the verify report is missing, failing, stale, or does not cover current artifacts.
 - NEVER archive when implementation tasks are incomplete in task checkboxes or `taskProgress`.

@@ -42,11 +42,9 @@ The orchestrator should provide structured status from `jarvis sdd status <chang
 - Read all available status `contextFiles` before judging implementation. Full spec-driven verification reads proposal, specs, design, tasks, and apply-progress; partial artifact sets degrade as described below.
 - Follow `../_shared/apply-progress.md` for canonical v2 apply-progress validation.
 - Treat `artifactPaths` as the source of artifact locations. Do not assume fixed filenames when structured status provides paths.
-- Confirm the status field `schema` is exactly `jarvis.sdd-status` and `dependencies["sdd-verify"]` is exactly `ready`; otherwise STOP and return the phase-specific `blockedReasons`.
+- Apply the Native Status Gate from `_shared/sdd-phase-common.md` to the forwarded status; run `jarvis sdd status <change> --json` yourself only when no status was forwarded; STOP on any gate failure. Gate phase: `sdd-verify`; `dependencies["sdd-verify"]` must be exactly `ready`.
 - When reading apply-progress, treat only an exact `status: complete` marker as explicit completion. Treat `status: partial`, unknown, malformed, conflicting, or unmarked progress as incomplete unless structured status classified an unmarked artifact as done from deterministic all-complete task evidence.
-- If `actionContext.mode` is not exactly `workspace-edit`, STOP. Verification of unedited linked workspaces is planning-only and cannot prove implementation readiness.
-- `actionContext.allowedEditRoots` must be non-empty. Inspect only paths under those roots. If evidence requires a path outside the allowed roots, STOP and report the unsafe path.
-- If native status is unavailable, manual recovery may inspect artifacts but cannot invent workspace-edit authority; STOP before verification or report persistence.
+- Inspect only paths under `actionContext.allowedEditRoots`. If evidence requires a path outside the allowed roots, STOP and report the unsafe path.
 - Stop early: if any non-operator implementation task is unchecked or apply-progress is not complete, return `blocked` before running any command (no suite, no coverage), listing the pending tasks.
 - When a runnable test command exists, execute it; static analysis alone is never verification.
 - With a runnable test command, a spec scenario is compliant only when a covering test passed at runtime.
@@ -54,7 +52,6 @@ The orchestrator should provide structured status from `jarvis sdd status <chang
 - If runtime tests cannot be run, report runtime evidence as skipped and do not claim full PASS for behavior that was not executed.
 - Compare specs first, design second, task completion third.
 - Do not fix issues; report them for the orchestrator/user.
-- Generated artifacts are output, never sources of truth. Do not edit user-machine generated files to make verification pass.
 - Persist `verify-report` according to mode: Hive (`mcp__hive__mem_save`), openspec file, hybrid both, or inline-only for `none`.
 - If Strict TDD is active, load `strict-tdd-verify.md` from this skill directory; if inactive, never load it.
 - Return the Section D envelope from `../_shared/sdd-phase-common.md`.
@@ -69,7 +66,7 @@ The orchestrator should provide structured status from `jarvis sdd status <chang
 | Nothing forwarded and cached suggestion is `standard` | Standard verify; skip TDD-cycle checks, but still run available project test commands. |
 | No runnable test command exists: cached testing capabilities and a direct check of project files (test script, `*_test.go`, `test_*.py`, Makefile `test` target, and similar) both find none | Static verify (`Verification mode: static`). Missing cache alone never selects static mode; check the project files first, and if a real test command exists, run it: no execution; scenarios are `static-reviewed`; the maximum verdict is `PASS WITH WARNINGS`, which stays archive-ready. Never load `strict-tdd-verify.md`. |
 | `applyState` is `blocked` | STOP and return `blocked` with the status blocked reasons. |
-| `actionContext.mode: workspace-planning` | STOP; full workspace implementation verification is not supported in this mode. |
+| Native Status Gate fails, including `actionContext.mode: workspace-planning` | STOP; unedited linked workspaces are planning-only and cannot prove implementation readiness. |
 | Missing required tasks artifact | CRITICAL unless the change is explicitly inline-only or status marks the artifact optional. |
 | Missing proposal/spec/design | Continue only for available dimensions and report skipped checks. |
 | Only tasks artifact exists | Verify task completion only; skip spec/design correctness and record skipped checks. |
@@ -88,6 +85,7 @@ The orchestrator should provide structured status from `jarvis sdd status <chang
 ## Runtime Evidence Policy
 
 - Resolve runnable commands from forwarded status, cached testing capabilities, config, or project files. A runnable test command selects `Verification mode: runtime`; none selects `Verification mode: static`.
+- When the launch prompt forwards the test command (for example `Test runner: <command>`), use it and do not search cached testing capabilities again. `Test runner: none detected` still requires the direct project-file check before static mode.
 
 ### Runtime mode
 
@@ -129,8 +127,8 @@ The orchestrator should provide structured status from `jarvis sdd status <chang
 
 1. Load relevant skills via shared SDD Section A.
 2. Read structured status first when provided. Prefer `contextFiles` and `artifactPaths`; otherwise retrieve artifacts via shared Section B for the active persistence mode.
-3. Confirm native status authority: `schema` is `jarvis.sdd-status`, `dependencies["sdd-verify"]` is `ready`, `blockedReasons` do not block verify, `actionContext.mode` is `workspace-edit`, and `allowedEditRoots` is non-empty. Do not use manual recovery to bypass any missing authority.
-4. Resolve TDD mode: the forwarded TDD mode first (`STRICT TDD MODE IS ACTIVE` → strict; `TDD MODE: standard` → standard); only when nothing was forwarded, use the cached `strict_tdd_suggestion` (legacy `strict_tdd` when the suggestion is absent). Resolve runnable test commands from forwarded status, cached capabilities, config, or project files either way; that selects `Verification mode: runtime` or `Verification mode: static`.
+3. Pass the Native Status Gate (see Hard Rules); STOP on any gate failure.
+4. Resolve TDD mode: the forwarded TDD mode first (`STRICT TDD MODE IS ACTIVE` → strict; `TDD MODE: standard` → standard); only when nothing was forwarded, use the cached `strict_tdd_suggestion` (legacy `strict_tdd` when the suggestion is absent). Resolve runnable test commands from forwarded status, cached capabilities, config, or project files either way, and reuse the forwarded test command instead of searching cached capabilities; that selects `Verification mode: runtime` or `Verification mode: static`.
 5. Count completed and incomplete tasks. Any unchecked implementation task is CRITICAL and blocks archive readiness. An unchecked `[operator]` task is reported `pending-operator` instead, not CRITICAL; it still blocks archive readiness until `sdd-apply` records the developer's acknowledgement.
 6. Stop early: if any non-operator implementation task is unchecked or apply-progress is not complete, return `blocked` now, before running any command, with the pending task IDs and `next_recommended: sdd-apply`.
 7. Read apply-progress. In Strict TDD, validate the v2 evidence structure by reading it (`strict-tdd-verify.md`); do not re-execute it.

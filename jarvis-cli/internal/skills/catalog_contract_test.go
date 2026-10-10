@@ -633,7 +633,8 @@ func TestCatalogContract_SDDCoreSkillsMatchJarvisAdaptedUpstreamContract(t *test
 				"jarvis sdd status <change> --json",
 				"schema: `jarvis.sdd-status`",
 				"allowedEditRoots",
-				"workspace-planning",
+				// The workspace-planning check moved to the shared Native Status Gate.
+				nativeStatusGateReference,
 				"Read Previous Apply-Progress (if exists)",
 				"Hive calls `sdd_apply_progress_get`",
 				"Canonical v2 checkpoint request",
@@ -748,7 +749,8 @@ func TestCatalogContract_SDDVerifySourceUsesJarvisAdaptedModelSections(t *testin
 		"Manual or runtime verification counts as `PASS` only when it was executed and the report records the command or manual action, result, timestamp or session, and operator/evidence source.",
 		"## Skipped Dimensions",
 		"## Final Verdict Constraints",
-		"Generated artifacts are output, never sources of truth",
+		// Generated-artifact and authority checks live in the shared Native Status Gate.
+		nativeStatusGateReference,
 		"mcp__hive__mem_save",
 	}
 	for _, snippet := range requiredSnippets {
@@ -922,24 +924,19 @@ func TestCatalogContract_SDDApplySourceUsesJarvisAdaptedStatusGuards(t *testing.
 		"jarvis sdd status <change> --json",
 		"schema: `jarvis.sdd-status`",
 		"actionContext",
-		"actionContext.allowedEditRoots",
 		"contextFiles",
 		"artifactPaths",
 		"allowedEditRoots",
-		"workspace-planning",
 		"blockedReasons",
 		"applyState",
 		"applyState.hasProgress",
 		"applyState.complete",
 		"phaseInstructions",
-		"If `jarvis sdd status <change> --json` is unavailable, STOP before editing.",
-		"Manual recovery may inspect artifacts, but cannot invent workspace-edit authority or authorize an edit",
-		"Confirm the status field `schema` is exactly `jarvis.sdd-status`.",
-		"Confirm `dependencies[\"sdd-apply\"]` is exactly `ready`",
-		"If `actionContext.allowedEditRoots` is missing or empty, STOP before editing.",
-		"If a needed edit is outside every `actionContext.allowedEditRoots` entry, STOP",
+		// The four authority checks, roots rule, fail-closed, manual recovery, and
+		// generated-artifact rules live in the shared Native Status Gate.
+		nativeStatusGateReference,
+		"Gate phase: `sdd-apply`; `dependencies[\"sdd-apply\"]` must be exactly `ready`.",
 		"Read context from `contextFiles` and `artifactPaths` before reading implementation files.",
-		"Generated artifacts are output, never sources of truth",
 		"mcp__hive__mem_save",
 		"Artifact store mode (`hive | openspec | hybrid | none`)",
 		"OpenSpec reads the change's canonical `apply-progress.md` snapshot",
@@ -963,6 +960,10 @@ func TestCatalogContract_SDDApplySourceUsesJarvisAdaptedStatusGuards(t *testing.
 		"If `applyState` says apply is blocked",
 		"If the command is unavailable, build the equivalent status from the artifacts before editing.",
 		"If status is unavailable and no explicit `actionContext.allowedEditRoots` is available, STOP before editing.",
+		"Manual recovery may inspect artifacts, but cannot invent workspace-edit authority or authorize an edit",
+		"Confirm the status field `schema` is exactly `jarvis.sdd-status`.",
+		"If `actionContext.allowedEditRoots` is missing or empty, STOP before editing.",
+		"If a needed edit is outside every `actionContext.allowedEditRoots` entry, STOP",
 	}
 	for _, snippet := range forbiddenSnippets {
 		if strings.Contains(content, snippet) {
@@ -1435,47 +1436,142 @@ func TestCatalogContract_BoundedApplyProgressGuidanceUsesCanonicalOutcomesAndArc
 	}
 }
 
+// nativeStatusGateReference is the one sentence every mutating executor uses to
+// consume the shared Native Status Gate instead of restating its checks.
+const nativeStatusGateReference = "Apply the Native Status Gate from `_shared/sdd-phase-common.md` to the forwarded status; run `jarvis sdd status <change> --json` yourself only when no status was forwarded; STOP on any gate failure."
+
+// TestCatalogContract_NativeStatusGateIsSharedOnce pins the single source of the
+// native workspace authority checks in the shared phase protocol.
+func TestCatalogContract_NativeStatusGateIsSharedOnce(t *testing.T) {
+	shared := readNormalizedAsset(t, sharedPhaseCommonPath)
+	gate := markdownSection(t, shared, "G. Native Status Gate")
+
+	requireAllTerms(t, gate,
+		"1. `schema` is exactly `jarvis.sdd-status`.",
+		"2. `dependencies[\"<phase>\"]` is exactly `ready`",
+		"3. `actionContext.mode` is exactly `workspace-edit`; `workspace-planning` is read-only planning context.",
+		"4. `actionContext.allowedEditRoots` is non-empty.",
+		"Write only inside `actionContext.allowedEditRoots`",
+		"STOP and report the unsafe path",
+		"Review `blockedReasons` first",
+		"Fail closed: blocked, missing, unavailable, or invalid status is a gate failure.",
+		"Manual recovery may inspect artifacts but cannot invent workspace-edit authority",
+		"Generated artifacts are outputs, never sources of truth",
+		"The orchestrator runs `jarvis sdd status <change> --json` once per phase transition and forwards that JSON verbatim",
+	)
+
+	// Existing pinned headings keep their letters; the gate is appended, not inserted.
+	for _, heading := range []string{"## A. Skill Loading", "## B. Artifact Retrieval (Hive Mode)", "## C. Artifact Persistence", "## D. Return Envelope", "## E. Review Workload Guard", "## F. Hive/Hybrid Degraded Mode"} {
+		if strings.Count(shared, "\n"+heading+"\n") != 1 {
+			t.Fatalf("expected %s to keep heading %q exactly once", sharedPhaseCommonPath, heading)
+		}
+	}
+	if strings.Count(shared, "## G. Native Status Gate") != 1 {
+		t.Fatalf("expected %s to define the Native Status Gate exactly once", sharedPhaseCommonPath)
+	}
+}
+
+// TestCatalogContract_MutatingPhaseSkillsFailClosedOnNativeWorkspaceAuthority pins
+// that apply, verify, and archive consume the shared gate with their own phase
+// dependency name and no longer restate the shared four-field checklist.
 func TestCatalogContract_MutatingPhaseSkillsFailClosedOnNativeWorkspaceAuthority(t *testing.T) {
 	testCases := []struct {
 		path     string
+		phase    string
+		section  string
 		required []string
 	}{
 		{
-			path: "embed/skills/sdd-apply/SKILL.md",
+			path:    "embed/skills/sdd-apply/SKILL.md",
+			phase:   "sdd-apply",
+			section: "Status and Workspace Guard",
 			required: []string{
-				"schema` is exactly `jarvis.sdd-status`",
-				"dependencies[\"sdd-apply\"]` is exactly `ready`",
-				"cannot invent workspace-edit authority",
+				"`applyState.hasProgress`",
+				"`complete` means canonical apply-progress is complete and authoritative task checkboxes are all checked; verify-report remains a separate dependency",
 			},
 		},
 		{
-			path: "embed/skills/sdd-verify/SKILL.md",
+			path:    "embed/skills/sdd-verify/SKILL.md",
+			phase:   "sdd-verify",
+			section: "Hard Rules",
 			required: []string{
-				"dependencies[\"sdd-verify\"]` is exactly `ready`",
-				"`actionContext.allowedEditRoots` must be non-empty.",
-				"manual recovery may inspect artifacts but cannot invent workspace-edit authority",
+				"Inspect only paths under `actionContext.allowedEditRoots`",
 			},
 		},
 		{
-			path: "embed/skills/sdd-archive/SKILL.md",
+			path:    "embed/skills/sdd-archive/SKILL.md",
+			phase:   "sdd-archive",
+			section: "Status and Archive Safety Gate",
 			required: []string{
-				"dependencies[\"sdd-archive\"]` is exactly `ready`",
-				"`actionContext.allowedEditRoots` must be non-empty.",
-				"manual recovery may inspect artifacts but cannot invent workspace-edit authority",
+				"`all_done` is acceptable only when the prepared archive report is present",
+				"Every archive edit, spec merge, and folder move must stay inside `actionContext.allowedEditRoots`",
+				"### Verification Gate",
 			},
 		},
 	}
 
 	for _, tc := range testCases {
-		t.Run(tc.path, func(t *testing.T) {
-			content := readEmbeddedSkillAsset(t, tc.path)
-			for _, snippet := range tc.required {
-				if !strings.Contains(content, snippet) {
-					t.Fatalf("expected %s to fail closed on native workspace authority with %q", tc.path, snippet)
+		t.Run(tc.phase, func(t *testing.T) {
+			content := readNormalizedAsset(t, tc.path)
+			section := markdownSection(t, content, tc.section)
+			requireAllTerms(t, section, nativeStatusGateReference,
+				"Gate phase: `"+tc.phase+"`; `dependencies[\""+tc.phase+"\"]` must be exactly `ready`")
+			requireAllTerms(t, section, tc.required...)
+			if got := strings.Count(content, nativeStatusGateReference); got != 1 {
+				t.Fatalf("expected %s to reference the shared gate exactly once, got %d", tc.path, got)
+			}
+
+			// The shared four-field checklist must not be restated in executors.
+			for _, forbidden := range []string{
+				"`schema` is exactly `jarvis.sdd-status`",
+				"`schema` field is exactly `jarvis.sdd-status`",
+				"`actionContext.mode` is exactly `workspace-edit`",
+				"`actionContext.mode` is not exactly `workspace-edit`",
+				"`actionContext.allowedEditRoots` must be non-empty",
+				"`actionContext.allowedEditRoots` is missing or empty",
+				"cannot invent workspace-edit authority",
+				"Confirm native status authority:",
+				"Generated artifacts are output, never sources of truth",
+				"If native status is unavailable",
+				"If `jarvis sdd status <change> --json` is unavailable, STOP before editing.",
+			} {
+				if strings.Contains(content, forbidden) {
+					t.Fatalf("expected %s not to restate the shared Native Status Gate with %q", tc.path, forbidden)
 				}
 			}
 		})
 	}
+}
+
+// TestCatalogContract_SharedRetrievalReadsForwardedReferencesFirst pins that
+// executors read forwarded observation IDs or paths directly and search only for
+// artifacts the launch prompt did not provide.
+func TestCatalogContract_SharedRetrievalReadsForwardedReferencesFirst(t *testing.T) {
+	shared := readNormalizedAsset(t, sharedPhaseCommonPath)
+	retrieval := markdownSection(t, shared, "B. Artifact Retrieval (Hive Mode)")
+
+	forwarded := "When the launch prompt provides artifact observation IDs or OpenSpec paths, read those directly: one `mcp__hive__mem_get_observation(id)` per ID or one file read per path. Skip `mcp__hive__mem_search` for them; search only for artifacts the prompt did not provide."
+	requireAllTerms(t, retrieval, forwarded)
+	if strings.Index(retrieval, forwarded) > strings.Index(retrieval, "mcp__hive__mem_search(query:") {
+		t.Fatal("Section B must check forwarded references before any search")
+	}
+
+	requireAllTerms(t, markdownSection(t, shared, "D. Return Envelope"),
+		"in `hive` or `hybrid` mode include each saved observation ID")
+}
+
+// TestCatalogContract_SDDVerifyReusesForwardedTestCommand pins that verify does
+// not re-search cached testing capabilities when the launch forwarded them.
+func TestCatalogContract_SDDVerifyReusesForwardedTestCommand(t *testing.T) {
+	verify := readNormalizedAsset(t, "embed/skills/sdd-verify/SKILL.md")
+
+	requireAllTerms(t, markdownSection(t, verify, "Runtime Evidence Policy"),
+		"When the launch prompt forwards the test command (for example `Test runner: <command>`), use it and do not search cached testing capabilities again.",
+		"`Test runner: none detected` still requires the direct project-file check before static mode.",
+	)
+	requireAllTerms(t, markdownSection(t, verify, "Execution Steps"),
+		"reuse the forwarded test command instead of searching cached capabilities",
+	)
 }
 
 func TestCatalogContract_ApplyProgressUsesValidatedV2LifecycleGuidance(t *testing.T) {
@@ -1521,7 +1617,9 @@ func TestCatalogContract_SDDArchiveSourceUsesJarvisAdaptedArchiveSafetyGuards(t 
 		"Any incomplete task checkbox or `taskProgress` entry blocks archive",
 		"Stale checkboxes are not archive-ready by themselves",
 		"When the validated v2 snapshot lifecycle is incomplete, STOP until current tasks, progress topology, and verify-report have been reconciled and re-verified",
-		"Generated artifacts are output, never sources of truth",
+		// The generated-artifact rule lives in the shared Native Status Gate.
+		nativeStatusGateReference,
+		"NEVER fix archive readiness by editing generated artifacts",
 		"Partial, missing, or stale artifacts block archive until they are reconciled and re-verified",
 		"For `none` mode, return a closure summary only; do not persist an archive report",
 		"mcp__hive__mem_save",

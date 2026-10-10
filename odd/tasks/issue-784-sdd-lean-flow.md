@@ -26,7 +26,7 @@ Related: #781 operator handoff (approved), lands before the adaptive verify slic
 - [x] S8: Adaptive verify (stop early on pending tasks; run detected commands once; static review without runner; operator-attested).
 - [x] S9a: Spec-merge engine in Go.
 - [x] S9b: `jarvis sdd archive` performs spec sync; trim archive skill.
-- [ ] S10: Validate authority once in the orchestrator; executors trust forwarded status.
+- [x] S10: Validate authority once in the orchestrator; executors trust forwarded status.
 - [ ] S11: Before/after measurement on the same small real change (user-run; records time, tool calls, test runs, user messages).
 
 ## Acceptance criteria and checks
@@ -130,5 +130,17 @@ Related: #781 operator handoff (approved), lands before the adaptive verify slic
 - Accepted residuals: delta edited after an interrupted sync is not re-checked on resume; a journal left in an archived change after a failed delete is reported, not auto-cleaned.
 - One unrelated flake seen once locally (TestBoundSddArchiveOpenSpecPersistedBindingIgnoresHiveEnvironmentAndRenames); 20/20 on rerun.
 
+### S9b delivery
+- PR #795 merged (squash e1ad46b9), 14/14 checks.
+
+### S10
+- Worker: single `## G. Native Status Gate` in sdd-phase-common; apply/verify/archive reference it (phase dependency + extras kept, STOP on failure); orchestrator runs `jarvis sdd status` once per transition and forwards status JSON + artifact IDs/paths + progress snapshot; Section B reads forwarded references and skips mem_search; verify reuses forwarded test command. RED on 5 new tests, GREEN; full suite, vet, gofmt clean.
+- Review review-ee1ec60f13ad1db4 approved; residual: one install pin is loosely anchored (test-only).
+- Note: ID forwarding pays off once executors return observation IDs (Section D now asks for them).
+
+## Remaining after S10
+- S11 (user-run): measure the same small real change before/after (wall-clock, tool calls, test runs, user messages) and record it on #784; close #784 after that.
+- Follow-up candidates: chained-pr and work-unit-commits skills still describe the old 400-line ask-on-risk flow; Deluge static-review heuristics; orchestrator still lists the four gate checks inline.
+
 ## Next step
-S9b push + PR + merge, then S10 (authority validated once).
+S10 push + PR + merge, then hand S11 to the user.

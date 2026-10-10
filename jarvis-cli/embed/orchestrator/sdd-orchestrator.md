@@ -95,7 +95,7 @@ The JSON contract fields used for routing:
 
 Routing rule: launch the `nextRecommended` phase only when that phase dependency is `ready`. If `blockedReasons` apply to the recommended phase or to terminal work (`verify`/`archive` completion), report the relevant `blockedReasons` and stop only for the blocked phase or terminal action. Do not infer that downstream verify/archive blockers prevent a safe upstream `sdd-apply` when native status recommends `sdd-apply` and the apply dependency is ready.
 
-Before launching `sdd-apply`, `sdd-verify`, or `sdd-archive`, the orchestrator MUST verify native authority from the current status: the `schema` field equals `jarvis.sdd-status`, dependencies[phase] == `ready`, actionContext.mode == `workspace-edit`, and `actionContext.allowedEditRoots` is non-empty. Treat the phase-specific `blockedReasons` as authoritative and stop that phase. Manual recovery cannot invent workspace-edit authority: if native status is unavailable or does not prove all four fields, recovery is read-only and the orchestrator MUST NOT launch a mutating phase.
+Before launching each mutating phase (`sdd-apply`, `sdd-verify`, or `sdd-archive`), run `jarvis sdd status <change> --json` exactly once for that phase transition and apply the Native Status Gate (Section G of `_shared/sdd-phase-common.md`): the `schema` field equals `jarvis.sdd-status`, dependencies[phase] == `ready`, actionContext.mode == `workspace-edit`, and `actionContext.allowedEditRoots` is non-empty. Treat the phase-specific `blockedReasons` as authoritative and stop that phase. Manual recovery cannot invent workspace-edit authority: if native status is unavailable or does not prove all four fields, recovery is read-only and the orchestrator MUST NOT launch a mutating phase. Forward that status JSON verbatim to the executor together with the artifact references you already hold: Hive observation IDs or OpenSpec paths for proposal, spec, design, and tasks, plus the progress snapshot reference. This one run also serves routing, the Review Workload Guard, and the Automatic Mode Gatekeeper for that transition; do not run status again before the launch.
 
 ### SDD Entry Routing
 
@@ -224,7 +224,7 @@ Forward these values to every SDD sub-agent prompt. If a value is unknown and ch
 
 Before `sdd-apply`, inspect the tasks artifact for review workload forecast, estimated changed lines, chained PR recommendation, and the `Decision needed before apply` line. The recorded `## SDD Decisions` already resolve the delivery path: with a budget, work above it is split into work units for the recorded chain strategy; with `size:exception`, the feature ships as one PR with no forecast. When decisions are recorded, never stop to ask for a chain strategy or size exception; only surface a native `sdd-apply` blocked reason if status reports one. If the change has no recorded decisions, run the preflight instead of asking a standalone delivery question. Do not let child PRs target `main` directly when a feature-branch chain is active.
 
-If `jarvis sdd status <change> --json` is available and reports `dependencies["sdd-apply"]` as `"blocked"`, the orchestrator MUST NOT launch apply and MUST surface the `blockedReasons` to the user. This native gate enforces the `Decision needed before apply` contract at runtime — the orchestrator does not need to reparse the tasks artifact when native status is available.
+If the status run for the apply transition reports `dependencies["sdd-apply"]` as `"blocked"`, the orchestrator MUST NOT launch apply and MUST surface the `blockedReasons` to the user. This native gate enforces the `Decision needed before apply` contract at runtime — the orchestrator does not need to reparse the tasks artifact when native status is available.
 
 When the native CLI is unavailable, fall back to reading the tasks artifact directly: if it contains any `Decision needed before apply:` line (including `Yes` or an unfilled placeholder) and no resolution line, do not delegate apply; report that the preflight decisions are missing and run the preflight when the change has no `## SDD Decisions` block. A decision is resolved only by a whole line with exactly one value: `Decision needed before apply: No`, `Chain strategy: stacked-to-main`, `Chain strategy: feature-branch-chain`, or `Chain strategy: size:exception`. Option-list lines (`stacked-to-main|feature-branch-chain|...`), `Chain strategy: pending`, table cells, prose mentions, and a bare `size:exception` token do NOT resolve the gate.
 
@@ -349,7 +349,7 @@ Gatekeeper validation per phase result:
 
 1. **Result Contract conformance**: the phase returned all required fields (`status`, `executive_summary`, `artifacts`, `next_recommended`, `risks`, `skill_resolution`). Missing or malformed fields fail the gate.
 2. **File-path integrity**: any file paths referenced in the result exist or are plausible repo paths; reject hallucinated or fabricated paths.
-3. **`next_recommended` coherence**: the recommended next phase is consistent with the Dependency Graph and the change's current dependency state. A `next_recommended` that skips an unmet dependency fails the gate. When the `jarvis` CLI is available, prefer native `jarvis sdd status <change> --json` `nextRecommended` over the phase-reported value.
+3. **`next_recommended` coherence**: the recommended next phase is consistent with the Dependency Graph and the change's current dependency state. A `next_recommended` that skips an unmet dependency fails the gate. When the `jarvis` CLI is available, prefer `nextRecommended` from the status run for the next transition over the phase-reported value.
 4. **No-drift**: the phase did not silently abandon scope, change the artifact store, or regress a cached preflight choice.
 
 Review depth (hybrid):
@@ -460,7 +460,7 @@ Each phase has explicit read/write rules:
 | `sdd-verify` | spec + tasks + **apply-progress** | `verify-report` |
 | `sdd-archive` | all artifacts | `archive-report` |
 
-For phases with required dependencies, sub-agent reads directly from the backend — orchestrator passes artifact references (topic keys or file paths), NOT content itself.
+For phases with required dependencies, sub-agent reads directly from the backend — orchestrator passes artifact references (Hive observation IDs when known, otherwise topic keys, or OpenSpec file paths), NOT content itself. Keep the observation IDs that phases return in their `artifacts` list and forward them to later phases.
 
 #### Strict TDD Forwarding (MANDATORY)
 
@@ -513,7 +513,7 @@ Do not instruct an executor to merge or rewrite cumulative apply-progress observ
 | Archive report | `sdd/{change-name}/archive-report` |
 | DAG state | `sdd/{change-name}/state` |
 
-Sub-agents retrieve ordinary SDD artifacts via two steps:
+When the launch prompt forwards an observation ID, the sub-agent calls `mem_get_observation(id)` directly and skips `mem_search`. Otherwise, sub-agents retrieve ordinary SDD artifacts via two steps:
 
 1. `mem_search(query: "{topic_key}", project: "{project}")` → get observation ID
 2. `mem_get_observation(id: {id})` → full content (REQUIRED — search results are truncated)
