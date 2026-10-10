@@ -189,7 +189,11 @@ func TestMergeSpecFailsClosed(t *testing.T) {
 			"## REMOVED Requirements\n\n### Requirement: Login\n\n(Reason: Retired.)\n(Migration: Use OAuth.)\n"), wantErr: ErrInvalidDelta, wantReq: "Login"},
 		{name: "duplicate name within a section", delta: delta("## ADDED Requirements\n\n" + reqLogout + "\n" + reqLogout), wantErr: ErrInvalidDelta, wantReq: "Logout"},
 		{name: "duplicate section", delta: delta("## ADDED Requirements\n\n"+reqLogout, "## ADDED Requirements\n\n### Requirement: Other\n\nText.\n"), wantErr: ErrInvalidDelta},
-		{name: "unknown section", delta: delta("## Purpose\n\nText.\n", "## ADDED Requirements\n\n"+reqLogout), wantErr: ErrInvalidDelta},
+		{name: "requirement inside an ignored section", delta: delta("## Notes\n\n"+reqLogout, "## ADDED Requirements\n\n### Requirement: Other\n\nText.\n"), wantErr: ErrInvalidDelta, wantReq: "Logout"},
+		{name: "misspelled operation section", delta: delta("## Added Requirements\n\nText.\n", "## ADDED Requirements\n\n"+reqLogout), wantErr: ErrInvalidDelta},
+		{name: "lowercase operation section", delta: delta("## MODIFIED requirements\n\nText.\n", "## ADDED Requirements\n\n"+reqLogout), wantErr: ErrInvalidDelta},
+		{name: "only ignored sections", delta: delta("## Notes\n\nNothing to merge.\n"), wantErr: ErrInvalidDelta},
+		{name: "level-1 heading inside an ignored section", delta: delta("## ADDED Requirements\n\n"+reqLogout, "## Notes\n\n# Title\n"), wantErr: ErrInvalidDelta},
 		{name: "full spec against existing main", delta: "# Auth Specification\n\n## Requirements\n\n" + reqLogout, wantErr: ErrInvalidDelta},
 		{name: "prose outside a requirement block", delta: delta("## ADDED Requirements\n\nIntro prose.\n\n" + reqLogout), wantErr: ErrInvalidDelta},
 		{name: "non-requirement level-3 heading", delta: delta("## ADDED Requirements\n\n### Notes\n\nText.\n"), wantErr: ErrInvalidDelta},
@@ -253,6 +257,49 @@ func TestMergeSpecReportsChanges(t *testing.T) {
 	}
 	if !changes.Destructive() {
 		t.Fatal("Destructive() = false with a REMOVED requirement")
+	}
+}
+
+func TestMergeSpecIgnoresNonDeltaSections(t *testing.T) {
+	notes := "## Notes\n\nWhy this change exists.\n\n### Open question\n\n```md\n### Requirement: Fenced\n```\n"
+	want := mainHead + reqLogin + "\n" + reqExpiryV2 + "\n" + reqLegacy + "\n" + reqLogout + mainTail
+	tests := []struct {
+		name        string
+		delta       string
+		wantIgnored []string
+	}{
+		{
+			name:        "before the operation sections",
+			delta:       delta(notes, "## ADDED Requirements\n\n"+reqLogout, "## MODIFIED Requirements\n\n"+reqExpiryV2),
+			wantIgnored: []string{"Notes"},
+		},
+		{
+			name:        "between and after the operation sections",
+			delta:       delta("## ADDED Requirements\n\n"+reqLogout, notes, "## MODIFIED Requirements\n\n"+reqExpiryV2, "## Purpose\n\nText.\n"),
+			wantIgnored: []string{"Notes", "Purpose"},
+		},
+		{
+			name:        "CRLF input",
+			delta:       strings.ReplaceAll(delta(notes, "## ADDED Requirements\n\n"+reqLogout, "## MODIFIED Requirements\n\n"+reqExpiryV2), "\n", "\r\n"),
+			wantIgnored: []string{"Notes"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, changes, err := merge([]byte(authMain()), true, []byte(tt.delta))
+			if err != nil {
+				t.Fatalf("merge() error = %v", err)
+			}
+			if string(got) != want {
+				t.Fatalf("merge() mismatch\n--- got ---\n%s\n--- want ---\n%s", got, want)
+			}
+			if strings.Join(changes.IgnoredSections, "|") != strings.Join(tt.wantIgnored, "|") {
+				t.Fatalf("IgnoredSections = %q, want %q", changes.IgnoredSections, tt.wantIgnored)
+			}
+			if strings.Join(changes.Added, ",") != "Logout" || strings.Join(changes.Modified, ",") != "Session Expiration" {
+				t.Fatalf("changes = %+v", changes)
+			}
+		})
 	}
 }
 

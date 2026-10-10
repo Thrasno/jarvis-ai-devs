@@ -70,6 +70,10 @@ func TestBuildPlanComputesSortedTargetsWithDigests(t *testing.T) {
 		t.Fatalf("NewCapability flags = %v %v", plan.Targets[0].Changes.NewCapability, plan.Targets[1].Changes.NewCapability)
 	}
 
+	if len(plan.Targets[0].Changes.IgnoredSections) != 0 {
+		t.Fatalf("IgnoredSections = %q, want none", plan.Targets[0].Changes.IgnoredSections)
+	}
+
 	again, err := BuildPlan(planFS(), testChangeRoot, testSpecsRoot)
 	if err != nil {
 		t.Fatalf("BuildPlan() second run error = %v", err)
@@ -78,6 +82,22 @@ func TestBuildPlanComputesSortedTargetsWithDigests(t *testing.T) {
 		if plan.Targets[i].AfterDigest != again.Targets[i].AfterDigest {
 			t.Fatalf("BuildPlan() is not deterministic at %d", i)
 		}
+	}
+}
+
+func TestBuildPlanReportsIgnoredSections(t *testing.T) {
+	fsys := planFS()
+	fsys[testChangeRoot+"/specs/auth/spec.md"] = &fstest.MapFile{Data: []byte(delta("## Notes\n\nContext only.\n", "## ADDED Requirements\n\n"+reqLogout))}
+	plan, err := BuildPlan(fsys, testChangeRoot, testSpecsRoot)
+	if err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
+	auth := plan.Targets[0]
+	if auth.Capability != "auth" || len(auth.Changes.IgnoredSections) != 1 || auth.Changes.IgnoredSections[0] != "Notes" {
+		t.Fatalf("auth target = %+v", auth.Changes)
+	}
+	if want := mainHead + reqLogin + "\n" + reqExpiry + "\n" + reqLegacy + "\n" + reqLogout + mainTail; string(auth.After) != want {
+		t.Fatalf("auth After = %q, want %q", auth.After, want)
 	}
 }
 

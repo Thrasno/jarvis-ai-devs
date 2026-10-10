@@ -33,7 +33,7 @@ Public/contextual comments follow the target context language by default. Explic
 
 ## Purpose
 
-You are a sub-agent responsible for ARCHIVING. `jarvis sdd archive --root <change-root> --destination <archive-destination>` is the canonical archive operation: it accepts no positional change name, validates lifecycle state, and moves the complete OpenSpec topology when the selected store requires it. Do not replace it with ad-hoc file copies or moves. It exits non-zero and moves nothing when a lifecycle gate blocks archive. You complete the SDD cycle only after implementation and verification evidence is complete, current, and safe.
+You are a sub-agent responsible for ARCHIVING. `jarvis sdd archive --root <change-root> --destination <archive-destination>` is the canonical archive operation: it accepts no positional change name, validates lifecycle state, merges delta specs into main specs, and moves the complete OpenSpec topology when the selected store requires it. Do not replace it with ad-hoc file copies, spec edits, or moves. It exits non-zero and moves nothing when a lifecycle gate blocks archive. You complete the SDD cycle only after implementation and verification evidence is complete, current, and safe.
 
 Archive outcomes are explicit: **archived** only after every gate and topology check passes; **blocked** with typed recovery when status, evidence, verification, or storage state is unsafe; and **inline closure only** in `none` mode. A blocked outcome never performs a partial spec sync, partial move, or evidence repair.
 
@@ -52,7 +52,7 @@ From the orchestrator:
 > Follow **Section B** (retrieval) and **Section C** (persistence) from `skills/_shared/sdd-phase-common.md`.
 
 - **hive**: Resolve v2 progress with `sdd_apply_progress_get`, then iterate the guarded snapshot's references with `sdd_apply_evidence_get` to read one canonical bounded batch per `batch_id`; do not select a latest generic observation. Read the normal SDD artifacts and record observation IDs in the archive report for traceability. Save the archive report as `sdd/{change-name}/archive-report` with `mcp__hive__mem_save`; that complete executor-written report is Hive logical closure.
-- **openspec**: Read and follow `skills/_shared/openspec-convention.md`. `jarvis sdd archive --root <change-root> --destination <archive-destination>` performs the validated rename of the complete change topology only after the status gate passes. Canonical spec synchronization remains an archive-phase responsibility; this CLI command does not infer or accept a positional change name.
+- **openspec**: Read and follow `skills/_shared/openspec-convention.md`. `jarvis sdd archive --root <change-root> --destination <archive-destination>` performs canonical spec synchronization and the validated rename of the complete change topology under one archive lock, only after the status gate passes. This CLI command does not infer or accept a positional change name.
 - **hybrid**: Both independently validated backends are required. The archived OpenSpec directory retains `apply-progress.md`, referenced `apply-evidence/` documents, and `.apply-progress-receipts/` together; Hive retains resolvable guarded snapshot/evidence topics and the archive-report observation. Neither side is a winner, and a missing or different side is `backend_diverged`, not archiveable.
 - **none**: Return closure summary only. Do not perform archive file operations and do not persist an archive report. For `none` mode, return a closure summary only; do not persist an archive report.
 
@@ -130,65 +130,19 @@ Produce the current verification evidence and archive report before invoking `ja
 
 **IF mode is `none`:** Skip — no artifacts to sync.
 
-**IF mode is `openspec` or `hybrid`:** Sync from active `openspec/changes/{change-name}/specs/` before the archive move, using these two phases.
+**IF mode is `openspec` or `hybrid`:** Run `jarvis sdd archive --root <change-root> --destination <archive-destination>`; it syncs the active `openspec/changes/{change-name}/specs/` into `openspec/specs/` itself. Never hand-edit, copy, merge, or roll back main specs yourself.
 
-#### Read-Only Whole-Delta Preflight
-
-Before the first main-spec write, read every active delta spec and plan every merge without writing.
-
-- Read each corresponding main spec when it exists and plan the full created or updated result for every domain.
-- Validate every delta operation, requirement match, REMOVED `Reason:`/`Migration:`, and RENAMED old/new name before planning any write.
-- Treat unsupported delta structure, missing or invalid merge evidence, or a destructive merge without explicit orchestrator confirmation as a blocker.
-- Any unsupported, invalid, or destructive-without-confirmation case blocks the entire sync before all writes. Return `blocked`; do not write any main spec.
-
-#### Write Planned Merges
-
-Only after the complete preflight succeeds may writes begin. Apply only the planned merges from the sealed preflight plan; do not re-plan, add destinations, or read a different source during writes.
-
-- Capture each destination's exact pre-write bytes, existence, and SHA-256 digest before the first write. Seal this rollback record with the complete preflight plan.
-- Immediately before writing each sealed destination, re-read its bytes/existence and byte-compare them with the captured pre-sync state. On mismatch, STOP before writing that destination or any remaining destination; return `spec_sync_conflict_recovery_required` without overwriting concurrent work. Recover any earlier touched target only through the guarded rollback below.
-- Write only those sealed destinations. After each write, verify its digest against the planned result. Before invoking `jarvis sdd archive`, verify every destination digest from the sealed preflight plan.
-- On any write or post-write digest verification failure, restore every touched target and verify the rollback before returning. Before rollback, byte-compare each touched target's current bytes with the exact bytes written by this operation; any mismatch MUST STOP and escalate rather than overwrite concurrent post-write edits. Restore existing targets with their exact captured bytes; delete targets that did not exist before writes.
-- Do not emit cycle completion after a failed write or verification. If rollback cannot be verified, return fail-closed `spec_sync_recovery_required` with every affected path and expected pre-write digest; do not claim cycle completion.
-
-#### If Main Spec Exists (`openspec/specs/{domain}/spec.md`)
-
-Apply the planned delta to the existing main spec:
-
-```
-FOR EACH SECTION in delta spec:
-├── ADDED Requirements → Append to main spec's Requirements section
-├── MODIFIED Requirements → Replace the matching requirement in main spec
-├── REMOVED Requirements → Delete the matching requirement in main spec after the removal guard passes
-└── RENAMED Requirements → Rename the matching requirement in main spec using the explicit old/new names
-```
-
-**Merge carefully:**
-
-- Match requirements by name (e.g., "### Requirement: Session Expiration")
-- Preserve all OTHER requirements that aren't in the delta
-- Before deleting any REMOVED requirement, confirm the delta includes both `Reason:` and `Migration:` with non-empty, non-placeholder evidence
-- `Migration: None` is valid only when it includes a justification
-- If Reason or Migration is empty, placeholder text, or unjustified `None`, STOP before deleting it
-- If a RENAMED requirement omits Old name or New name, STOP before renaming it
-- For RENAMED requirements, preserve the requirement body and scenarios unless the delta also modifies them
-- Maintain proper Markdown formatting and heading hierarchy
-
-#### If Main Spec Does NOT Exist
-
-The delta spec IS a full spec (not a delta). Copy it directly:
-
-```bash
-# Copy new spec to main specs
-openspec/changes/{change-name}/specs/{domain}/spec.md
-  → openspec/specs/{domain}/spec.md
-```
+- Under the archive lock and after the status gate, the command plans every delta read-only, then writes every main spec with before-digest checks or none. Unsupported delta structure or invalid merge evidence blocks the whole sync before any write. Non-requirement `##` sections in a delta (for example notes) are ignored, listed in `ignored_sections`, and never merged.
+- It prints one JSON result: `outcome` (`archived`, `planned`, or `blocked`), `code`, `detail`, `recovery`, `destination`, and `spec_sync` with per-capability `path`, `action` (`created`/`updated`), added/modified/removed/renamed requirement names, `ignored_sections`, `before_digest`, and `after_digest`.
+- Add `--plan` first only if the user wants to see the plan; it prints the plan and writes and moves nothing.
+- If `code` is `spec_sync_confirmation_required`, the plan removes requirements. Show the listed `spec_sync.removals` to the user once, and rerun the same command with `--confirm-destructive` only after the user explicitly confirms. Never add `--confirm-destructive` without that confirmation.
+- For any other `spec_sync_*` code (`spec_sync_merge_blocked`, `spec_sync_plan_failed`, `spec_sync_conflict_recovery_required`, `spec_sync_write_failed`, `spec_sync_recovery_required`), return `blocked` and report the code, `detail`, `recovery`, and any `spec_sync.recovery_targets` verbatim. Nothing was moved; do not repair specs or work around the blocker.
 
 ### Step 5: Move to Archive
 
 **IF mode is `hive` or `none`:** Skip filesystem movement. Hive retains its already-persisted archive report; `none` has only the inline closure.
 
-**IF mode is `openspec` or `hybrid`:** Only after all destination digests verify, invoke the locked `jarvis sdd archive --root <change-root> --destination <archive-destination>` move:
+**IF mode is `openspec` or `hybrid`:** The same locked `jarvis sdd archive --root <change-root> --destination <archive-destination>` invocation moves the change only after every synced main-spec digest verifies:
 
 ```
 openspec/changes/{change-name}/
@@ -197,7 +151,7 @@ openspec/changes/{change-name}/
 
 The command validates reports and moves the complete OpenSpec topology: the snapshot, every referenced immutable evidence document, receipts, verification report, and archive report. Source and destination must both be inside `actionContext.allowedEditRoots`; the destination must not resolve to the source root. It re-reads proposal, design, specs, tasks, verify report, archive report, progress, receipts, evidence, and dependencies under the archive lock immediately before rename. In hybrid mode, repeat byte-identical non-blank archive-report and equivalent protected-progress validation under that lock before rename. This local lock is not distributed atomicity; Hive writes after the final Hive fetch are outside it. Reject a symlink in any existing source, destination, parent, staging, or authoritative path; do not repair it during archive. Deterministic staging may be finalized only by the byte-identical exact retry, while anonymous, malformed, changed, or symlinked residue remains fail closed. Use today's date in ISO format (e.g., `2026-02-16`). Do not persist or rewrite an archive report after this command.
 
-If archive validation or the move blocks after verified sync, do not roll back the main specs or claim cycle completion. Preserve or recover the active change topology or the exact destination topology and return typed archive recovery for retry. Use `archive_recovery_required`. Main specs remain fully synchronized only after every sealed destination digest verified; they are never silently partial.
+If the move fails after a verified sync, the command reverts every main spec to its captured pre-sync bytes, never overwriting a concurrent edit, and returns `archive_recovery_required` with `spec_sync.reverted: true`; a spec it cannot safely restore yields `spec_sync_recovery_required` with `recovery_targets`. Report the code and recovery verbatim, do not claim cycle completion, and rerun only after the cause is fixed. Main specs are never silently partial.
 
 ### Step 6: Verify Archived Topology
 
@@ -266,10 +220,10 @@ Ready for the next change.
 - NEVER fix archive readiness by editing generated artifacts; update source-of-truth Jarvis assets/templates or persisted SDD artifacts only.
 - NEVER use user/orchestrator approval to archive with partial, missing, stale, or unreconciled artifacts; block and require reconciliation plus re-verification instead.
 - In `none` mode, return closure status inline only; do not persist an archive report.
-- ALWAYS complete sealed full spec sync before the locked archive move; spec synchronization is either fully verified or rolled back/fail-closed, never silently partial.
+- ALWAYS let `jarvis sdd archive` perform the spec sync and the locked move together; spec synchronization is either fully verified or rolled back/fail-closed, never silently partial. NEVER hand-edit main specs.
 - When merging into existing specs, PRESERVE requirements not mentioned in the delta.
 - Use ISO date format (YYYY-MM-DD) for archive folder prefix.
-- If the read-only preflight finds a destructive merge (removing large sections), WARN the orchestrator and ask for confirmation before any main-spec write.
+- If archive returns `spec_sync_confirmation_required`, show the listed removals once and rerun with `--confirm-destructive` only after explicit confirmation.
 - The archive is an AUDIT TRAIL — never delete or modify archived changes.
 - If `openspec/changes/archive/` doesn't exist, create it.
 - Apply any `rules.archive` from `openspec/config.yaml`.

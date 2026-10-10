@@ -125,13 +125,17 @@ type archiveStatusResolver func(root, project string) (*sddstatus.ChangeStatus, 
 // OpenSpec lifecycle tests.
 func newBoundSddArchiveCommand() *cobra.Command {
 	var root, destination, project, change string
-	command := &cobra.Command{Use: "archive", Short: "Archive a bound SDD change", Long: "Archive a bound SDD change. Hive closes logically with a persisted archive report and needs --change. OpenSpec and hybrid require --root and --destination; --root must be an absolute canonical path without aliases, and --change, when supplied with --root, must match the canonical root coordinate.", Args: cobra.NoArgs, SilenceUsage: true, SilenceErrors: true, RunE: func(cmd *cobra.Command, _ []string) error {
-		return runBoundSddArchive(cmd.Context(), root, destination, project, change)
+	var sync archiveSpecSyncOptions
+	command := &cobra.Command{Use: "archive", Short: "Archive a bound SDD change", Long: "Archive a bound SDD change. Hive closes logically with a persisted archive report and needs --change. OpenSpec and hybrid require --root and --destination; --root must be an absolute canonical path without aliases, and --change, when supplied with --root, must match the canonical root coordinate. For OpenSpec and hybrid, archive merges the change's delta specs into openspec/specs under the archive lock before moving the change, prints a JSON result, and reverts the merge if the move fails. --plan prints the spec sync plan and writes nothing; a plan that removes requirements needs --confirm-destructive.", Args: cobra.NoArgs, SilenceUsage: true, SilenceErrors: true, RunE: func(cmd *cobra.Command, _ []string) error {
+		sync.out = cmd.OutOrStdout()
+		return runBoundSddArchive(cmd.Context(), root, destination, project, change, sync)
 	}}
 	command.Flags().StringVar(&root, "root", "", "absolute canonical OpenSpec change root")
 	command.Flags().StringVar(&destination, "destination", "", "OpenSpec archive destination")
 	command.Flags().StringVar(&project, "project", "", "canonical hive project name")
 	command.Flags().StringVar(&change, "change", "", "canonical SDD change name (required without --root)")
+	command.Flags().BoolVar(&sync.planOnly, "plan", false, "print the OpenSpec spec sync plan as JSON and write nothing")
+	command.Flags().BoolVar(&sync.confirmDestructive, "confirm-destructive", false, "allow a spec sync that removes requirements (only after explicit user confirmation)")
 	return command
 }
 

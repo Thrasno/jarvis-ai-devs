@@ -473,24 +473,38 @@ func TestCatalogContract_SDDSpecDocumentsRemovedMigrationAndRenamedDeltas(t *tes
 	}
 }
 
-func TestCatalogContract_SDDArchiveDocumentsRenamedMergeAndRemovedGuards(t *testing.T) {
+// TestCatalogContract_SDDArchiveDelegatesSpecSyncGuardsToCLI pins that the
+// REMOVED/RENAMED merge guards live in `jarvis sdd archive` (internal/sddspecsync)
+// and the skill only relays confirmation and typed codes, never merging by hand.
+func TestCatalogContract_SDDArchiveDelegatesSpecSyncGuardsToCLI(t *testing.T) {
 	t.Parallel()
 
-	content := readEmbeddedSkillAsset(t, "embed/skills/sdd-archive/SKILL.md")
+	content := strings.ReplaceAll(readEmbeddedSkillAsset(t, "embed/skills/sdd-archive/SKILL.md"), "\r\n", "\n")
 
 	requiredSnippets := []string{
-		"RENAMED Requirements → Rename the matching requirement in main spec using the explicit old/new names",
-		"If a RENAMED requirement omits Old name or New name, STOP before renaming it",
-		"Before deleting any REMOVED requirement, confirm the delta includes both `Reason:` and `Migration:` with non-empty, non-placeholder evidence",
-		"`Migration: None` is valid only when it includes a justification",
-		"If Reason or Migration is empty, placeholder text, or unjustified `None`, STOP before deleting it",
-		"For RENAMED requirements, preserve the requirement body and scenarios unless the delta also modifies them",
+		"it syncs the active `openspec/changes/{change-name}/specs/` into `openspec/specs/` itself. Never hand-edit, copy, merge, or roll back main specs yourself.",
+		"Unsupported delta structure or invalid merge evidence blocks the whole sync before any write.",
+		"Non-requirement `##` sections in a delta (for example notes) are ignored, listed in `ignored_sections`, and never merged.",
+		"Add `--plan` first only if the user wants to see the plan; it prints the plan and writes and moves nothing.",
+		"If `code` is `spec_sync_confirmation_required`, the plan removes requirements. Show the listed `spec_sync.removals` to the user once, and rerun the same command with `--confirm-destructive` only after the user explicitly confirms.",
+		"Never add `--confirm-destructive` without that confirmation.",
+		"return `blocked` and report the code, `detail`, `recovery`, and any `spec_sync.recovery_targets` verbatim.",
 		"| {domain} | Created/Updated | {N added, M modified, K removed, R renamed requirements} |",
 	}
-
 	for _, snippet := range requiredSnippets {
 		if !strings.Contains(content, snippet) {
-			t.Fatalf("expected sdd-archive source to document OpenSpec archive semantic %q", snippet)
+			t.Fatalf("expected sdd-archive source to delegate spec sync to the CLI with %q", snippet)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"RENAMED Requirements → Rename the matching requirement in main spec",
+		"Before deleting any REMOVED requirement, confirm the delta includes",
+		"Copy it directly:",
+		"WARN the orchestrator and ask for confirmation before any main-spec write",
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("sdd-archive must not keep the manual spec merge procedure %q", forbidden)
 		}
 	}
 }
@@ -1380,29 +1394,23 @@ func TestCatalogContract_BoundedApplyProgressGuidanceUsesCanonicalOutcomesAndArc
 		t.Fatal("sdd-apply must not present imported evidence as a normal caller-supplied kind")
 	}
 
-	archive := readEmbeddedSkillAsset(t, "embed/skills/sdd-archive/SKILL.md")
+	archive := strings.ReplaceAll(readEmbeddedSkillAsset(t, "embed/skills/sdd-archive/SKILL.md"), "\r\n", "\n")
 	prepare := strings.Index(archive, "### Step 3: Prepare Verification and Archive Report")
 	sync := strings.Index(archive, "### Step 4: Sync Delta Specs to Main Specs")
-	preflight := strings.Index(archive, "#### Read-Only Whole-Delta Preflight")
-	write := strings.Index(archive, "#### Write Planned Merges")
 	move := strings.Index(archive, "### Step 5: Move to Archive")
-	if prepare < 0 || sync < 0 || preflight < 0 || write < 0 || move < 0 || prepare >= sync || sync >= preflight || preflight >= write || write >= move {
-		t.Fatalf("sdd-archive must prepare reports, preflight every active delta, fully verify spec sync, then move: prepare=%d sync=%d preflight=%d write=%d move=%d", prepare, sync, preflight, write, move)
+	if prepare < 0 || sync < 0 || move < 0 || prepare >= sync || sync >= move {
+		t.Fatalf("sdd-archive must prepare reports, sync specs through the CLI, then move: prepare=%d sync=%d move=%d", prepare, sync, move)
 	}
+	// Spec sync is performed by `jarvis sdd archive` under the archive lock: a
+	// read-only whole-delta plan, all-or-nothing digest-checked writes, and a
+	// revert that never overwrites concurrent edits when the move fails.
 	for _, required := range []string{
-		"Sync from active `openspec/changes/{change-name}/specs/` before the archive move, using these two phases.",
-		"Before the first main-spec write, read every active delta spec and plan every merge without writing.",
-		"Any unsupported, invalid, or destructive-without-confirmation case blocks the entire sync before all writes.",
-		"Only after the complete preflight succeeds may writes begin.",
-		"Capture each destination's exact pre-write bytes, existence, and SHA-256 digest before the first write.",
-		"Immediately before writing each sealed destination, re-read its bytes/existence and byte-compare them with the captured pre-sync state.",
-		"On mismatch, STOP before writing that destination or any remaining destination; return `spec_sync_conflict_recovery_required` without overwriting concurrent work.",
-		"Before rollback, byte-compare each touched target's current bytes with the exact bytes written by this operation; any mismatch MUST STOP and escalate rather than overwrite concurrent post-write edits.",
-		"On any write or post-write digest verification failure, restore every touched target and verify the rollback before returning.",
-		"If rollback cannot be verified, return fail-closed `spec_sync_recovery_required` with every affected path and expected pre-write digest; do not claim cycle completion.",
-		"Before invoking `jarvis sdd archive`, verify every destination digest from the sealed preflight plan.",
-		"If archive validation or the move blocks after verified sync, do not roll back the main specs or claim cycle completion.",
-		"Preserve or recover the active change topology or the exact destination topology and return typed archive recovery for retry.",
+		"Under the archive lock and after the status gate, the command plans every delta read-only, then writes every main spec with before-digest checks or none.",
+		"Unsupported delta structure or invalid merge evidence blocks the whole sync before any write.",
+		"Nothing was moved; do not repair specs or work around the blocker.",
+		"The same locked `jarvis sdd archive --root <change-root> --destination <archive-destination>` invocation moves the change only after every synced main-spec digest verifies:",
+		"If the move fails after a verified sync, the command reverts every main spec to its captured pre-sync bytes, never overwriting a concurrent edit, and returns `archive_recovery_required` with `spec_sync.reverted: true`; a spec it cannot safely restore yields `spec_sync_recovery_required` with `recovery_targets`.",
+		"Report the code and recovery verbatim, do not claim cycle completion, and rerun only after the cause is fixed. Main specs are never silently partial.",
 	} {
 		if !strings.Contains(archive, required) {
 			t.Fatalf("expected sdd-archive source to contain canonical archive ordering phrase %q", required)
@@ -1412,6 +1420,10 @@ func TestCatalogContract_BoundedApplyProgressGuidanceUsesCanonicalOutcomesAndArc
 		"Do not sync delta specs before `jarvis sdd archive` succeeds.",
 		"a blocked archive performs no spec sync.",
 		"read every archived delta spec",
+		"#### Read-Only Whole-Delta Preflight",
+		"#### Write Planned Merges",
+		"If archive validation or the move blocks after verified sync, do not roll back the main specs",
+		"Before invoking `jarvis sdd archive`, verify every destination digest",
 	} {
 		if strings.Contains(archive, forbidden) {
 			t.Fatalf("sdd-archive must not retain contradictory archive-order promise %q", forbidden)

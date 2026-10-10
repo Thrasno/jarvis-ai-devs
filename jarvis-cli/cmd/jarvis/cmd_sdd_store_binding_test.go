@@ -569,6 +569,10 @@ func TestBoundSddArchiveHiveBlocksMissingBlankOrUnreadyClosure(t *testing.T) {
 	}
 }
 
+// boundArchiveDeliveryDelta is a full spec for a capability without a main
+// spec, so the archive spec sync copies it to openspec/specs/delivery/spec.md.
+const boundArchiveDeliveryDelta = "# Delivery Specification\n\n## Requirements\n\n### Requirement: Delivery\n\nThe system MUST deliver.\n"
+
 func writeBoundArchiveReadyOpenSpec(t *testing.T, workspace, change, archiveReport string) (string, sddprogress.AdvanceRequest) {
 	t.Helper()
 	root := filepath.Join(workspace, "openspec", "changes", change)
@@ -608,7 +612,7 @@ func writeBoundArchiveReadyOpenSpec(t *testing.T, workspace, change, archiveRepo
 		"spec.md":          "# Spec\n",
 		"design.md":        "# Design\n",
 		"verify-report.md": "## Verdict\n\n**PASS — archive ready.**\n\n## Critical Findings\n\n0\n\n## Blockers\n\nNone\n",
-		filepath.Join("specs", "delivery", "spec.md"): "# Delivery Delta\n",
+		filepath.Join("specs", "delivery", "spec.md"): boundArchiveDeliveryDelta,
 	}
 	if archiveReport != "" {
 		files["archive-report.md"] = archiveReport
@@ -712,14 +716,21 @@ func TestBoundSddArchiveHybridRequiresMatchingReportsBeforeRename(t *testing.T) 
 			if (err == nil) != tt.wantSuccess {
 				t.Fatalf("archive error = %v, want success=%t", err, tt.wantSuccess)
 			}
+			mainSpec := filepath.Join(workspace, "openspec", "specs", "delivery", "spec.md")
 			if tt.wantSuccess {
 				if _, err := os.Stat(filepath.Join(destination, "archive-report.md")); err != nil {
 					t.Fatalf("hybrid archive destination: %v", err)
+				}
+				if data, err := os.ReadFile(mainSpec); err != nil || string(data) != boundArchiveDeliveryDelta {
+					t.Fatalf("hybrid archive main spec = %q, %v; want synced before the move", data, err)
 				}
 				return
 			}
 			if _, err := os.Stat(root); err != nil {
 				t.Fatalf("source moved after blocked hybrid archive: %v", err)
+			}
+			if _, err := os.Stat(mainSpec); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("blocked hybrid archive synced main specs: %v", err)
 			}
 		})
 	}

@@ -3,5 +3,7 @@
 // It encodes the sdd-archive spec sync rules: ADDED, MODIFIED, REMOVED, and
 // RENAMED requirement sections are validated and merged into
 // openspec/specs/<capability>/spec.md in a read-only plan, then written with
-// before-digest checks and rollback.
+// before-digest checks and rollback. Other level-2 delta sections (e.g. notes)
+// are ignored and reported. Revert undoes an applied plan when the archive
+// move that follows it fails.
 package sddspecsync

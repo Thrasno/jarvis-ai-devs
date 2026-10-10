@@ -31,6 +31,9 @@ type Changes struct {
 	Removed       []string
 	Renamed       []Rename
 	NewCapability bool
+	// IgnoredSections lists, in delta order, the headings of level-2 sections
+	// that are not delta operations (e.g. notes). They are never merged.
+	IgnoredSections []string
 }
 
 // Destructive reports whether the merge deletes requirements.
@@ -69,7 +72,7 @@ func merge(main []byte, exists bool, delta []byte) ([]byte, Changes, error) {
 		}
 		return out, Changes{NewCapability: true}, nil
 	}
-	spec, err := parseDelta(deltaText)
+	spec, ignored, err := parseDelta(deltaText)
 	if err != nil {
 		return nil, Changes{}, err
 	}
@@ -83,7 +86,12 @@ func merge(main []byte, exists bool, delta []byte) ([]byte, Changes, error) {
 	if len(doc.duplicates) > 0 {
 		return nil, Changes{}, &MergeError{Kind: ErrInvalidMainSpec, Requirement: doc.duplicates[0], Detail: "requirement name appears more than once"}
 	}
-	return applyDelta(doc, spec)
+	out, changes, err := applyDelta(doc, spec)
+	if err != nil {
+		return nil, Changes{}, err
+	}
+	changes.IgnoredSections = ignored
+	return out, changes, nil
 }
 
 // copyNewCapability validates a full spec for a capability without a main
@@ -124,13 +132,35 @@ func sectionOf(h heading) (string, bool) {
 	return "", false
 }
 
+// looksLikeOperation reports a level-2 heading that resembles a delta
+// operation section without matching one exactly (e.g. "Added Requirements").
+// Such headings fail closed instead of being ignored.
+func looksLikeOperation(text string) bool {
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return false
+	}
+	if strings.EqualFold(fields[len(fields)-1], "Requirements") {
+		return true
+	}
+	for _, section := range applyOrder {
+		if strings.EqualFold(fields[0], section) {
+			return true
+		}
+	}
+	return false
+}
+
 // parseDelta splits a delta spec into its operation sections. Only a level-1
-// title and free prose may precede the first section; inside sections every
-// non-blank line must belong to a "### Requirement:" block.
-func parseDelta(text string) (deltaSpec, error) {
+// title and free prose may precede the first section; inside operation
+// sections every non-blank line must belong to a "### Requirement:" block.
+// Other level-2 sections (e.g. notes) are skipped and their headings returned;
+// they may not contain requirement blocks.
+func parseDelta(text string) (deltaSpec, []string, error) {
+	fail := func(err *MergeError) (deltaSpec, []string, error) { return nil, nil, err }
 	doc := newDocument(strings.Split(text, "\n"))
 	if doc.unclosed {
-		return nil, &MergeError{Kind: ErrInvalidDelta, Detail: "unclosed fenced code block"}
+		return fail(&MergeError{Kind: ErrInvalidDelta, Detail: "unclosed fenced code block"})
 	}
 	headingAt := map[int]heading{}
 	for _, h := range doc.headings {
@@ -138,6 +168,9 @@ func parseDelta(text string) (deltaSpec, error) {
 	}
 	spec := deltaSpec{}
 	section := ""
+	// ignoring is the heading of the non-operation section being skipped.
+	ignoring := ""
+	var ignored []string
 	var current *deltaBlock
 	closeBlock := func() {
 		if current != nil {
@@ -150,51 +183,60 @@ func parseDelta(text string) (deltaSpec, error) {
 		h, isHeading := headingAt[i]
 		switch {
 		case isHeading && h.level == 1:
-			if section != "" {
-				return nil, &MergeError{Kind: ErrInvalidDelta, Section: section, Detail: "level-1 heading inside delta sections"}
+			if section != "" || ignoring != "" {
+				return fail(&MergeError{Kind: ErrInvalidDelta, Section: section, Detail: "level-1 heading inside delta sections"})
 			}
 		case isHeading && h.level == 2:
 			closeBlock()
 			next, ok := sectionOf(h)
 			if !ok {
-				return nil, &MergeError{Kind: ErrInvalidDelta, Detail: "unsupported section " + quote(h.text)}
+				if looksLikeOperation(h.text) || h.text == "" {
+					return fail(&MergeError{Kind: ErrInvalidDelta, Detail: "unsupported section " + quote(h.text)})
+				}
+				section, ignoring = "", h.text
+				ignored = append(ignored, h.text)
+				continue
 			}
 			if _, seen := spec[next]; seen {
-				return nil, &MergeError{Kind: ErrInvalidDelta, Section: next, Detail: "section appears more than once"}
+				return fail(&MergeError{Kind: ErrInvalidDelta, Section: next, Detail: "section appears more than once"})
 			}
-			section = next
+			section, ignoring = next, ""
 			spec[section] = nil
+		case ignoring != "":
+			if name, ok := requirementName(h); isHeading && ok {
+				return fail(&MergeError{Kind: ErrInvalidDelta, Requirement: name, Detail: "requirement inside non-operation section " + quote(ignoring)})
+			}
 		case isHeading && h.level == 3:
 			closeBlock()
 			name, ok := requirementName(h)
 			if !ok {
-				return nil, &MergeError{Kind: ErrInvalidDelta, Section: section, Detail: "unsupported heading " + quote(h.text)}
+				return fail(&MergeError{Kind: ErrInvalidDelta, Section: section, Detail: "unsupported heading " + quote(h.text)})
 			}
 			if section == "" {
-				return nil, &MergeError{Kind: ErrInvalidDelta, Requirement: name, Detail: "requirement outside an ADDED/MODIFIED/REMOVED/RENAMED section"}
+				return fail(&MergeError{Kind: ErrInvalidDelta, Requirement: name, Detail: "requirement outside an ADDED/MODIFIED/REMOVED/RENAMED section"})
 			}
 			if name == "" {
-				return nil, &MergeError{Kind: ErrInvalidDelta, Section: section, Detail: "requirement heading without a name"}
+				return fail(&MergeError{Kind: ErrInvalidDelta, Section: section, Detail: "requirement heading without a name"})
 			}
 			current = &deltaBlock{name: name, lines: []string{line}}
 		case current != nil:
 			current.lines = append(current.lines, line)
 		case isHeading:
-			return nil, &MergeError{Kind: ErrInvalidDelta, Section: section, Detail: "heading " + quote(h.text) + " outside a requirement block"}
+			return fail(&MergeError{Kind: ErrInvalidDelta, Section: section, Detail: "heading " + quote(h.text) + " outside a requirement block"})
 		case section != "" && strings.TrimSpace(line) != "":
-			return nil, &MergeError{Kind: ErrInvalidDelta, Section: section, Detail: "content outside a requirement block"}
+			return fail(&MergeError{Kind: ErrInvalidDelta, Section: section, Detail: "content outside a requirement block"})
 		}
 	}
 	closeBlock()
 	if len(spec) == 0 {
-		return nil, &MergeError{Kind: ErrInvalidDelta, Detail: "delta has no ADDED/MODIFIED/REMOVED/RENAMED sections"}
+		return fail(&MergeError{Kind: ErrInvalidDelta, Detail: "delta has no ADDED/MODIFIED/REMOVED/RENAMED sections"})
 	}
 	for _, section := range applyOrder {
 		if blocks, ok := spec[section]; ok && len(blocks) == 0 {
-			return nil, &MergeError{Kind: ErrInvalidDelta, Section: section, Detail: "section has no requirements"}
+			return fail(&MergeError{Kind: ErrInvalidDelta, Section: section, Detail: "section has no requirements"})
 		}
 	}
-	return spec, nil
+	return spec, ignored, nil
 }
 
 // validateDelta checks per-block evidence and cross-section consistency
