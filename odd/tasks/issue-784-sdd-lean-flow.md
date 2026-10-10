@@ -21,7 +21,7 @@ Related: #781 operator handoff (approved), lands before the adaptive verify slic
 - [x] S4: Question round single owner (orchestrator), offered in both modes, forced only for unusable scope.
 - [x] S5a: Checkpoint CLI derives request id and stream digest; returns a `next` action.
 - [x] S5b: Checkpoint CLI accepts a compact per-task strict-TDD record and expands it into evidence entries.
-- [ ] S6: Trim apply prompts (one checkpoint per batch, follow `next`, compact TDD).
+- [x] S6: Trim apply prompts (one checkpoint per batch, follow `next`, compact TDD).
 - [ ] S7: #781 operator handoff (EvidenceOperator kind + tasks/apply/verify skills).
 - [ ] S8: Adaptive verify (stop early on pending tasks; run detected commands once; static review without runner; operator-attested).
 - [ ] S9a: Spec-merge engine in Go.
@@ -86,5 +86,14 @@ Related: #781 operator handoff (approved), lands before the adaptive verify slic
 - Advisory fixed test-first: completion attaches to the last step that ran and it must pass (no completing on RED/failure) — commit `fix(sdd): require a passing last run step before a task record completes`; review review-c3476a1908530cd5 approved.
 - Note: existing validators enforce structure only (no RED-must-fail rule); unchanged by design.
 
+### S5b delivery
+- PR #790 merged (squash e64e1a7c), 14/14 checks.
+
+### S6
+- Worker: RED on TestCatalogContract_ApplyCheckpointsOncePerBatchWithTaskRecords, GREEN; full suite + vet clean. strict-tdd.md 419 -> 158 lines; SKILL.md 28.0 KB -> 23.6 KB; one checkpoint per batch with task_records; follow `next`.
+- Review review-e2b039d2e1804dab approved; four advisories fixed (RED observed on new contract by stashing Markdown): executor owns continue_stream, fail closed on missing/unknown `next`, retry_identical at most twice, skipped triangulation is not a run step (review review-09382464fbde3ea7), then stalled-stream stop and single owner wording (review review-d7593b56b8b287f2).
+- Accepted residual: "cursor advance" wording nuance.
+- Workaround to revisit in S8: safety-net baseline is recorded in the first task's red summary (no dedicated step kind).
+
 ## Next step
-S5b push + PR + merge, then S6 (trim apply prompts: task_records, follow `next`).
+S6 push + PR + merge, then S7 (#781 operator handoff).
