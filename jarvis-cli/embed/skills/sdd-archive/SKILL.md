@@ -76,6 +76,7 @@ Before syncing specs, moving folders, or writing an archive report, consume the 
 ### Verification Gate
 
 - Archive reads only the canonical active verify-report contract: exactly one `## Verdict`, `## Critical Findings`, and `## Blockers` section. `PASS` or `PASS WITH WARNINGS` is archive-ready only with `archive ready`, zero critical findings, and `Blockers: None` (including normalized `**None**` or `_None_`).
+- A static-mode report (`Verification mode: static`) with `**PASS WITH WARNINGS — archive ready.**` is archive-ready: its `no test runner: static review only` warning and `static-reviewed` scenarios are expected, so never block archive for runtime evidence that cannot exist.
 - Do not infer readiness from historical narrative, archived-style reports, YAML, or prose. Missing/duplicate headings, missing fields, or a missing marker fail closed with `regenerate_with_sdd_verify`; return that typed recovery code and re-run `sdd-verify`.
 - If verify-report evidence is missing, failing, stale, or does not cover the current artifacts, STOP and return `blocked`; archive cannot proceed when verify-report evidence is missing/failing/stale.
 - Unresolved CRITICAL verification findings always block archive. Do not accept overrides for unresolved CRITICAL findings.

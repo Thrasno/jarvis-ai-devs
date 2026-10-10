@@ -8,6 +8,7 @@
 - ❌ `FAILING`: covering test exists but failed.
 - ❌ `UNTESTED`: no covering test found.
 - ⚠️ `PARTIAL`: test passes but covers only part of the scenario.
+- 🔍 `static-reviewed`: no test runner exists; the changed code was read against the scenario and the loaded project skills' rules. It is never a test-backed `COMPLIANT` or `PASS`.
 - 👤 `operator-attested`: the scenario depends on an `[operator]` task the developer acknowledged in chat; it is developer attestation, never a test-backed PASS.
 - ⏳ `pending-operator`: the scenario depends on an unchecked `[operator]` task; not CRITICAL, but archive waits for the acknowledgement.
 
@@ -19,6 +20,7 @@
 **Change**: {change-name}
 **Version**: {spec version or N/A}
 **Mode**: {Strict TDD | Standard}
+**Verification mode**: {runtime | static}
 
 ### Completeness
 | Metric | Value |
@@ -38,15 +40,18 @@
 {test command and failure details}
 ```
 
-**Coverage**: {N}% / threshold: {N}% → ✅ Above / ⚠️ Below / ➖ Not available
+**Coverage** (optional, warn-only): {N}% / threshold: {N}% → ✅ Above / ⚠️ Below / ➖ Not run
+
+In static mode, replace this section with `**Runtime**: ➖ no test runner: static review only` and run no commands.
 
 ### Spec Compliance Matrix
 | Requirement | Scenario | Test | Result |
 |-------------|----------|------|--------|
 | {REQ-01} | {Scenario} | `{file} > {test}` | ✅ COMPLIANT |
 | {REQ-02} | {Scenario} | (none found) | ❌ UNTESTED |
+| {REQ-03} | {Scenario} | static review of `{file}` | 🔍 static-reviewed |
 
-**Compliance summary**: {N}/{total} scenarios compliant
+**Compliance summary**: {N}/{total} scenarios compliant ({N} static-reviewed, {N} operator-attested)
 
 ### Correctness (Static Evidence)
 | Requirement | Status | Notes |
@@ -89,4 +94,4 @@ Emit `archive ready` only when `Critical Findings` is `0` and `Blockers` is `Non
 
 The consumer ignores historical narrative and does not fall back to archived-style, YAML, or prose reports. Missing or duplicate active headings, missing fields, or a missing marker are invalid and must be regenerated with `sdd-verify` (`regenerate_with_sdd_verify`).
 
-When Strict TDD is active, insert the TDD compliance, test layer distribution, changed-file coverage, and quality metrics sections from `../strict-tdd-verify.md`.
+When Strict TDD is active in runtime mode, insert the TDD compliance and quality metrics sections from `../strict-tdd-verify.md`, plus the optional audit sections when they ran.

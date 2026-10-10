@@ -168,3 +168,16 @@ func TestCatalogContract_ApplyNextHandlingFailsClosedAndIsBounded(t *testing.T) 
 		t.Fatal("orchestrator must not relaunch apply for continue_stream; the executor owns it")
 	}
 }
+
+// TestCatalogContract_VerifyKeepsTestsThatCannotFailCritical keeps the optional
+// assertion audit honest: when it runs, a test that cannot fail is still CRITICAL.
+func TestCatalogContract_VerifyKeepsTestsThatCannotFailCritical(t *testing.T) {
+	module := readNormalizedAsset(t, "embed/skills/sdd-verify/strict-tdd-verify.md")
+	requireAllTerms(t, module,
+		"A test that cannot fail proves nothing, so these four findings are CRITICAL whenever the audit finds them",
+		"except that a found test that cannot fail (tautology, no production execution, ghost loop, or setup that skips the target path) is CRITICAL",
+	)
+	if strings.Contains(module, "Every finding is a WARNING or SUGGESTION; none blocks the verdict") {
+		t.Fatal("assertion audit must not downgrade tests that cannot fail to WARNING")
+	}
+}

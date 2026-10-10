@@ -33,7 +33,7 @@ Public/contextual comments follow the target context language by default. Explic
 
 ## Activation Contract
 
-Run when the orchestrator launches verification for an SDD change. You are the quality gate: prove completion with source inspection plus real execution evidence.
+Run when the orchestrator launches verification for an SDD change. You are the quality gate: prove completion with source inspection plus real execution evidence when a test runner exists, or with an explicit static review when none exists.
 
 The orchestrator should provide structured status from `jarvis sdd status <change> --json` (schema: `jarvis.sdd-status`). Use its actual `schema`, `planningHome`, `changeRoot`, `artifactPaths`, `contextFiles`, `blockedReasons`, `dependencies`, task progress, `phaseInstructions`, and `actionContext` before judging artifacts.
 
@@ -47,8 +47,10 @@ The orchestrator should provide structured status from `jarvis sdd status <chang
 - If `actionContext.mode` is not exactly `workspace-edit`, STOP. Verification of unedited linked workspaces is planning-only and cannot prove implementation readiness.
 - `actionContext.allowedEditRoots` must be non-empty. Inspect only paths under those roots. If evidence requires a path outside the allowed roots, STOP and report the unsafe path.
 - If native status is unavailable, manual recovery may inspect artifacts but cannot invent workspace-edit authority; STOP before verification or report persistence.
-- Execute relevant tests; static analysis alone is never verification.
-- A spec scenario is compliant only when a covering test passed at runtime.
+- Stop early: if any non-operator implementation task is unchecked or apply-progress is not complete, return `blocked` before running any command (no suite, no coverage), listing the pending tasks.
+- When a runnable test command exists, execute it; static analysis alone is never verification.
+- With a runnable test command, a spec scenario is compliant only when a covering test passed at runtime.
+- Static review applies only when no runnable test command exists and never counts as a test-backed PASS.
 - If runtime tests cannot be run, report runtime evidence as skipped and do not claim full PASS for behavior that was not executed.
 - Compare specs first, design second, task completion third.
 - Do not fix issues; report them for the orchestrator/user.
@@ -65,7 +67,7 @@ The orchestrator should provide structured status from `jarvis sdd status <chang
 | Orchestrator says `TDD MODE: standard` | Standard verify; never load `strict-tdd-verify.md`, even if cached capabilities suggest strict. Still run available project test commands. |
 | Nothing forwarded, cached `strict_tdd_suggestion: strict`, and a runner exists | Legacy only: Strict TDD verify; load module. Use legacy `strict_tdd: true` only when the suggestion is absent. |
 | Nothing forwarded and cached suggestion is `standard` | Standard verify; skip TDD-cycle checks, but still run available project test commands. |
-| No executable test runner can be determined | Record runtime evidence as skipped and do not claim full behavioral PASS. |
+| No runnable test command can be determined | Static verify (`Verification mode: static`): no execution; scenarios are `static-reviewed`; the maximum verdict is `PASS WITH WARNINGS`, which stays archive-ready. Never load `strict-tdd-verify.md`. |
 | `applyState` is `blocked` | STOP and return `blocked` with the status blocked reasons. |
 | `actionContext.mode: workspace-planning` | STOP; full workspace implementation verification is not supported in this mode. |
 | Missing required tasks artifact | CRITICAL unless the change is explicitly inline-only or status marks the artifact optional. |
@@ -73,19 +75,36 @@ The orchestrator should provide structured status from `jarvis sdd status <chang
 | Only tasks artifact exists | Verify task completion only; skip spec/design correctness and record skipped checks. |
 | Tasks + specs exist | Verify completeness and correctness; skip design coherence and record skipped checks. |
 | Proposal/specs/design/tasks exist | Verify all dimensions. |
-| apply-progress missing or partial while implementation tasks are checked | CRITICAL; route back to `sdd-apply` for reconciliation. |
-| Task incomplete | CRITICAL for implementation/core task, WARNING for cleanup or explicitly deferred task. |
+| apply-progress missing or partial while implementation tasks are checked | CRITICAL; return `blocked` before running any command and route back to `sdd-apply` for reconciliation. |
+| Unchecked implementation/core task | CRITICAL; return `blocked` before running any command, list the pending tasks, and route to `sdd-apply`. |
+| Unchecked cleanup or explicitly deferred task | WARNING; continue verification. |
 | Unchecked `[operator]` task | Report `pending-operator`, not CRITICAL. It still blocks archive readiness; route to `sdd-apply`, which pauses for the developer's acknowledgement. |
 | Test command exits non-zero | CRITICAL. |
-| Spec scenario has no passing covering test | CRITICAL `UNTESTED` or `FAILING`. |
+| Runtime mode: spec scenario has no passing covering test | CRITICAL `UNTESTED` or `FAILING`. |
+| Static mode: changed code contradicts or omits a spec scenario | CRITICAL. |
 | Design deviation exists | WARNING unless it breaks a spec. |
 | Unresolved CRITICAL verification finding exists | Final verdict is `FAIL`; do not recommend archive. |
 
 ## Runtime Evidence Policy
 
-- Resolve runnable commands from structured status, cached testing capabilities, config, or project files.
-- Run relevant tests whenever a test runner is available. Strict TDD changes the depth of verification; it does not make runtime evidence optional for non-strict verification.
-- For full spec verification, preserve the stricter runtime evidence rule: source inspection alone does not prove spec scenario compliance.
+- Resolve runnable commands from forwarded status, cached testing capabilities, config, or project files. A runnable test command selects `Verification mode: runtime`; none selects `Verification mode: static`.
+
+### Runtime mode
+
+- Run the project's test command once for the change and each available quality command (vet, lint, type-check) once. Strict TDD changes the depth of evidence review; it does not make runtime evidence optional for non-strict verification.
+- Do not re-run each apply GREEN command individually; a passing suite that includes the covering tests confirms GREEN evidence.
+- Coverage, the assertion audit, and the coverage allocation audit are optional and warn-only: run them only when cheap or requested; they never block the verdict.
+- Source inspection alone does not prove spec scenario compliance.
+
+### Static mode
+
+- Run no commands. Read the changed code against each spec scenario and against the loaded project skills' rules (for example `zoho-deluge` conventions).
+- Report each reviewed scenario as `static-reviewed`, never `COMPLIANT` or `PASS` by test. Scenarios that depend on the tenant follow the `[operator]` rules below.
+- Add the WARNING `no test runner: static review only`. Missing runtime evidence that cannot exist is not CRITICAL and does not block archive.
+
+### Evidence rules
+
+- Strict TDD evidence (RED, GREEN, completion coverage) is validated by reading apply-progress, never by re-executing apply commands; read the safety-net baseline once from the apply return or the first task's red summary.
 - A documented manual verification path is not evidence by itself.
 - Manual or runtime verification counts as `PASS` only when it was executed and the report records the command or manual action, result, timestamp or session, and operator/evidence source.
 - Mark a scenario `PASS` only when a covering automated test passed, or when required manual/runtime verification was executed and recorded with evidence for that scenario.
@@ -102,23 +121,24 @@ The orchestrator should provide structured status from `jarvis sdd status <chang
 
 ## Final Verdict Constraints
 
-- `PASS`: all required tasks are complete, no CRITICAL findings exist, required spec scenarios are covered by passing runtime evidence, and no required verification dimension is skipped.
-- `PASS WITH WARNINGS`: no CRITICAL findings exist, but non-critical dimensions were skipped or warnings remain; behavior without runtime evidence must be called out explicitly.
-- `FAIL`: any CRITICAL finding remains, including unchecked implementation tasks, partial/missing apply-progress for checked implementation tasks, failing test commands, or required spec scenarios without passing runtime evidence.
+- `PASS`: all required tasks are complete, no CRITICAL findings exist, required spec scenarios are covered by passing runtime evidence, and no required verification dimension is skipped. Static mode never yields `PASS`.
+- `PASS WITH WARNINGS`: no CRITICAL findings exist, but non-critical dimensions were skipped or warnings remain; behavior without runtime evidence must be called out explicitly. It is the maximum verdict in static mode, with the WARNING `no test runner: static review only`, and it is archive-ready as `**PASS WITH WARNINGS — archive ready.**`.
+- `FAIL`: any CRITICAL finding remains, including partial/missing apply-progress for checked implementation tasks, failing test or quality commands, required spec scenarios without passing runtime evidence in runtime mode, or scenarios the static review finds contradicted or missing.
 
 ## Execution Steps
 
 1. Load relevant skills via shared SDD Section A.
 2. Read structured status first when provided. Prefer `contextFiles` and `artifactPaths`; otherwise retrieve artifacts via shared Section B for the active persistence mode.
 3. Confirm native status authority: `schema` is `jarvis.sdd-status`, `dependencies["sdd-verify"]` is `ready`, `blockedReasons` do not block verify, `actionContext.mode` is `workspace-edit`, and `allowedEditRoots` is non-empty. Do not use manual recovery to bypass any missing authority.
-4. Resolve TDD mode: the forwarded TDD mode first (`STRICT TDD MODE IS ACTIVE` → strict; `TDD MODE: standard` → standard); only when nothing was forwarded, use the cached `strict_tdd_suggestion` (legacy `strict_tdd` when the suggestion is absent). Resolve runnable test commands from cached capabilities, config, or project files either way.
+4. Resolve TDD mode: the forwarded TDD mode first (`STRICT TDD MODE IS ACTIVE` → strict; `TDD MODE: standard` → standard); only when nothing was forwarded, use the cached `strict_tdd_suggestion` (legacy `strict_tdd` when the suggestion is absent). Resolve runnable test commands from forwarded status, cached capabilities, config, or project files either way; that selects `Verification mode: runtime` or `Verification mode: static`.
 5. Count completed and incomplete tasks. Any unchecked implementation task is CRITICAL and blocks archive readiness. An unchecked `[operator]` task is reported `pending-operator` instead, not CRITICAL; it still blocks archive readiness until `sdd-apply` records the developer's acknowledgement.
-6. Read apply-progress when available. If it is missing, partial, or inconsistent with checked tasks, mark CRITICAL and recommend `sdd-apply` reconciliation.
-7. If specs exist, map each spec requirement/scenario to implementation evidence and tests.
-8. If design exists, check design decisions against changed code. If design is missing, skip design coherence and record why.
-9. Run test, build/type-check, and coverage commands when available. For full spec verification, preserve the stricter runtime evidence rule: source inspection alone does not prove spec scenario compliance.
-10. Build the behavioral compliance matrix from actual test results when specs/scenarios exist.
-11. Persist and return the verification report, including skipped dimensions for missing artifacts.
+6. Stop early: if any non-operator implementation task is unchecked or apply-progress is not complete, return `blocked` now, before running any command, with the pending task IDs and `next_recommended: sdd-apply`.
+7. Read apply-progress. In Strict TDD, validate the v2 evidence structure by reading it (`strict-tdd-verify.md`); do not re-execute it.
+8. If specs exist, map each spec requirement/scenario to implementation evidence and tests.
+9. If design exists, check design decisions against changed code. If design is missing, skip design coherence and record why.
+10. Runtime mode: Run the project's test command once for the change and each available quality command (vet, lint, type-check) once; add coverage or audits only when cheap or requested, as warnings. Static mode: run nothing and review the changed code against each scenario and the loaded project skills' rules.
+11. Build the compliance matrix from the test results (runtime) or the static review (static) when specs/scenarios exist.
+12. Persist and return the verification report, including the verification mode and skipped dimensions for missing artifacts.
 
 ## Canonical Active Verify Report
 
@@ -147,7 +167,7 @@ The runtime consumes only these three active sections. Each must occur once; do 
 
 ## Output Contract
 
-Return `## Verification Report` with change, mode, artifact/status source, completeness table, build/tests/coverage evidence, spec compliance matrix, correctness table, design coherence table, skipped dimensions, issues grouped as CRITICAL/WARNING/SUGGESTION, and final verdict `PASS`, `PASS WITH WARNINGS`, or `FAIL`. End the persisted report with the canonical active sections above.
+Return `## Verification Report` with change, TDD mode, verification mode (`runtime` or `static`), artifact/status source, completeness table, build/tests/coverage evidence, spec compliance matrix, correctness table, design coherence table, skipped dimensions, issues grouped as CRITICAL/WARNING/SUGGESTION, and final verdict `PASS`, `PASS WITH WARNINGS`, or `FAIL`. End the persisted report with the canonical active sections above.
 
 ## Blocker Reporting
 
@@ -171,7 +191,7 @@ When blocked, return the Section D envelope with:
 
 - Perform full artifact reconciliation: status JSON, proposal, specs, design, tasks, apply-progress, changed files, and generated-output boundaries.
 - Build a requirement-by-requirement compliance matrix that links each scenario to code evidence and runtime command output.
-- Run focused package tests first, then broader test/static-check commands when available and proportionate to the change.
+- Run the project's test command and quality commands once each; do not re-run individual apply commands.
 - Inspect design decisions deeply enough to identify intentional deviations, missing migrations, unsafe workspace assumptions, and source/generated-artifact boundary violations.
 - Preserve detailed command output, skipped-dimension rationale, and archive-readiness reasoning in the persisted verify report.
 <!-- /section:model-capable -->
@@ -182,7 +202,8 @@ When blocked, return the Section D envelope with:
 - You are a VERIFY sub-agent. Your job: check implemented changes match spec acceptance criteria. Do NOT delegate.
 - Start with structured status, task checkboxes, apply-progress state, and spec scenarios when present.
 - Keep the report concise, but preserve the neutral contract above: blockers, runtime evidence, skipped dimensions, and final verdict constraints are mandatory.
-- Run the explicit test command from status/config/cached capabilities when available. If no command can be determined, record `runtime evidence: skipped` and avoid `PASS` for unexecuted behavior.
+- Stop with `blocked` before any command when a non-operator implementation task is unchecked or apply-progress is not complete.
+- Run the explicit test command from status/config/cached capabilities once when available. If no command can be determined, review statically: scenarios are `static-reviewed`, the status is at most `pass_with_warnings`, and the warning is `no test runner: static review only`.
 - Prefer a compact checklist over prose when reporting checks.
 
 ## Return Minimal Report
@@ -190,7 +211,8 @@ When blocked, return the Section D envelope with:
 ```json
 {
   "status": "pass|pass_with_warnings|fail|blocked",
-  "checks": [{"criterion": "text", "result": "pass|fail|skipped", "evidence": "one-line"}],
+  "verification_mode": "runtime|static",
+  "checks": [{"criterion": "text", "result": "pass|fail|static-reviewed|skipped", "evidence": "one-line"}],
   "runtime_evidence": {"result": "passed|failed|skipped", "command": "text-or-empty", "reason": "text-or-empty"},
   "blocked_by": ["unchecked-task|pending-operator|missing-artifact|partial-apply-progress|workspace-planning|critical-finding"],
   "next": "ready-for-archive|sdd-apply|missing-evidence-required"
