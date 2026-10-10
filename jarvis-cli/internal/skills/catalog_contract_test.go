@@ -646,7 +646,7 @@ func TestCatalogContract_SDDCoreSkillsMatchJarvisAdaptedUpstreamContract(t *test
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			content := readEmbeddedSkillAsset(t, tc.path)
+			content := strings.ReplaceAll(readEmbeddedSkillAsset(t, tc.path), "\r\n", "\n")
 
 			upstreamVersion := "v1.26.5"
 			if tc.name == "sdd-verify" || tc.name == "sdd-apply" || tc.name == "sdd-archive" {

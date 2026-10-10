@@ -12,6 +12,7 @@ func readPolicyFile(t *testing.T, rel string) string {
 
 func markdownSection(t *testing.T, content, startHeading, nextHeading string) string {
 	t.Helper()
+	content = strings.ReplaceAll(content, "\r\n", "\n")
 
 	start := strings.Index(content, startHeading)
 	if start == -1 {
