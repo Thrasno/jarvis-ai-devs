@@ -463,7 +463,7 @@ When launching `sdd-apply` or `sdd-verify` sub-agents, the orchestrator MUST for
 3. If no TDD mode is recorded for the change, run the preflight before launching apply or verify; do not guess from cached capabilities.
 4. If `sdd-apply` returns `blocked` with reason `strict-tdd-unrunnable`, surface its one-sentence message to the user and wait. Relaunch apply only after the user chooses standard for this feature (update the `TDD mode` line of the proposal's `## SDD Decisions` block) or provides a test command; never relaunch strict apply unchanged.
 
-The orchestrator resolves the TDD mode ONCE per change from the recorded decisions and caches it.
+The orchestrator resolves the TDD mode ONCE per change from the recorded decisions and caches it. The only change after preflight is the user's explicit choice in rule 4: update the `## SDD Decisions` block and replace the cached TDD mode in the same step, so later launches and sessions forward the new value.
 
 ## Bounded Apply-Progress Continuation (MANDATORY)
 
