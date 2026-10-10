@@ -32,7 +32,9 @@ From the orchestrator:
 
 - Change name
 - Artifact store mode (`hive | openspec | hybrid | none`)
-- Delivery strategy (`ask-on-risk | auto-chain | single-pr | exception-ok`)
+- Preflight decisions for the feature (the `## SDD Decisions` block): delivery strategy (`auto-chain | exception-ok`), `review_budget_lines` (budget N, absent under `size:exception`), chain strategy (`stacked-to-main | feature-branch-chain | size:exception`), and TDD mode (`strict | standard`)
+
+These decisions are final for the feature. Consume them; never ask the user for a chain strategy, a size exception, or a budget.
 
 ## Execution and Persistence Contract
 
@@ -81,16 +83,17 @@ openspec/changes/{change-name}/
 | Field | Value |
 |-------|-------|
 | Estimated changed lines | <rough estimate or range> |
-| 400-line budget risk | Low / Medium / High |
+| Review budget | <forwarded N changed lines> |
+| Budget risk | Low / Medium / High |
 | Chained PRs recommended | Yes / No |
 | Suggested split | <single PR or PR 1 → PR 2 → PR 3> |
-| Delivery strategy | <ask-on-risk / auto-chain / single-pr / exception-ok> |
+| Delivery strategy | <auto-chain / exception-ok> |
 | Chain strategy | <stacked-to-main / feature-branch-chain / size:exception / pending> |
 
 Decision needed before apply: <one of: Yes, No>
 Chained PRs recommended: <one of: Yes, No>
 Chain strategy: <one of: stacked-to-main, feature-branch-chain, size:exception, pending>
-400-line budget risk: <one of: Low, Medium, High>
+Budget risk: <one of: Low, Medium, High>
 
 ### Suggested Work Units
 
@@ -137,24 +140,26 @@ Each task MUST be:
 
 ### Review Workload Forecast Rules
 
-Before finalizing tasks, estimate whether implementation is likely to exceed the **400 changed-line review budget** (`additions + deletions`). This is a planning guard, not an exact diff count.
+Apply the forwarded size policy. Never ask the user; the preflight already decided.
 
-Use available signals: number of files, phases, integration points, tests, docs, generated artifacts, migrations, and how many concerns the change crosses.
+**`size:exception`** (`exception-ok`): skip the line forecast entirely. Do not estimate lines, rate budget risk, or split into work units. Write only these guard lines:
 
-If the estimate is **High** or likely above 400 lines:
+```text
+Decision needed before apply: No
+Chained PRs recommended: No
+Chain strategy: size:exception
+```
 
-1. Mark `Chained PRs recommended` as `Yes`.
-2. Split tasks into **work units** that can become chained or stacked PRs.
-3. Each suggested PR must have a clear start, clear finish, verification, and autonomous scope.
-4. **Ask the user which chain strategy to use** (this is a team decision):
-   - **Stacked PRs to main** — each PR merges to main in order. Fast iteration, fix on the go. Best for speed-first teams and independent slices.
-   - **Feature Branch Chain** — the feature/tracker branch accumulates the final integration; PR #1 targets the tracker branch, later PRs target the immediate previous PR branch so each child diff stays focused. Only the tracker merges to main. Best for rollback control and coordinated releases.
-   - **size:exception** — keep it as a single PR with maintainer approval. Best for generated code, migrations, or vendor diffs.
-5. Cache the user's choice and set `Decision needed before apply` from delivery strategy:
-   - `ask-on-risk`: `Yes` — orchestrator asks before apply.
-   - `auto-chain`: `No` — orchestrator proceeds with the first slice using the chosen chain strategy.
-   - `single-pr`: `Yes` — orchestrator must require `size:exception` before apply.
-   - `exception-ok`: `No` — maintainer has accepted `size:exception`.
+**Budget N** (`auto-chain` with `review_budget_lines: N`): estimate whether implementation is likely to exceed the forwarded budget of N changed lines (`additions + deletions`). Never substitute a hard-coded budget. This is a planning guard, not an exact diff count. Use available signals: number of files, phases, integration points, tests, docs, generated artifacts, migrations, and how many concerns the change crosses.
+
+- If the estimate is **High** or likely above N lines:
+  1. Mark `Chained PRs recommended` as `Yes`.
+  2. Split tasks into **work units** for the forwarded chain strategy (`stacked-to-main` or `feature-branch-chain`).
+  3. Each suggested PR must have a clear start, clear finish, verification, and autonomous scope.
+  4. Write `Decision needed before apply: No` and `Chain strategy: <forwarded value>`.
+- If the estimate is within N lines: write `Chained PRs recommended: No`, `Decision needed before apply: No`, and `Chain strategy: <forwarded value>` (`stacked-to-main` when none was forwarded for a single in-budget PR).
+
+**Decisions not forwarded** (legacy or headless launch with no `## SDD Decisions`): never guess. Write `Decision needed before apply: Yes` and `Chain strategy: pending` so the native gate blocks apply until the orchestrator runs the preflight.
 
 Do not bury this in prose. Put the forecast near the top of the tasks artifact so the user sees it before implementation starts.
 
@@ -164,13 +169,15 @@ The forecast MUST include these plain-text lines so downstream guards can match 
 Decision needed before apply: <one of: Yes, No>
 Chained PRs recommended: <one of: Yes, No>
 Chain strategy: <one of: stacked-to-main, feature-branch-chain, size:exception, pending>
-400-line budget risk: <one of: Low, Medium, High>
+Budget risk: <one of: Low, Medium, High>
 ```
 
 Guard contract rules:
 
 - Write exactly one chosen value per line, for example `Chain strategy: stacked-to-main`. Never write the option list (`stacked-to-main|feature-branch-chain|...`) or several values on one line.
-- Write `Chain strategy: pending` until the user has decided. `pending` never unblocks apply.
+- Write `Chain strategy: pending` only when no decisions were forwarded. `pending` never unblocks apply.
+- An unfilled `Decision needed before apply:` placeholder keeps apply blocked; always replace it with one value.
+- Under `size:exception`, omit the `Budget risk` line; there is no forecast.
 - When `Decision needed before apply: Yes`, apply stays blocked until the artifact contains a whole line `Chain strategy: stacked-to-main`, `Chain strategy: feature-branch-chain`, or `Chain strategy: size:exception`, or a whole line `Decision needed before apply: No`.
 - Mentions in tables, prose, bullets, or a bare `size:exception` token do not count as a decision.
 
@@ -234,14 +241,15 @@ Return to the orchestrator:
 
 ### Review Workload Forecast
 - Estimated changed lines: {estimate or range}
-- 400-line budget risk: {Low | Medium | High}
+- Budget risk: {Low | Medium | High | not forecast (size:exception)}
 - Chained PRs recommended: {Yes | No}
-- Delivery strategy: {ask-on-risk | auto-chain | single-pr | exception-ok}
+- Delivery strategy: {auto-chain | exception-ok}
+- Chain strategy: {stacked-to-main | feature-branch-chain | size:exception | pending}
 - Decision needed before apply: {Yes | No}
 - Suggested work-unit PR split: {brief list or "Not needed"}
 
 ### Next Step
-{Ready for implementation (sdd-apply) OR ask the user whether to use chained PRs before sdd-apply.}
+{Ready for implementation (sdd-apply) OR preflight decisions missing — the orchestrator must run the preflight before sdd-apply.}
 ```
 
 ## Rules
@@ -253,7 +261,7 @@ Return to the orchestrator:
 - Use hierarchical numbering: 1.1, 1.2, 2.1, 2.2, etc.
 - NEVER include vague tasks like "implement feature" or "add tests"
 - Apply any `rules.tasks` from `openspec/config.yaml`
-- If the project uses TDD, integrate test-first tasks: RED task (write failing test) → GREEN task (make it pass) → REFACTOR task (clean up)
+- If the forwarded TDD mode is `strict`, integrate test-first tasks: RED task (write failing test) → GREEN task (make it pass) → REFACTOR task (clean up)
 - **Size budget**: Tasks artifact MUST be under 530 words. Each task: 1-2 lines max. Use checklist format, not paragraphs.
-- **Review workload guard**: ALWAYS include the Review Workload Forecast. If likely above 400 changed lines, recommend chained PRs and honor the received delivery strategy for whether a decision/exception is needed before apply.
+- **Review workload guard**: ALWAYS include the Review Workload Forecast guard lines. Under a budget, forecast against the forwarded N and split above it for the forwarded chain strategy; under `size:exception`, skip the forecast. Never ask the user for a chain strategy or size exception.
 - Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.

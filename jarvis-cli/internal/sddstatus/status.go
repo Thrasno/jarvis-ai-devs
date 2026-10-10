@@ -105,9 +105,12 @@ var PhaseRequiredDeps = map[string][]string{
 }
 
 var (
-	// rxApplyDecisionRequired matches "Decision needed before apply: Yes" with word boundary
-	// to avoid prefix collisions like "Yesterday". Case-insensitive for robustness.
+	// rxApplyDecisionRequired matches "Decision needed before apply: Yes" anywhere with word
+	// boundary to avoid prefix collisions like "Yesterday". Case-insensitive for robustness.
 	rxApplyDecisionRequired = regexp.MustCompile(`(?i)Decision needed before apply:\s*Yes\b`)
+	// rxApplyDecisionLine matches any whole line starting with "Decision needed before apply:",
+	// whatever its value. An unfilled placeholder therefore activates the gate (fails closed).
+	rxApplyDecisionLine = regexp.MustCompile(`(?im)^[ \t]*Decision needed before apply:`)
 	// rxApplyDecisionNo matches a whole "Decision needed before apply: No" line. Anchoring
 	// to the full line rejects option lists ("Yes|No"), "None", and trailing qualifiers.
 	rxApplyDecisionNo = regexp.MustCompile(`(?im)^[ \t]*Decision needed before apply:[ \t]*No[ \t]*\r?$`)
@@ -117,8 +120,8 @@ var (
 )
 
 // ApplyDecision reports whether an unresolved delivery decision blocks apply.
-// Required is true when the tasks artifact declares "Decision needed before apply: Yes".
-// Resolved is true when a whole resolution line is present (explicit No or a single chosen
+// Required is true when the tasks artifact carries any "Decision needed before apply:" line,
+// including an unfilled placeholder. Resolved is true when a whole resolution line is present (explicit No or a single chosen
 // chain strategy, including size:exception). Apply is blocked only when Required && !Resolved.
 type ApplyDecision struct {
 	Required bool `json:"required"`
@@ -416,8 +419,10 @@ func parseTaskProgress(content string, observed bool) *TaskProgress {
 // unresolved delivery decision is blocking apply. It mirrors the parseTaskProgress
 // pattern: pure content inspection, no I/O.
 //
-// Required is set when the content contains the literal phrase
-// "Decision needed before apply: Yes".
+// Required is set when any whole line starts with "Decision needed before apply:"
+// (case-insensitive, leading whitespace allowed), whatever its value, or when the literal
+// phrase "Decision needed before apply: Yes" appears anywhere. An unfilled placeholder such
+// as "Decision needed before apply: <one of: Yes, No>" therefore keeps apply blocked.
 //
 // Resolved is set only when one of the following appears as a whole line (case-insensitive,
 // surrounding whitespace and CRLF tolerated):
@@ -430,12 +435,14 @@ func parseTaskProgress(content string, observed bool) *TaskProgress {
 // values, table cells, prose mentions, and bare "size:exception" tokens do not resolve,
 // so a verbatim copy of the sdd-tasks template keeps apply blocked.
 //
+// Artifacts without any decision line keep the gate inactive (backward compatible).
 // Returns nil when tasksContent is empty (gate inactive).
 func parseApplyDecision(tasksContent string) *ApplyDecision {
 	if tasksContent == "" {
 		return nil
 	}
-	required := rxApplyDecisionRequired.MatchString(tasksContent)
+	required := rxApplyDecisionLine.MatchString(tasksContent) ||
+		rxApplyDecisionRequired.MatchString(tasksContent)
 	if !required {
 		// Gate inactive — not required, therefore not blocking.
 		return &ApplyDecision{Required: false, Resolved: true}
@@ -624,7 +631,7 @@ func phaseSpecificBlocker(phase string, artifacts map[string]ArtifactState, tp *
 	switch phase {
 	case PhaseApply:
 		if ad != nil && ad.Required && !ad.Resolved {
-			return []string{"phase sdd-apply blocked — delivery decision required (tasks declare 'Decision needed before apply: Yes' and no resolved chain strategy/size:exception)"}
+			return []string{"phase sdd-apply blocked — delivery decision required (tasks carry a 'Decision needed before apply' line but no whole 'No' line or a single resolved chain strategy/size:exception; record the SDD preflight decisions)"}
 		}
 	case PhaseVerify:
 		if artifacts[ArtifactApplyProgress] == ArtifactPartial {

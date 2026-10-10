@@ -34,6 +34,7 @@ From the orchestrator:
 - Exploration analysis (from sdd-explore) OR direct user description
 - Artifact store mode (`hive | openspec | hybrid | none`)
 - `execution_mode` (`interactive | auto`): controls whether the Pre-Phase question round runs. If absent, default to `interactive`.
+- `## SDD Decisions` block: the preflight decisions for the whole feature, one value per line (see Step 4).
 
 ## Execution and Persistence Contract
 
@@ -87,8 +88,17 @@ openspec/changes/{change-name}/
 
 ### Step 4: Write proposal.md
 
+When the launch prompt contains an `## SDD Decisions` block, write it verbatim near the top of the proposal, right after the title. Copy every line exactly; never invent, reorder, or change values. If the block is absent, do NOT fabricate it; report `SDD Decisions: missing` in the Return Summary so the orchestrator runs the preflight. Later sessions read this block instead of asking the preflight again.
+
 ```markdown
 # Proposal: {Change Title}
+
+## SDD Decisions
+Execution mode: {forwarded value}
+Artifact store: {forwarded value}
+TDD mode: {forwarded value}
+Size policy: {forwarded value}
+Chain strategy: {forwarded value}
 
 ## Intent
 
@@ -181,6 +191,7 @@ Return to the orchestrator:
 - **Approach**: {one-line approach}
 - **Risk Level**: {Low/Medium/High}
 - **Question Round**: {completed (orchestrator) | completed (executor) | skipped (auto) | skipped (headless)}
+- **SDD Decisions**: {recorded verbatim | missing}
 
 ### Next Step
 Ready for specs (sdd-spec) or design (sdd-design).
@@ -199,5 +210,6 @@ Ready for specs (sdd-spec) or design (sdd-design).
 - New Capabilities → each will become `openspec/specs/<name>/spec.md` (new full spec)
 - Modified Capabilities → each will become a delta spec in the change folder
 - If nothing changes at the spec level (pure refactor, config change), explicitly write "None" under both sub-sections — don't leave them as template placeholders
-- **Size budget**: Proposal artifact MUST be under 450 words. Use bullet points and tables over prose. Headers organize, not explain.
+- Never edit, add, or drop lines of a forwarded `## SDD Decisions` block; when updating an existing proposal, keep its block unchanged.
+- **Size budget**: Proposal artifact MUST be under 450 words, excluding the `## SDD Decisions` block. Use bullet points and tables over prose. Headers organize, not explain.
 - Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.
