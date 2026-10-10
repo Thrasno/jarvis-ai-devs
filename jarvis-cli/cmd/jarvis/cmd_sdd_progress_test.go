@@ -2330,3 +2330,148 @@ func TestSddProgressUpgradeContinuationDerivesBlockedCheckpointIdentity(t *testi
 		t.Fatalf("upgrade next = %#v, want continue_stream", upgraded.Next)
 	}
 }
+
+func strictTaskRecord(taskID string, files ...string) applyprogress.TaskRecord {
+	return applyprogress.TaskRecord{TaskID: taskID, Files: files,
+		Red:          &applyprogress.TaskStep{Command: "go test ./x -run TestA", ExitCode: 1, Summary: "fails: missing Foo"},
+		Green:        &applyprogress.TaskStep{Command: "go test ./x -run TestA", Summary: "passes"},
+		Triangulate:  &applyprogress.TaskStep{SkipReason: "structural: single branch"},
+		Refactor:     &applyprogress.TaskStep{Command: "go test ./x", Summary: "still green"},
+		Verification: &applyprogress.TaskStep{Command: "go test ./...", Summary: "suite green"},
+	}
+}
+
+func TestSddProgressCheckpointCommitsTaskRecordsEndToEnd(t *testing.T) {
+	root := newProgressTestRoot(t)
+	request := checkpointInput{Project: "jarvis-dev", Change: "issue-653", Tasks: []applyprogress.Task{{ID: "1.1", Text: "first"}, {ID: "1.2", Text: "second"}}, TaskRecords: []applyprogress.TaskRecord{
+		strictTaskRecord("1.1", "a.go", "a_test.go"),
+		{TaskID: "1.2", Verification: &applyprogress.TaskStep{Summary: "documentation only; nothing runnable"}},
+	}}
+	output, err := executeSddProgressCheckpoint(t, newSddProgressCommand(defaultOpenSpec), root, request)
+	if err != nil || output.Outcome != string(applyprogress.PlanCommitted) || output.Snapshot == nil || output.Snapshot.Status != applyprogress.StatusComplete || output.Receipt == nil {
+		t.Fatalf("checkpoint = %#v, %v; want a complete commit from task records", output, err)
+	}
+	batchID := output.Snapshot.Batches[0].BatchID
+	wantCoverage := []applyprogress.Coverage{{TaskID: "1.1", BatchID: batchID, EntryID: "1.1-verification"}, {TaskID: "1.2", BatchID: batchID, EntryID: "1.2-verification"}}
+	if !slices.Equal(output.Snapshot.Coverage, wantCoverage) {
+		t.Fatalf("coverage = %#v, want %#v", output.Snapshot.Coverage, wantCoverage)
+	}
+	expanded, err := applyprogress.ExpandTaskRecords(request.TaskRecords)
+	if err != nil || output.StreamSHA256 != mustStreamSHA256(t, expanded) {
+		t.Fatalf("stream = %q, want the expanded stream digest (%v)", output.StreamSHA256, err)
+	}
+	if output.Next == nil || output.Next.Action != checkpointNextDone {
+		t.Fatalf("next = %#v, want done", output.Next)
+	}
+	replay, err := executeSddProgressCheckpoint(t, newSddProgressCommand(defaultOpenSpec), root, request)
+	if err != nil || replay.Code == "request_id_conflict" || replay.Receipt == nil || replay.Receipt.RequestID != output.Receipt.RequestID || replay.State != output.State {
+		t.Fatalf("identical task records replay = %#v, %v; want idempotent replay of %#v", replay, err, output)
+	}
+}
+
+func TestSddProgressCheckpointRejectsEntriesWithTaskRecords(t *testing.T) {
+	request := checkpointRequest(t, "", "", nil, 0, "entry-1", []applyprogress.EvidenceEntry{checkpointEntry("entry-1", "1", "evidence")})
+	request.TaskRecords = []applyprogress.TaskRecord{strictTaskRecord("1")}
+	for name, run := range map[string]func(progressAdvancer, checkpointInput) (checkpointOutput, error){
+		"checkpoint":           runSddProgressCheckpoint,
+		"upgrade continuation": runSddProgressUpgradeContinuation,
+	} {
+		t.Run(name, func(t *testing.T) {
+			backend := &checkpointBackend{}
+			output, err := run(backend, request)
+			if !errors.Is(err, applyprogress.ErrInvalidValue) || output.Code != string(applyprogress.CodeInvalidPlan) || output.Detail != "entries and task_records" || backend.calls != 0 || backend.currentCalls != 0 {
+				t.Fatalf("both inputs = %#v, %v; writes=%d reads=%d", output, err, backend.calls, backend.currentCalls)
+			}
+			if output.Next == nil || output.Next.Action != checkpointNextFixRequest {
+				t.Fatalf("next = %#v, want fix_request", output.Next)
+			}
+		})
+	}
+	invalidRecord := checkpointRequest(t, "", "", nil, 0, "", nil)
+	invalidRecord.TaskRecords = []applyprogress.TaskRecord{{TaskID: "1"}}
+	backend := &checkpointBackend{}
+	output, err := runSddProgressCheckpoint(backend, invalidRecord)
+	if !errors.Is(err, applyprogress.ErrInvalidValue) || output.Code != string(applyprogress.CodeInvalidPlan) || output.Detail != "task_records[0]" || backend.calls != 0 || output.Next == nil || output.Next.Action != checkpointNextFixRequest {
+		t.Fatalf("empty record = %#v, %v; writes=%d", output, err, backend.calls)
+	}
+}
+
+func TestSddProgressCheckpointContinuesTaskRecordsOverExpandedStream(t *testing.T) {
+	root := newProgressTestRoot(t)
+	tasks := []applyprogress.Task{{ID: "1", Text: "one"}, {ID: "2", Text: "two"}, {ID: "3", Text: "three"}}
+	records := []applyprogress.TaskRecord{
+		{TaskID: "1", Red: &applyprogress.TaskStep{Command: "go test", ExitCode: 1, Summary: "fails"}, Verification: &applyprogress.TaskStep{Command: "go test", Summary: strings.Repeat("é", 21000)}},
+		{TaskID: "2", Verification: &applyprogress.TaskStep{Command: "go test", Summary: strings.Repeat("é", 21000)}},
+		{TaskID: "3", Verification: &applyprogress.TaskStep{Command: "go test", Summary: "last"}},
+	}
+	expanded, err := applyprogress.ExpandTaskRecords(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var base *applyprogress.Snapshot
+	var state sddprogress.AdvanceResult
+	cursor, entryID, requestIDs := 0, "", map[string]bool{}
+	for step := 0; ; step++ {
+		if step > len(expanded) {
+			t.Fatal("task-record stream did not reach a terminal commit")
+		}
+		// The agent resends the same task records and carries only the returned
+		// snapshot, state, and cursor; the initial entry ID is derived.
+		request := checkpointInput{Project: "jarvis-dev", Change: "issue-653", Tasks: tasks, Base: base, ExpectedGeneration: state.Generation, ExpectedRevision: state.Revision, ExpectedDigest: state.Digest, TaskRecords: records, EntryIndex: cursor, EntryID: entryID}
+		output, err := executeSddProgressCheckpoint(t, newSddProgressCommand(defaultOpenSpec), root, request)
+		if err != nil || output.Receipt == nil || output.Snapshot == nil || requestIDs[output.Receipt.RequestID] || output.StreamSHA256 != mustStreamSHA256(t, expanded) {
+			t.Fatalf("checkpoint %d = %#v, %v; want a fresh commit over the expanded stream", step, output, err)
+		}
+		requestIDs[output.Receipt.RequestID] = true
+		if output.Outcome == string(applyprogress.PlanContinuationRequired) {
+			if output.NextEntryIndex <= cursor || output.NextEntryID != expanded[output.NextEntryIndex].EntryID || output.Next == nil || output.Next.Action != checkpointNextContinueStream {
+				t.Fatalf("continuation %d cursor = %d/%q, next = %#v; want a cursor into the expanded stream", step, output.NextEntryIndex, output.NextEntryID, output.Next)
+			}
+			if step == 0 && (output.NextEntryIndex != 2 || output.NextEntryID != "2-verification") {
+				t.Fatalf("first continuation cursor = %d/%q, want 2/2-verification", output.NextEntryIndex, output.NextEntryID)
+			}
+			base, state, cursor, entryID = output.Snapshot, output.State, output.NextEntryIndex, output.NextEntryID
+			continue
+		}
+		if output.Outcome != string(applyprogress.PlanCommitted) || output.Snapshot.Status != applyprogress.StatusComplete || output.Next == nil || output.Next.Action != checkpointNextDone {
+			t.Fatalf("terminal checkpoint = %#v; next = %#v", output, output.Next)
+		}
+		break
+	}
+	if len(requestIDs) < 2 {
+		t.Fatalf("request IDs = %v; want at least one continuation", requestIDs)
+	}
+}
+
+func TestSddProgressCheckpointTaskRecordsDeriveDeterministicIdentity(t *testing.T) {
+	advanced := func(request checkpointInput) sddprogress.AdvanceRequest {
+		t.Helper()
+		backend := &configuredCheckpointBackend{}
+		if output, err := runSddProgressCheckpoint(backend, request); err != nil || len(backend.calls) != 1 {
+			t.Fatalf("checkpoint = %#v, %v; advances=%d", output, err, len(backend.calls))
+		}
+		return backend.calls[0]
+	}
+	compact := checkpointRequest(t, "", "", nil, 0, "", nil)
+	compact.TaskRecords = []applyprogress.TaskRecord{strictTaskRecord("1", "a.go")}
+	first, retry := advanced(compact), advanced(compact)
+	if !applyprogress.ValidID(first.RequestID) || first.RequestID != retry.RequestID || first.Batches[0].BatchID != retry.Batches[0].BatchID {
+		t.Fatalf("identical records derived %q/%q and %q/%q", first.RequestID, first.Batches[0].BatchID, retry.RequestID, retry.Batches[0].BatchID)
+	}
+	expanded, err := applyprogress.ExpandTaskRecords(compact.TaskRecords)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(first.Batches[0].Entries, expanded) {
+		t.Fatalf("committed entries = %#v, want the expanded records %#v", first.Batches[0].Entries, expanded)
+	}
+	explicit := advanced(checkpointRequest(t, "", "", nil, 0, expanded[0].EntryID, expanded))
+	if explicit.RequestID != first.RequestID {
+		t.Fatalf("equivalent explicit entries derived %q, want %q", explicit.RequestID, first.RequestID)
+	}
+	changed := compact
+	changed.TaskRecords = []applyprogress.TaskRecord{strictTaskRecord("1", "b.go")}
+	if other := advanced(changed); other.RequestID == first.RequestID {
+		t.Fatalf("changed task records reused derived request ID %q", other.RequestID)
+	}
+}

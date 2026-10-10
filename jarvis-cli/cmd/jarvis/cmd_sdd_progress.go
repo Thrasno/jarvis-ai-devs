@@ -82,6 +82,7 @@ type checkpointInput struct {
 	RequestID          string                        `json:"request_id"`
 	BatchID            string                        `json:"batch_id"`
 	Entries            []applyprogress.EvidenceEntry `json:"entries"`
+	TaskRecords        []applyprogress.TaskRecord    `json:"task_records,omitempty"`
 	EntryIndex         int                           `json:"entry_index"`
 	EntryID            string                        `json:"entry_id"`
 	StreamSHA256       string                        `json:"stream_sha256,omitempty"`
@@ -152,8 +153,8 @@ var checkpointNextActions = []string{
 
 var checkpointNextInstructions = map[string]string{
 	checkpointNextDone:                   "All tasks are covered; stop checkpointing this change.",
-	checkpointNextContinueStream:         "Rerun checkpoint now with the same project, change, tasks, and entries, base set to snapshot, expected_generation/revision/digest set to state, entry_index set to next_entry_index, entry_id set to next_entry_id, and request_id, batch_id, and stream_sha256 omitted.",
-	checkpointNextContinueTasks:          "The stream is recorded but tasks remain; after more work, checkpoint only the new entries as a new stream with base set to snapshot, expected_generation/revision/digest set to state, entry_index 0, and request_id, batch_id, and stream_sha256 omitted.",
+	checkpointNextContinueStream:         "Rerun checkpoint now with the same project, change, tasks, and entries or task_records, base set to snapshot, expected_generation/revision/digest set to state, entry_index set to next_entry_index, entry_id set to next_entry_id, and request_id, batch_id, and stream_sha256 omitted.",
+	checkpointNextContinueTasks:          "The stream is recorded but tasks remain; after more work, checkpoint only the new entries or task_records as a new stream with base set to snapshot, expected_generation/revision/digest set to state, entry_index 0, and request_id, batch_id, and stream_sha256 omitted.",
 	checkpointNextStopConsolidate:        "Do not retry unchanged; combine pending evidence into fewer, larger entries, then rerun checkpoint from the same base.",
 	checkpointNextStopNewChange:          "The progress snapshot is full; stop applying this change and carry the uncovered task IDs into a new SDD change.",
 	checkpointNextStopFixEntry:           "The entry at entry_index is larger than one batch; shorten or split that entry, then rerun checkpoint from the same base.",
@@ -222,6 +223,29 @@ func withCheckpointNext(output checkpointOutput, err error) (checkpointOutput, e
 	next, _ := checkpointNextFor(output)
 	output.Next = &next
 	return output, err
+}
+
+// expandCheckpointTaskRecords replaces compact task records with their
+// canonical entries before identity derivation, so records and the equivalent
+// explicit entries share one request ID, stream, cursor, and receipt.
+func expandCheckpointTaskRecords(request checkpointInput) (checkpointInput, error) {
+	if request.TaskRecords == nil {
+		return request, nil
+	}
+	if request.Entries != nil {
+		return request, &applyprogress.ValidationError{Code: applyprogress.CodeInvalidPlan, Detail: "entries and task_records"}
+	}
+	entries, err := applyprogress.ExpandTaskRecords(request.TaskRecords)
+	if err != nil {
+		return request, err
+	}
+	request.Entries, request.TaskRecords = entries, nil
+	// A stream starts at its first expanded entry, whose derived ID the caller
+	// need not know; continuations carry the returned next_entry_id instead.
+	if request.EntryIndex == 0 && request.EntryID == "" {
+		request.EntryID = entries[0].EntryID
+	}
+	return request, nil
 }
 
 // deriveCheckpointIdentity fills only omitted request and batch IDs. The
@@ -554,7 +578,7 @@ func newSddProgressCommandWithResolver(resolve progressStoreResolver) *cobra.Com
 	_ = advance.MarkFlagRequired("request")
 
 	checkpoint := &cobra.Command{
-		Use: "checkpoint", Short: "Commit one bounded evidence prefix", Long: "Commit one bounded evidence prefix through the configured OpenSpec, Hive, or hybrid store. An unambiguous legacy Markdown artifact imports automatically on its first checkpoint. JSON continuation, conflict, and capacity outcomes are handled responses and exit 0; inspect outcome, code, and recovery. Other outcomes exit non-zero. Only the historical explicit-zero v2 continuation wire shape requires `upgrade-continuation`; an absent group starts a new unbound stream normally.", Args: cobra.NoArgs, SilenceUsage: true, SilenceErrors: true,
+		Use: "checkpoint", Short: "Commit one bounded evidence prefix", Long: "Commit one bounded evidence prefix through the configured OpenSpec, Hive, or hybrid store. Evidence is either explicit entries or compact task_records (one per task), never both; task_records expand deterministically into entries, and entry_index/entry_id address the expanded stream. An unambiguous legacy Markdown artifact imports automatically on its first checkpoint. JSON continuation, conflict, and capacity outcomes are handled responses and exit 0; inspect outcome, code, and recovery. Other outcomes exit non-zero. Only the historical explicit-zero v2 continuation wire shape requires `upgrade-continuation`; an absent group starts a new unbound stream normally.", Args: cobra.NoArgs, SilenceUsage: true, SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			data, err := os.ReadFile(requestPath)
 			if err != nil {
@@ -748,9 +772,13 @@ func runSddProgressUpgradeContinuation(store progressAdvancer, request checkpoin
 }
 
 func upgradeSddProgressContinuation(store progressAdvancer, request checkpointInput) (checkpointOutput, error) {
+	request, err := expandCheckpointTaskRecords(request)
+	if err != nil {
+		return checkpointValidationOutput(err), err
+	}
 	// Omitted identity derives exactly as in the blocked checkpoint, so the same
 	// request inputs reuse its request ID.
-	request, err := deriveCheckpointIdentity(request)
+	request, err = deriveCheckpointIdentity(request)
 	if err != nil {
 		return checkpointValidationOutput(err), err
 	}
@@ -801,7 +829,11 @@ func runSddProgressCheckpoint(store progressAdvancer, request checkpointInput) (
 }
 
 func runSddProgressCheckpointStep(store progressAdvancer, request checkpointInput) (checkpointOutput, error) {
-	request, err := deriveCheckpointIdentity(request)
+	request, err := expandCheckpointTaskRecords(request)
+	if err != nil {
+		return checkpointValidationOutput(err), err
+	}
+	request, err = deriveCheckpointIdentity(request)
 	if err != nil {
 		return checkpointValidationOutput(err), err
 	}
