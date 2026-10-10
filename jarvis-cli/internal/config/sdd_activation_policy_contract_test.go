@@ -452,6 +452,51 @@ func TestSDDOrchestrator_UsesNativeStructuredQuestionsWithCompleteFallbacks(t *t
 	}
 }
 
+// TestSDDOrchestrator_OwnsTheProposalQuestionRoundInBothModes pins the single-owner
+// question round: one yes/no offer in interactive and automatic mode, a forced round
+// with named gaps for unusable scope, and a structured outcome forwarded to sdd-propose.
+func TestSDDOrchestrator_OwnsTheProposalQuestionRoundInBothModes(t *testing.T) {
+	orchestrator := readPolicyFile(t, "embed/orchestrator/sdd-orchestrator.md")
+	roundSection := markdownSection(t, orchestrator, "#### proposal question round", "#### automatic mode gatekeeper")
+
+	for _, required := range []string{
+		"the orchestrator is the single owner of the proposal question round",
+		"offer it in both interactive and automatic mode",
+		"automatic mode only removes the \"continue\" confirmations between phases; it never skips this offer",
+		"ask exactly one yes/no question in the user's language",
+		"\"do we run a question round to sharpen the proposal?\"",
+		"if the user says no, skip the round",
+		"too vague to scope",
+		"tell the user plainly that the definition has large gaps",
+		"name the 2–3 biggest gaps, one line each",
+		"run the round anyway without the yes/no offer",
+		"3–5 concrete product questions in one call",
+		"summarize the answers as assumptions and ask once to confirm or correct",
+		"run a second round only if the user asks for it",
+		"never emit both forms in the same attempt",
+		"question_round: completed | declined | forced",
+		"on its own line",
+		"`completed`: the round ran after the user accepted the offer",
+		"`declined`: the user said no to the offer",
+		"`forced`: the round ran without the offer because the request was too vague to scope",
+		"`sdd-propose` never runs its own question round",
+	} {
+		if !strings.Contains(roundSection, required) {
+			t.Fatalf("orchestrator proposal question round contract missing %q", required)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"before the `sdd-propose` phase in interactive mode",
+		"executor's pre-phase",
+		"if the question round was skipped (automatic mode or headless context), do not include this field",
+	} {
+		if strings.Contains(orchestrator, forbidden) {
+			t.Fatalf("orchestrator must not keep the legacy question round wording %q", forbidden)
+		}
+	}
+}
+
 func TestSDDOrchestrator_NativeStatusJSONIsRoutingAuthority(t *testing.T) {
 	orchestrator := readPolicyFile(t, "embed/orchestrator/sdd-orchestrator.md")
 

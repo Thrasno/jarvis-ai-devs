@@ -321,13 +321,25 @@ In **Interactive** mode, between phases:
 
 Interactive approval is phase-scoped. Words like "continue", "dale", or "go on" approve only the immediate next phase, not the rest of the SDD pipeline. Do not treat a generated artifact as approved until the user has had a chance to review or explicitly delegate that review.
 
-Before the `sdd-propose` phase in interactive mode, offer the user a proposal question round instead of silently deciding whether the proposal is clear enough. Explain that the questions are meant to improve the PRD/proposal by uncovering business understanding, business rules, implications, impact, edge cases, and product tradeoffs. Prefer 3–5 concrete product questions per round, then summarize the resulting assumptions and ask whether the user wants to correct anything or run a second question round. Cover business/product/PRD decisions: business problem, target users and situations, business rules, product outcome, current-state gap, implications and impact, edge cases, decision gaps, first-slice scope boundaries, non-goals, product constraints, and business tradeoffs. Do not ask about test commands, PR shape, changed-line budget, or other harness mechanics at proposal time unless the user explicitly asks to discuss delivery.
+For this agent (sub-agent delegation): **Automatic** means phases run back-to-back via sub-agents without pausing. **Interactive** means the orchestrator pauses after each delegation returns, shows results, and asks before launching the next.
+
+#### Proposal Question Round
+
+The orchestrator is the single owner of the proposal question round. Offer it in both interactive and automatic mode before launching `sdd-propose`; automatic mode only removes the "continue" confirmations between phases; it never skips this offer. `sdd-propose` never runs its own question round.
+
+Before launching `sdd-propose`, ask exactly one yes/no question in the user's language, for example: "Do we run a question round to sharpen the proposal?". If the user says no, skip the round.
+
+Exception: when the request is too vague to scope (no clear problem, users, or outcome; contradictory or missing core scope), do not offer the yes/no question. Tell the user plainly that the definition has large gaps, name the 2–3 biggest gaps, one line each, and run the round anyway without the yes/no offer.
+
+When the round runs, explain that the questions improve the PRD/proposal by uncovering business understanding, business rules, implications, impact, edge cases, and product tradeoffs. Ask 3–5 concrete product questions in one call. Cover business/product/PRD decisions: business problem, target users and situations, business rules, product outcome, current-state gap, implications and impact, edge cases, decision gaps, first-slice scope boundaries, non-goals, product constraints, and business tradeoffs. Do not ask about test commands, PR shape, changed-line budget, or other harness mechanics at proposal time unless the user explicitly asks to discuss delivery. Then summarize the answers as assumptions and ask once to confirm or correct them. Run a second round only if the user asks for it.
 
 Use the harness's native structured question tool for the proposal round when it is available and can represent the complete envelope, including all 3–5 questions in one call, their choices where applicable, and custom answers. If the tool is unavailable, rejects questions in a headless context, or cannot represent the complete envelope, fall back to the complete plain-text question round without dropping or splitting questions. Never emit both forms in the same attempt.
 
-When the question round is completed and confirmed by the user, the orchestrator MUST include `QUESTION_ROUND: completed` as a structured field in the delegation message sent to the `sdd-propose` executor. Place it on its own line near the top of the delegation message, after the change name and artifact store fields. This allows the executor's Pre-Phase to detect reliably that the round was done upstream and skip it, preventing a duplicate question round. If the question round was skipped (automatic mode or headless context), do NOT include this field.
+Forward the outcome to `sdd-propose` as the structured field `QUESTION_ROUND: completed | declined | forced`, on its own line near the top of the delegation message, after the change name and artifact store fields:
 
-For this agent (sub-agent delegation): **Automatic** means phases run back-to-back via sub-agents without pausing. **Interactive** means the orchestrator pauses after each delegation returns, shows results, and asks before launching the next.
+- `completed`: the round ran after the user accepted the offer.
+- `declined`: the user said no to the offer.
+- `forced`: the round ran without the offer because the request was too vague to scope.
 
 #### Automatic Mode Gatekeeper (MANDATORY)
 
