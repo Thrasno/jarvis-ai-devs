@@ -1072,6 +1072,102 @@ func TestCatalogContract_SDDVerifyResolvesForwardedTDDModeFirst(t *testing.T) {
 	}
 }
 
+// TestCatalogContract_SDDVerifyAdaptsToRunnerAndStopsEarly pins the lean verify
+// flow: stop before any command when implementation work is pending, run the
+// suite and quality commands once, keep audits warn-only, and fall back to an
+// archive-ready static review when no test runner exists.
+func TestCatalogContract_SDDVerifyAdaptsToRunnerAndStopsEarly(t *testing.T) {
+	verify := readNormalizedAsset(t, "embed/skills/sdd-verify/SKILL.md")
+
+	requireAllTerms(t, verify,
+		"Stop early: if any non-operator implementation task is unchecked or apply-progress is not complete, return `blocked` before running any command (no suite, no coverage), listing the pending tasks.",
+		"Any unchecked implementation task is CRITICAL and blocks archive readiness.",
+		"When a runnable test command exists, execute it; static analysis alone is never verification.",
+		"With a runnable test command, a spec scenario is compliant only when a covering test passed at runtime.",
+		"Static review applies only when no runnable test command exists and never counts as a test-backed PASS.",
+		"Run the project's test command once for the change and each available quality command (vet, lint, type-check) once.",
+		"Do not re-run each apply GREEN command individually; a passing suite that includes the covering tests confirms GREEN evidence.",
+		"Coverage, the assertion audit, and the coverage allocation audit are optional and warn-only",
+		"they never block the verdict",
+		"`Verification mode: static`",
+		"the loaded project skills' rules",
+		"`static-reviewed`, never `COMPLIANT` or `PASS` by test",
+		"`no test runner: static review only`",
+		"`**PASS WITH WARNINGS — archive ready.**`",
+		"read the safety-net baseline once from the apply return or the first task's red summary",
+		`"verification_mode": "runtime|static"`,
+		`"result": "pass|fail|static-reviewed|skipped"`,
+	)
+
+	steps := markdownSection(t, verify, "Execution Steps")
+	stopEarly := strings.Index(steps, "Stop early:")
+	runOnce := strings.Index(steps, "Run the project's test command once")
+	if stopEarly < 0 || runOnce < 0 || stopEarly > runOnce {
+		t.Fatal("sdd-verify must stop early on pending implementation work before running any command")
+	}
+
+	rows := markdownTableRows(t, markdownSection(t, verify, "Status Handling and Blockers"))
+	requireAllTerms(t, requireMarkdownTableRow(t, rows, "No runnable test command exists: cached testing capabilities and a direct check of project files (test script, `*_test.go`, `test_*.py`, Makefile `test` target, and similar) both find none"),
+		"Static verify", "`static-reviewed`", "`PASS WITH WARNINGS`", "archive-ready")
+	requireAllTerms(t, requireMarkdownTableRow(t, rows, "Unchecked implementation/core task"),
+		"`blocked` before running any command", "`sdd-apply`")
+
+	verdicts := markdownSection(t, verify, "Final Verdict Constraints")
+	requireAllTerms(t, verdicts, "Static mode never yields `PASS`", "maximum verdict", "`no test runner: static review only`")
+
+	for _, forbidden := range []string{
+		"Execute relevant tests; static analysis alone is never verification.",
+		"\nA spec scenario is compliant only when a covering test passed at runtime.",
+		"- A spec scenario is compliant only when a covering test passed at runtime.",
+		"Run test, build/type-check, and coverage commands when available.",
+		"| No executable test runner can be determined | Record runtime evidence as skipped",
+		"record `runtime evidence: skipped` and avoid `PASS` for unexecuted behavior",
+	} {
+		if strings.Contains(verify, forbidden) {
+			t.Fatalf("sdd-verify must not keep pre-lean verification wording %q", forbidden)
+		}
+	}
+
+	strict := readNormalizedAsset(t, "embed/skills/sdd-verify/strict-tdd-verify.md")
+	if got := strings.Count(strings.TrimRight(strict, "\n"), "\n") + 1; got > 180 {
+		t.Fatalf("strict-tdd-verify.md must stay within 180 lines, got %d", got)
+	}
+	requireAllTerms(t, strict,
+		"IMPORTED (`kind=imported`)",
+		"OPERATOR (`kind=operator`)",
+		"Validate evidence by reading it; never re-execute apply commands.",
+		"GREEN (`kind=green`): must record an executable passing command and zero exit code; the single verify suite run confirms it",
+		"Safety net: read the baseline once from the apply return or the first task's red summary; do not require per-modified-file baseline entries.",
+		"### Banned Assertion Patterns",
+		"warn-only",
+	)
+	for _, forbidden := range []string{
+		"re-run it during verify",
+		"Run the focused test commands referenced in `apply-progress`",
+		"Assertion Quality Audit (MANDATORY)",
+		"ALWAYS run the Assertion Quality Audit",
+		"require a recorded pre-edit passing command for modified files",
+		"Safety Net for modified files",
+		"If tautology assertions are found, flag CRITICAL.",
+	} {
+		if strings.Contains(strict, forbidden) {
+			t.Fatalf("strict-tdd-verify.md must not keep pre-lean verification wording %q", forbidden)
+		}
+	}
+
+	reportFormat := readNormalizedAsset(t, "embed/skills/sdd-verify/references/report-format.md")
+	requireAllTerms(t, reportFormat,
+		"`static-reviewed`: no test runner exists;",
+		"**Verification mode**: {runtime | static}",
+	)
+
+	archive := readNormalizedAsset(t, "embed/skills/sdd-archive/SKILL.md")
+	requireAllTerms(t, markdownSection(t, archive, "Status and Archive Safety Gate"),
+		"A static-mode report (`Verification mode: static`) with `**PASS WITH WARNINGS — archive ready.**` is archive-ready",
+		"never block archive for runtime evidence that cannot exist",
+	)
+}
+
 // TestCatalogContract_OperatorHandoffPausesApplyAndCompletesOnChatAck pins the
 // operator handoff flow: tasks the agent cannot execute are ID-first operator
 // rows, apply pauses on them, and the developer's chat acknowledgement completes

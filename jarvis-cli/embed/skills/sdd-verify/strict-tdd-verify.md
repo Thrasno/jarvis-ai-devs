@@ -4,12 +4,12 @@
 <!-- Maintenance guard: Future parity runs MUST NOT overwrite Jarvis-specific verification policy without maintainer approval. -->
 # Strict TDD Module — Verify Phase
 
-> **This module is loaded ONLY when Strict TDD Mode is enabled AND a test runner is available.**
-> If you are reading this, the orchestrator already verified both conditions. Follow every instruction.
+> **This module is loaded ONLY when Strict TDD Mode is enabled AND a runnable test command exists.**
+> Without a test runner, verify runs in static mode and never loads this module.
 
 ## TDD Verification Philosophy
 
-When Strict TDD Mode is active, verification goes beyond "does the code work?" to "was the code built correctly?" The apply phase reports TDD evidence; your job is to validate that evidence against the repository, the changed tests, and current command output.
+When Strict TDD Mode is active, verification goes beyond "does the code work?" to "was the code built correctly?" The apply phase records TDD evidence; your job is to validate that evidence structurally and confirm it with the single verify suite run.
 
 Strict TDD verification has two responsibilities:
 
@@ -18,7 +18,7 @@ Strict TDD verification has two responsibilities:
 
 ## Step 5a: TDD Compliance Check
 
-Read the canonical v2 snapshot and exactly its referenced immutable evidence batches. In Hive use `sdd_apply_progress_get`, then iterate ordered `snapshot.batches` with `sdd_apply_evidence_get` for each `batch_id`; in OpenSpec read `apply-progress.md` and only snapshot-referenced `apply-evidence/<batch-id>.json`. Verify that TDD was actually followed from structured `EvidenceEntry` values:
+Read the canonical v2 snapshot and exactly its referenced immutable evidence batches. In Hive use `sdd_apply_progress_get`, then iterate ordered `snapshot.batches` with `sdd_apply_evidence_get` for each `batch_id`; in OpenSpec read `apply-progress.md` and only snapshot-referenced `apply-evidence/<batch-id>.json`. Validate evidence by reading it; never re-execute apply commands.
 
 ```text
 Resolve canonical v2 progress:
@@ -28,197 +28,78 @@ Resolve canonical v2 progress:
 │   ├── IMPORTED (`kind=imported`): preserve it as migration provenance only; it NEVER satisfies RED, GREEN, TRIANGULATE, or REFACTOR quality for Strict TDD
 │   ├── OPERATOR (`kind=operator`): developer attestation only; it NEVER satisfies RED, GREEN, TRIANGULATE, or REFACTOR. It completes only its `[operator]` task, which needs no TDD evidence; report dependent scenarios `operator-attested`
 │   ├── RED (`kind=red`): must record an executed focused failing command, non-zero exit code, failure summary, and real test file
-│   ├── GREEN (`kind=green`): must record an executable passing command and zero exit code; re-run it during verify
+│   ├── GREEN (`kind=green`): must record an executable passing command and zero exit code; the single verify suite run confirms it
 │   ├── TRIANGULATE (`kind=triangulate`): verify varied meaningful cases; accept `outcome=not_run` only with a structural one-output reason
 │   ├── REFACTOR (`kind=refactor`): require a post-refactor passing command or an explicit no-refactor rationale
-│   ├── Safety-net evidence: require a recorded pre-edit passing command for modified files; new files may be explicitly identified in summary
 │   └── Flag CRITICAL for malformed, hypothetical, missing, unreferenced, or non-executable RED/GREEN evidence
 ├── Verify each completes_task_ids value is covered by a matching validated entry and current frozen task manifest
 ├── If no referenced v2 EvidenceEntry values exist, flag CRITICAL — Strict TDD was enabled but apply did not persist evidence
 └── Summary: "{N}/{total} tasks have complete structured TDD evidence"
 ```
 
-## Step 5b: Test Execution Cross-Check
+Safety net: read the baseline once from the apply return or the first task's red summary; do not require per-modified-file baseline entries. A missing baseline is a WARNING.
 
-Run the focused test commands referenced in `apply-progress`, then run the configured test runner for the verification scope.
+## Step 5b: Suite Cross-Check
 
-Go-friendly examples:
+Run the project's test command once for the change. Do not run each referenced GREEN command individually: a passing suite that includes the covering tests confirms GREEN evidence. Map each GREEN entry's test files to the suite result; flag CRITICAL when a covering test fails or is absent from the suite.
 
-```bash
-# Focused package/test cross-check
-go test ./internal/skills -run TestName
+If the suite cannot run because tooling or infrastructure is unavailable, report the exact blocker under skipped dimensions. Missing execution evidence cannot be upgraded to PASS.
 
-# Full configured test runner when required by the phase
-go test ./...
-```
+## Step 5c: Optional Audits (warn-only)
 
-If a referenced command cannot be run because tooling or infrastructure is unavailable, report the exact blocker under skipped dimensions. Missing execution evidence cannot be upgraded to PASS.
-
-## Step 5c: Test Layer Validation
+Run these only when cheap or requested. Findings are WARNING or SUGGESTION and do not block the verdict, except a found test that cannot fail (see Banned Assertion Patterns), which is CRITICAL. No audit compensates for missing RED/GREEN evidence. When an audit is not run, record it as skipped.
 
 ### Test Layer Distribution
 
-Classify all test files related to this change as unit, integration, E2E, or unknown. Cross-reference the distribution with cached testing capabilities.
-
-```text
-Scan test files created/modified by this change:
-├── Classify each test file:
-│   ├── Unit test: tests a single function, parser, command helper, or package boundary
-│   ├── Integration test: tests component/package interaction, filesystem behavior, CLI flows, HTTP, or TUI state transitions
-│   ├── E2E test: tests a full system path through real process/browser/service boundaries
-│   └── Unknown: cannot classify → report as-is
-│
-├── Report distribution:
-│   ├── Unit: {N} tests across {N} files
-│   ├── Integration: {N} tests across {N} files
-│   ├── E2E: {N} tests across {N} files
-│   └── Total: {N} tests
-│
-├── Cross-reference with capabilities:
-│   ├── If integration tests exist but tools were not detected, explain the tool source
-│   ├── If E2E tests exist but tools were not detected, explain the tool source
-│   └── Flag WARNING if tests depend on unavailable tooling
-│
-└── For each spec scenario, note which test layer covers it
-    └── Flag SUGGESTION when critical behavior only has unit coverage and higher layers are available
-```
-
-Layer distribution does not excuse missing behavior coverage. A large number of low-level tests is not a substitute for scenario coverage.
+Classify changed test files as unit, integration, E2E, or unknown, cross-referenced with cached testing capabilities. For each spec scenario, note which test layer covers it. Flag WARNING when tests depend on unavailable tooling. Layer distribution does not excuse missing behavior coverage.
 
 ### Coverage Allocation Audit
 
-After classifying test layers, verify that coverage is allocated to the cheapest deterministic layer that can prove each behavior:
+Coverage belongs at the cheapest deterministic layer that proves the behavior:
 
-```text
-FOR EACH changed behavior or spec scenario:
-├── Identify the behavior type:
-│   ├── Pure logic, parsing, mapping, validation, command construction, artifact rendering
-│   │   └── Should have deterministic unit coverage
-│   ├── Package/component wiring, filesystem effects, CLI command behavior, API boundaries
-│   │   └── Should have deterministic integration coverage
-│   └── Full user journey across real process/browser/service boundaries
-│       └── May need E2E coverage, but only for the full journey risk
-├── Cross-check actual coverage allocation:
-│   ├── Flag WARNING when behavior is covered only by E2E or broad integration tests but deterministic unit or lower-layer integration tests should cover it
-│   ├── Flag WARNING when coverage is E2E-heavy and lower-layer deterministic tests are missing for isolated behavior
-│   └── Flag WARNING when tests are over-integrated: expensive, broad, flaky, or dependent on unrelated wiring for behavior that has a smaller deterministic boundary
-└── Report the missing cheaper layer and the behavior it should cover
-```
+- Pure logic, parsing, mapping, validation, command construction, artifact rendering → deterministic unit coverage.
+- Package wiring, filesystem effects, CLI behavior, API boundaries → deterministic integration coverage.
+- Full user journeys across real process/browser/service boundaries → E2E, only for the journey risk.
 
-Do not accept expensive E2E coverage as a substitute for cheaper deterministic coverage of pure logic, parsing, mapping, validation, command construction, or artifact rendering.
+Flag WARNING when behavior is covered only by E2E or broad integration tests but deterministic unit or lower-layer integration tests should cover it. Flag WARNING when coverage is E2E-heavy or over-integrated (expensive, broad, flaky, or dependent on unrelated wiring) and deterministic lower-layer tests are missing. Do not accept expensive E2E coverage as a substitute for cheaper deterministic coverage of pure logic, parsing, mapping, validation, command construction, or artifact rendering. This audit does not ban E2E tests.
 
-This audit does not ban E2E tests. It flags over-integrated or E2E-heavy coverage when deterministic lower-layer tests should cover the behavior first, with E2E reserved for true end-to-end journey risk.
+### Changed File Coverage
 
-## Step 5d: Changed File Coverage
-
-When coverage tooling is available, report coverage for changed files specifically:
-
-```text
-IF coverage tool is available from cached capabilities or project convention:
-├── Run the configured coverage command
-├── Parse the coverage report
-├── Filter to ONLY files created or modified in this change
-│   (get file list from validated EvidenceEntry `files` values and current git diff)
-├── Report per file:
-│   ├── File path
-│   ├── Line coverage %
-│   ├── Branch coverage % when available
-│   ├── Uncovered line ranges
-│   └── Rating: ✅ Excellent (≥95%), ⚠️ Acceptable (≥80%), or ⚠️ Low (<80%)
-├── Report aggregate changed-file average
-└── Flag WARNING for changed files below the configured threshold, or below 80% when no threshold exists
-
-IF coverage tool is NOT available:
-└── Report: "Coverage analysis skipped — no coverage tool detected"
-```
+When a coverage tool is available, run it once and report line coverage (branch when available) and uncovered ranges for files created or modified by this change (from EvidenceEntry `files` and the current git diff). Flag WARNING below the configured threshold, or below 80% when none exists.
 
 Go coverage example: `go test ./... -coverprofile=/tmp/opencode/jarvis-sdd-verify.coverprofile`
 
-Coverage is supporting evidence. It must not hide missing RED/GREEN/REFACTOR evidence, missing behavior assertions, or untested spec scenarios.
+Without a tool, report: "Coverage analysis skipped — no coverage tool detected".
 
-## Step 5e: Quality Metrics
+### Banned Assertion Patterns
 
-Run quality checks only when tools are available:
+Running the assertion audit is optional. When it runs, scan changed test files and record file, line, assertion, and issue for each match. A test that cannot fail proves nothing, so these four findings are CRITICAL whenever the audit finds them:
 
-```text
-IF linter is available:
-├── Run linter on changed files when supported, otherwise whole project
-├── Report errors and warnings that affect changed files
-└── Flag WARNING for errors, SUGGESTION for warnings
+- Tautologies: `expect(true).toBe(true)`, `assert True`, `if got != got`.
+- Assertions with no production-code execution (no function call, render, request, command, or package boundary).
+- Ghost loops: assertions inside loops whose body can execute zero times.
+- Setup that prevents the target code path from running.
 
-IF type checker or static analyzer is available:
-├── Run the configured command
-├── Filter output to changed files when possible
-└── Flag WARNING for findings in changed files
+The remaining patterns are WARNING:
 
-IF no quality tools are available:
-└── Report: "Quality metrics skipped — no tools detected"
-```
-
-For Go projects, `go vet ./...` is the default static check when the phase requires static verification.
-
-## Step 5f: Assertion Quality Audit (MANDATORY)
-
-Scan all test files created or modified by this change and check whether assertions prove real behavior.
-
-```text
-FOR EACH test file related to the change:
-├── Read the file content
-├── Scan for banned or weak assertion patterns:
-│   ├── Tautologies: expect(true).toBe(true), assert True, assert 1 == 1, if got != got
-│   ├── Orphan empty checks: empty result assertions without a companion non-empty case
-│   ├── Type-only assertions used alone: defined/non-nil/type checks with no concrete value assertion
-│   ├── Assertions with no production-code execution: no function call, render, request, command, or package boundary
-│   ├── Ghost loops: assertions inside loops over possibly empty query/filter results
-│   ├── Incomplete TDD cycle: setup prevents the code path under test from running
-│   ├── Smoke-test-only: render/startup/existence check without asserting produced behavior
-│   ├── Implementation-detail coupling: CSS classes, internal state, incidental mock call counts
-│   └── Mock/assertion ratio: mocks greatly outnumber behavior assertions
-│
-├── For each violation found:
-│   ├── Record file, line number, assertion, issue, and severity
-│   └── Severity guide:
-│       ├── CRITICAL: tautology or assertion without production execution
-│       ├── CRITICAL: ghost loop whose body can execute zero times
-│       ├── CRITICAL: test setup prevents the target behavior from running
-│       ├── WARNING: empty result without companion non-empty case
-│       ├── WARNING: type-only check used as the only proof
-│       ├── WARNING: smoke-test-only
-│       ├── WARNING: implementation-detail assertion
-│       └── WARNING: mock-heavy test at the wrong layer
-│
-├── Check triangulation quality:
-│   ├── Count distinct test cases per behavior
-│   ├── Flag WARNING when behavior with multiple paths has only one meaningful case
-│   ├── Flag WARNING when all cases assert the same trivial shape, such as only empty collections
-│   └── Confirm a well-triangulated behavior asserts different expected values or code paths
-│
-└── Summary: "{N} weak assertions found across {N} files"
-```
+- Orphan empty checks without a companion non-empty case.
+- Type-only or non-nil checks used as the only proof.
+- Smoke-test-only: render/startup/existence with no asserted behavior.
+- Implementation-detail coupling: CSS classes, internal state, incidental mock call counts.
+- Mock/assertion ratio: mocks or fakes more than 2× behavior assertions, or a fake that returns the expected answer without exercising production logic.
+- Triangulation: a multi-path behavior with only one meaningful case, or cases that all assert the same trivial shape.
 
 ### Behavior coverage vs implementation-only tests
 
-Tests should prove behavior visible to the user, caller, CLI operator, API consumer, or persisted artifact contract. Do not count tests that only prove an internal helper was called, a CSS class exists, a mock was invoked a certain number of times without behavioral meaning, or a struct field was initialized without exercising the behavior it supports.
-
-For Go contract tests, prefer explicit `got`/`want` checks against source content, rendered output, command behavior, or durable side effects. A check such as `if got != want` is useful only when `got` comes from production code or a real artifact under test.
+Tests should prove behavior visible to the user, caller, CLI operator, API consumer, or persisted artifact contract. For Go contract tests, prefer explicit `got`/`want` checks where `got` comes from production code or a real artifact under test.
 
 ### Mock/Fake Hygiene
 
-Mocks and fakes are valid when they isolate a boundary, but they must not replace the behavior being verified.
-
-```text
-Mock/fake hygiene checks:
-├── Count mocks/fakes/stubs used by each test file
-├── Count behavior assertions in the same file
-├── Flag WARNING when mocks are more than 2× behavior assertions
-├── Flag WARNING when a fake returns the exact expected answer without exercising production logic
-├── Recommend extracting pure transformation logic before adding many mocks
-└── Recommend moving to integration/E2E when the behavior depends on real wiring
-```
+Mocks and fakes may isolate a boundary but must not replace the behavior being verified. Recommend extracting pure logic before adding many mocks, and moving to integration/E2E when behavior depends on real wiring.
 
 ## Report Template Extension
 
-When Strict TDD Mode is active, the verification report MUST include these additional sections:
+When Strict TDD Mode is active, the verification report MUST include:
 
 ```markdown
 ### TDD Compliance
@@ -226,75 +107,35 @@ When Strict TDD Mode is active, the verification report MUST include these addit
 |-------|--------|---------|
 | TDD Evidence reported | ✅ / ❌ | {Found in apply-progress / Missing} |
 | RED confirmed | ✅ / ❌ | {N}/{total} tasks have executed failing-command evidence |
-| GREEN confirmed | ✅ / ❌ | {N}/{total} referenced tests pass now |
+| GREEN confirmed | ✅ / ❌ | {N}/{total} covering tests pass in the verify suite run |
 | REFACTOR confirmed | ✅ / ⚠️ / ➖ | {post-refactor command, no-refactor rationale, or missing evidence} |
 | Triangulation adequate | ✅ / ⚠️ / ➖ | {N} tasks triangulated / {N} structural skips |
-| Safety Net for modified files | ✅ / ⚠️ | {N}/{total} modified files had baseline evidence |
-
-**TDD Compliance**: {N}/{total} checks passed
-
-### Test Layer Distribution
-| Layer | Tests | Files | Tools |
-|-------|-------|-------|-------|
-| Unit | {N} | {N} | {tool} |
-| Integration | {N} | {N} | {tool or "not installed"} |
-| E2E | {N} | {N} | {tool or "not installed"} |
-| Unknown | {N} | {N} | {reason} |
-| **Total** | **{N}** | **{N}** | |
-
-### Changed File Coverage
-| File | Line % | Branch % | Uncovered Lines | Rating |
-|------|--------|----------|-----------------|--------|
-| `path/to/file.ext` | 95% | 90% | — | ✅ Excellent |
-| `path/to/other.ext` | 82% | N/A | L45-48, L62 | ⚠️ Acceptable |
-
-**Average changed file coverage**: {N}%
-{or "Coverage analysis skipped — no coverage tool detected"}
-
-### Assertion Quality
-| File | Line | Assertion | Issue | Severity |
-|------|------|-----------|-------|----------|
-| `path/test.ts` | 15 | `expect(true).toBe(true)` | Tautology — proves nothing | CRITICAL |
-| `path/test.go` | 23 | `if len(got) != 0` | Empty result without companion non-empty case | WARNING |
-| `path/test.go` | 31 | `if got == nil` | Type-only proof with no value check | WARNING |
-
-**Assertion quality**: {N} CRITICAL, {N} WARNING
-{or "✅ All assertions verify real behavior"}
+| Safety net baseline | ✅ / ⚠️ | {recorded once in apply return / first red summary, or missing} |
 
 ### Quality Metrics
 **Linter/static analysis**: ✅ No errors / ⚠️ {N} warnings / ❌ {N} errors / ➖ Not available
 **Type checker/compiler**: ✅ No errors / ❌ {N} errors / ➖ Not available
-
-### Skipped Dimensions and Uncertainty
-| Dimension | Status | Reason | Impact |
-|-----------|--------|--------|--------|
-| Coverage | skipped | no coverage tool detected | Cannot assess changed-file coverage |
-| E2E | skipped | E2E capability unavailable | Scenario covered at lower layer only |
 ```
+
+When the optional audits run, add `### Test Layer Distribution`, `### Changed File Coverage`, and `### Assertion Quality` sections; the assertion table uses `| File | Line | Assertion | Issue | Severity |`.
 
 ## Skipped Dimensions and Uncertainty
 
 Report every verification dimension that was skipped, unavailable, or uncertain. Missing optional tooling is not a failure, but skipped TDD evidence is still a finding.
 
-Use this rule of thumb:
-
-- Missing optional coverage, linter, type-check, integration, or E2E tooling → report as skipped with impact.
-- Missing RED, GREEN, triangulation, safety-net, or assertion-quality evidence → report as WARNING or CRITICAL according to the rules above.
+- Skipped coverage, audits, linter, type-check, integration, or E2E tooling → report as skipped with impact.
+- Missing RED or GREEN evidence → CRITICAL; missing triangulation rationale or safety-net baseline → WARNING.
 - Do not upgrade a skipped dimension to PASS. Say exactly what was not verified.
 
 ## Rules (Strict TDD Verify specific)
 
 - ALWAYS check snapshot-referenced v2 EvidenceEntry batches — they are the primary artifact.
-- ALWAYS cross-reference entry `files` and `command` values against actual execution — do not trust evidence blindly.
-- ALWAYS run the Assertion Quality Audit — trivial tests are worse than missing tests.
+- ALWAYS cross-reference entry `files` against the single suite run — do not trust evidence blindly, and do not re-execute each entry's `command`.
 - If canonical v2 progress has no referenced TDD evidence entries, flag CRITICAL.
-- If tautology assertions are found, flag CRITICAL.
 - Imported legacy evidence never counts toward Strict-TDD quality; require fresh RED/GREEN evidence for the completed task.
 - Operator evidence is developer attestation for an `[operator]` task only; never require RED/GREEN for that task, and flag CRITICAL when operator evidence completes a task not marked `[operator]`.
 - If RED evidence is hypothetical or lacks executed failing-command output, flag CRITICAL.
-- If GREEN evidence cannot be reproduced, flag CRITICAL.
+- If a covering test fails in the verify suite run, flag CRITICAL.
 - If triangulation is skipped without a structural one-output rationale, flag WARNING.
-- Coverage and quality metrics can produce warnings or suggestions, but they cannot compensate for missing TDD evidence.
-- Test layer distribution is reportable context; use it to explain behavior coverage risk, not to waive missing scenarios.
-- If coverage or quality tools are not available, say so cleanly and move on.
+- Optional audits are warn-only, except that a found test that cannot fail (tautology, no production execution, ghost loop, or setup that skips the target path) is CRITICAL; audits can never compensate for missing TDD evidence.
 - DO NOT fix issues — only report. The orchestrator decides.

@@ -189,8 +189,9 @@ func TestInstallSkillsFromEmbeddedSDDVerify_RendersModelSpecificSections(t *test
 		"## Skipped Dimensions",
 		"## Final Verdict Constraints",
 		"## Output Contract",
-		"Execute relevant tests; static analysis alone is never verification.",
-		"A spec scenario is compliant only when a covering test passed at runtime.",
+		"When a runnable test command exists, execute it; static analysis alone is never verification.",
+		"With a runnable test command, a spec scenario is compliant only when a covering test passed at runtime.",
+		"Static review applies only when no runnable test command exists and never counts as a test-backed PASS.",
 		"If runtime tests cannot be run, report runtime evidence as skipped and do not claim full PASS for behavior that was not executed.",
 		"A documented manual verification path is not evidence by itself.",
 		"Manual or runtime verification counts as `PASS` only when it was executed and the report records the command or manual action, result, timestamp or session, and operator/evidence source.",
@@ -202,6 +203,7 @@ func TestInstallSkillsFromEmbeddedSDDVerify_RendersModelSpecificSections(t *test
 	forbiddenVerifierDrift := []string{
 		"Do NOT run tests unless `strict_tdd` is active and the test runner is explicitly provided.",
 		"project explicitly documents an accepted manual verification path",
+		"Execute relevant tests; static analysis alone is never verification.",
 	}
 
 	tests := []struct {
