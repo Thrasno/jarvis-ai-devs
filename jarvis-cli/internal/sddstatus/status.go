@@ -113,8 +113,9 @@ var (
 	// value, "None") activates the gate, so it fails closed.
 	rxApplyDecisionLine = regexp.MustCompile(`(?im)^[ \t]*Decision needed before apply:[ \t]*([^\r\n]*)`)
 	// rxDecisionValueNo matches a decision value that starts with the word No, including
-	// legacy qualified forms such as "No (within budget)".
-	rxDecisionValueNo = regexp.MustCompile(`(?i)^no\b`)
+	// legacy qualified forms such as "No (within budget)". A "|" or "/" marks an option list
+	// such as "No|Yes", which is not a decision.
+	rxDecisionValueNo = regexp.MustCompile(`(?i)^no\b[^|/]*$`)
 	// rxApplyDecisionNo matches a whole "Decision needed before apply: No" line. Anchoring
 	// to the full line rejects option lists ("Yes|No"), "None", and trailing qualifiers.
 	rxApplyDecisionNo = regexp.MustCompile(`(?im)^[ \t]*Decision needed before apply:[ \t]*No[ \t]*\r?$`)

@@ -1054,6 +1054,8 @@ func TestApplyDecisionGate_AnyDecisionLineActivatesGate(t *testing.T) {
 		{name: "indented placeholder", content: "  decision needed before apply: <one of: Yes, No>\n"},
 		{name: "empty value", content: "Decision needed before apply:\n"},
 		{name: "None is not No", content: "Decision needed before apply: None\n"},
+		{name: "No-first option list", content: "Decision needed before apply: No|Yes\n"},
+		{name: "No-first slash list", content: "Decision needed before apply: No / Yes\n"},
 		{name: "placeholder with pending chain", content: "Decision needed before apply: <one of: Yes, No>\nChain strategy: pending\n"},
 		{name: "placeholder with chosen chain", content: "Decision needed before apply: <one of: Yes, No>\nChain strategy: feature-branch-chain\n", resolved: true},
 		{name: "Yes with size:exception", content: "Decision needed before apply: Yes\nChain strategy: size:exception\n", resolved: true},
