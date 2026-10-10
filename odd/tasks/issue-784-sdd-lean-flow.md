@@ -24,7 +24,7 @@ Related: #781 operator handoff (approved), lands before the adaptive verify slic
 - [x] S6: Trim apply prompts (one checkpoint per batch, follow `next`, compact TDD).
 - [x] S7: #781 operator handoff (EvidenceOperator kind + tasks/apply/verify skills).
 - [x] S8: Adaptive verify (stop early on pending tasks; run detected commands once; static review without runner; operator-attested).
-- [ ] S9a: Spec-merge engine in Go.
+- [x] S9a: Spec-merge engine in Go.
 - [ ] S9b: `jarvis sdd archive` performs spec sync; trim archive skill.
 - [ ] S10: Validate authority once in the orchestrator; executors trust forwarded status.
 - [ ] S11: Before/after measurement on the same small real change (user-run; records time, tool calls, test runs, user messages).
@@ -113,5 +113,13 @@ Related: #781 operator handoff (approved), lands before the adaptive verify slic
 - Reviews: review-614fed8046e4be00 (S8) and review-b5885e38b6e6d299 (static-mode fix) approved.
 - Process note: a commit was created while one test failed (grep pipeline hid the exit code); amended before push with the pin fixed and full suite green.
 
+### S8 delivery
+- PR #793 merged (squash 05751445), 14/14 checks.
+
+### S9a
+- Worker: new `jarvis-cli/internal/sddspecsync` (MergeSpec, BuildPlan, Apply, OSStore) + `atomicfile.Remove`; ~1,250 production + ~770 test lines (over the 400 budget; self-contained, not wired). RED against stubs (76 failures), GREEN, coverage 85.7%.
+- Review review-811c1b4fbca90168 approved. Advisory fixed test-first: rollback no longer overwrites unexpected post-write bytes (treated as another writer, reported for recovery) — review review-14d6c38fcf10afd0 approved.
+- For S9b: fail-closed rules reject (a) a delta `##` section outside the four requirement sections (one archived delta has one) and (b) RENAMED blocks with body text (sdd-spec template allows it). Align template and decide tolerance before wiring; decide destructive-plan confirmation; map ApplyError codes to CLI output; empty capability dirs after rollback.
+
 ## Next step
-S8 push + PR + merge, then S9a (Go spec-merge engine).
+S9a push + PR + merge, then S9b (wire spec sync into jarvis sdd archive, trim archive skill).
