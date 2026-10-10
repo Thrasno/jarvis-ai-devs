@@ -930,6 +930,122 @@ func TestCatalogContract_SDDApplySourceUsesJarvisAdaptedStatusGuards(t *testing.
 	}
 }
 
+// TestCatalogContract_SDDInitDetectsRealTestCommandsAsSuggestion pins that sdd-init
+// only counts real test commands and caches a TDD suggestion, never a decision.
+func TestCatalogContract_SDDInitDetectsRealTestCommandsAsSuggestion(t *testing.T) {
+	skill := strings.ReplaceAll(readEmbeddedSkillAsset(t, "embed/skills/sdd-init/SKILL.md"), "\r\n", "\n")
+	details := strings.ReplaceAll(readEmbeddedSkillAsset(t, "embed/skills/sdd-init/references/init-details.md"), "\r\n", "\n")
+
+	requireAllTerms(t, skill,
+		"A test runner counts as detected only when a real test command exists; a config or manifest file alone is not enough.",
+		"`strict_tdd_suggestion: strict|standard`",
+		"`detection_reason`",
+		"Keep caching `strict_tdd` for backward compatibility",
+		"the preflight `TDD mode` decides per feature",
+		"Synced from https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/v1.26.5/internal/assets/skills/sdd-init/SKILL.md",
+	)
+
+	rows := markdownTableRows(t, markdownSection(t, skill, "Decision Gates"))
+	requireAllTerms(t, requireMarkdownTableRow(t, rows, "strict TDD marker/config found"), "`strict_tdd_suggestion`")
+	requireAllTerms(t, requireMarkdownTableRow(t, rows, "no marker/config and project code is mainly Deluge"),
+		"Suggest `standard`", "Deluge code cannot run under a local test runner")
+	requireAllTerms(t, requireMarkdownTableRow(t, rows, "no marker/config and a real test command exists"), "Suggest `strict`")
+	requireAllTerms(t, requireMarkdownTableRow(t, rows, "no real test command"), "Suggest `standard`", "`detection_reason`")
+
+	requireAllTerms(t, details,
+		"a config or manifest file alone is not enough",
+		"`echo \"Error: no test specified\" && exit 1`",
+		"`*_test.go`",
+		"`test_*.py`",
+		"`*_test.py`",
+		"`cargo test`",
+		"a `test` target",
+		"`.ds`, `.dg`, or `.deluge`",
+		"Zoho Deluge function folders",
+		"the `zoho-deluge` skill is the project's main skill",
+		"Detected package.json without a test script → suggesting standard",
+		"Deluge code cannot run under a local test runner → suggesting standard",
+		"**Strict TDD Suggestion**: {strict|standard}\n**Detection Reason**: {one line}",
+		"`strict_tdd_suggestion`",
+		"`detection_reason`",
+	)
+
+	for path, content := range map[string]string{"sdd-init/SKILL.md": skill, "sdd-init/references/init-details.md": details} {
+		for _, forbidden := range []string{
+			"Default `strict_tdd: true`",
+			"no marker/config but test runner exists",
+			"- Test runner: `package.json` scripts/deps, `pyproject.toml`, `pytest.ini`, `go.mod`, `Cargo.toml`, `Makefile`.",
+			"**Strict TDD Mode**: {enabled/disabled}",
+		} {
+			if strings.Contains(content, forbidden) {
+				t.Fatalf("expected %s not to contain manifest-only TDD detection %q", path, forbidden)
+			}
+		}
+	}
+}
+
+// TestCatalogContract_SDDApplyResolvesForwardedTDDModeAndBlocksUnrunnableStrict pins
+// the apply mode resolution order and the strict-tdd-unrunnable stop.
+func TestCatalogContract_SDDApplyResolvesForwardedTDDModeAndBlocksUnrunnableStrict(t *testing.T) {
+	content := strings.ReplaceAll(readEmbeddedSkillAsset(t, "embed/skills/sdd-apply/SKILL.md"), "\r\n", "\n")
+
+	requireAllTerms(t, content,
+		"Resolve mode (first match wins):\n├── Prompt contains `STRICT TDD MODE IS ACTIVE` → STRICT TDD MODE",
+		"├── Prompt contains `TDD MODE: standard` → STANDARD MODE",
+		"never load strict-tdd.md",
+		"└── Nothing forwarded (legacy launch only)",
+		"Use `strict_tdd_suggestion`; fall back to legacy `strict_tdd` only when the suggestion is absent",
+		"`strict-tdd-unrunnable`",
+		"STOP before the first task and return `blocked`",
+		"Strict TDD was chosen but these files cannot run under a test runner; choose standard for this feature or provide a test command.",
+		"Do not loop writing tests that cannot run",
+		"**There is no silent fallback.**",
+	)
+
+	strictIdx := strings.Index(content, "Prompt contains `STRICT TDD MODE IS ACTIVE`")
+	standardIdx := strings.Index(content, "Prompt contains `TDD MODE: standard`")
+	legacyIdx := strings.Index(content, "Nothing forwarded (legacy launch only)")
+	if !(strictIdx < standardIdx && standardIdx < legacyIdx) {
+		t.Fatalf("expected sdd-apply to resolve forwarded strict, then forwarded standard, then legacy capabilities; got %d, %d, %d", strictIdx, standardIdx, legacyIdx)
+	}
+
+	for _, forbidden := range []string{
+		"├── IF strict_tdd: true AND test runner exists",
+		"├── IF strict_tdd: false OR no test runner",
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("expected sdd-apply not to resolve mode from cached strict_tdd first: %q", forbidden)
+		}
+	}
+}
+
+// TestCatalogContract_SDDVerifyResolvesForwardedTDDModeFirst pins that verify uses the
+// forwarded TDD mode before any legacy cached suggestion.
+func TestCatalogContract_SDDVerifyResolvesForwardedTDDModeFirst(t *testing.T) {
+	content := strings.ReplaceAll(readEmbeddedSkillAsset(t, "embed/skills/sdd-verify/SKILL.md"), "\r\n", "\n")
+
+	rows := markdownTableRows(t, markdownSection(t, content, "Status Handling and Blockers"))
+	requireAllTerms(t, requireMarkdownTableRow(t, rows, "Orchestrator says `STRICT TDD MODE IS ACTIVE`"), "load `strict-tdd-verify.md`")
+	requireAllTerms(t, requireMarkdownTableRow(t, rows, "Orchestrator says `TDD MODE: standard`"), "never load `strict-tdd-verify.md`")
+	requireAllTerms(t, requireMarkdownTableRow(t, rows, "Nothing forwarded, cached `strict_tdd_suggestion: strict`, and a runner exists"),
+		"Legacy only", "legacy `strict_tdd: true` only when the suggestion is absent")
+	requireAllTerms(t, requireMarkdownTableRow(t, rows, "Nothing forwarded and cached suggestion is `standard`"), "Standard verify")
+
+	requireAllTerms(t, content,
+		"4. Resolve TDD mode: the forwarded TDD mode first (`STRICT TDD MODE IS ACTIVE` → strict; `TDD MODE: standard` → standard); only when nothing was forwarded, use the cached `strict_tdd_suggestion`",
+	)
+
+	for _, forbidden := range []string{
+		"| Cached/config `strict_tdd: true` and runner exists |",
+		"| Strict TDD false |",
+		"4. Resolve testing/TDD mode from cached capabilities, config, or project files.",
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("expected sdd-verify not to resolve TDD mode from cached capabilities first: %q", forbidden)
+		}
+	}
+}
+
 func TestCatalogContract_SDDApplyCommitsProgressBeforeMarkingTasksComplete(t *testing.T) {
 	content := readEmbeddedSkillAsset(t, "embed/skills/sdd-apply/SKILL.md")
 

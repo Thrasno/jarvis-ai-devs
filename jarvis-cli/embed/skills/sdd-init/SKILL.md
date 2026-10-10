@@ -24,6 +24,9 @@ Run this phase when the orchestrator/user asks to initialize SDD in a project. Y
 - In `openspec` mode, follow `../_shared/openspec-convention.md` and write file artifacts.
 - In `hybrid` mode, write both openspec files and Hive observations.
 - Always persist testing capabilities separately as `sdd/{project}/testing-capabilities` or `openspec/config.yaml` `testing:`.
+- A test runner counts as detected only when a real test command exists; a config or manifest file alone is not enough. Use the Testing Capability Checklist in `references/init-details.md`.
+- Detection produces a suggestion, not a decision: cache `strict_tdd_suggestion: strict|standard` plus a one-line `detection_reason`; the preflight `TDD mode` decides per feature.
+- Keep caching `strict_tdd` for backward compatibility; it mirrors the suggestion only (`true` when the suggestion is `strict`) and never activates Strict TDD by itself.
 - Always build `.jarvis/skill-registry.md`; also save `skill-registry` to Hive when available.
 - Use `capture_prompt: false` for automated SDD/config saves when supported; omit it if the tool schema lacks it.
 - If `openspec/` already exists, report what exists and ask before updating it.
@@ -37,15 +40,16 @@ Run this phase when the orchestrator/user asks to initialize SDD in a project. Y
 | `mode=openspec` | Create/update openspec bootstrap files only. |
 | `mode=hybrid` | Do both Hive and openspec persistence. |
 | `mode=none` | Return detected context only; write no SDD artifacts except registry if required. |
-| strict TDD marker/config found | Use that value. |
-| no marker/config but test runner exists | Default `strict_tdd: true`. |
-| no test runner | Set `strict_tdd: false` and explain unavailable. |
+| strict TDD marker/config found | Use that value as `strict_tdd_suggestion`. |
+| no marker/config and project code is mainly Deluge | Suggest `standard`: Deluge code cannot run under a local test runner. |
+| no marker/config and a real test command exists | Suggest `strict`. |
+| no real test command | Suggest `standard` and record why in `detection_reason`. |
 
 ## Execution Steps
 
 1. Inspect project files (`package.json`, `go.mod`, `pyproject.toml`, CI, lint/test config) and summarize stack/conventions.
-2. Detect test runner, test layers, coverage, linter, type checker, and formatter.
-3. Resolve Strict TDD from agent marker, `openspec/config.yaml`, detected runner fallback, or no-runner fallback.
+2. Detect real test commands, test layers, coverage, linter, type checker, and formatter.
+3. Resolve the Strict TDD suggestion in gate order: agent marker or `openspec/config.yaml` `strict_tdd:`, then Deluge, then real test command, then no test command. Record the one-line `detection_reason`.
 4. Initialize persistence for the resolved mode.
 5. Build `.jarvis/skill-registry.md` using the skill-registry scan rules.
 6. Persist testing capabilities and project context.
@@ -53,7 +57,7 @@ Run this phase when the orchestrator/user asks to initialize SDD in a project. Y
 
 ## Output Contract
 
-Return `status`, `executive_summary`, `artifacts`, `next_recommended`, and `risks`. Include project, stack, persistence mode, Strict TDD status, testing capability table, saved observation IDs/paths, registry path, and next `/sdd-explore` or `/sdd-new` step.
+Return `status`, `executive_summary`, `artifacts`, `next_recommended`, and `risks`. Include project, stack, persistence mode, Strict TDD suggestion with its detection reason, testing capability table, saved observation IDs/paths, registry path, and next `/sdd-explore` or `/sdd-new` step.
 
 ## References
 

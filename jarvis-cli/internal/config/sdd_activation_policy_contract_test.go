@@ -387,6 +387,42 @@ func TestSDDOrchestrator_PreflightIsTheSingleDecisionPointForTheFeature(t *testi
 	}
 }
 
+// TestSDDOrchestrator_TDDSuggestionComesFromDetectionAndPreflightModeIsForwarded pins
+// that group C is seeded by the cached suggestion while apply/verify receive only the
+// preflight TDD mode.
+func TestSDDOrchestrator_TDDSuggestionComesFromDetectionAndPreflightModeIsForwarded(t *testing.T) {
+	orchestrator := readPolicyFile(t, "embed/orchestrator/sdd-orchestrator.md")
+	preflightSection := markdownSection(t, orchestrator, "### sdd session preflight", "### review workload guard")
+	tddSection := markdownSection(t, orchestrator, "#### strict tdd forwarding", "## bounded apply-progress continuation")
+
+	for _, required := range []string{
+		"`strict_tdd_suggestion`, `detection_reason`, and the test command",
+		"the `detected:` line shows `detection_reason` verbatim",
+		"fall back to the legacy `strict_tdd` only when `strict_tdd_suggestion` is absent",
+		"if the request or change clearly targets deluge code, suggest c2 regardless of cached capabilities",
+	} {
+		if !strings.Contains(preflightSection, required) {
+			t.Fatalf("orchestrator TDD suggestion contract missing %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"forward the `tdd mode` recorded in the `## sdd decisions` block, never the cached capability",
+		"cached `strict_tdd_suggestion` and legacy `strict_tdd` only seed the preflight suggestion",
+		"strict tdd mode is active. test runner: {test_command}",
+		"tdd mode: standard (chosen in preflight). do not activate strict tdd",
+		"`strict-tdd-unrunnable`",
+	} {
+		if !strings.Contains(tddSection, required) {
+			t.Fatalf("orchestrator strict TDD forwarding missing %q", required)
+		}
+	}
+
+	if strings.Contains(orchestrator, "strict tdd mode is available when the project supports it") {
+		t.Fatalf("orchestrator init guard must not tie Strict TDD activation to cached project support")
+	}
+}
+
 func TestSDDOrchestrator_UsesNativeStructuredQuestionsWithCompleteFallbacks(t *testing.T) {
 	orchestrator := readPolicyFile(t, "embed/orchestrator/sdd-orchestrator.md")
 	preflightSection := markdownSection(t, orchestrator, "### sdd session preflight", "### review workload guard")

@@ -120,34 +120,37 @@ Before starting work, read `skills/_shared/apply-progress.md` and use the mode-s
 
 Continue only from validated canonical bounded state. Do not merge or rewrite historical evidence. Reconcile current task state against validated coverage, then do not jump to `sdd-verify` until apply progress and task checkboxes agree. The guarded snapshot is the authoritative progress state.
 
-### Step 3: Read Testing Capabilities and Resolve Mode
+### Step 3: Resolve TDD Mode and Test Command
 
-The TDD mode chosen in the preflight is authoritative and overrides cached `strict_tdd` for this feature: `STRICT TDD MODE IS ACTIVE` means strict mode; `TDD MODE: standard` means standard mode even if capabilities report `strict_tdd: true`. Use the resolution below only to find the test runner, or when no TDD mode was forwarded.
-
-Read the cached testing capabilities to determine implementation mode:
+The TDD mode forwarded by the orchestrator is the preflight choice for this feature and always wins over cached capabilities. Cached capabilities decide the mode only for legacy launches that forwarded nothing; otherwise they are read only to find the test command.
 
 ```
-Read testing capabilities from:
-├── hive: mcp__hive__mem_search("sdd/{project}/testing-capabilities") → mcp__hive__mem_get_observation(id)
-├── openspec: openspec/config.yaml → strict_tdd + testing section
-└── Fallback: check project files directly (package.json, pyproject.toml, go.mod, etc.)
+Resolve mode (first match wins):
+├── Prompt contains `STRICT TDD MODE IS ACTIVE` → STRICT TDD MODE
+│   └── Load and follow strict-tdd.md (read the file: skills/sdd-apply/strict-tdd.md)
+├── Prompt contains `TDD MODE: standard` → STANDARD MODE
+│   └── Use Step 4 below; never load strict-tdd.md
+└── Nothing forwarded (legacy launch only)
+    ├── Read cached testing capabilities:
+    │   ├── hive: mcp__hive__mem_search("sdd/{project}/testing-capabilities") → mcp__hive__mem_get_observation(id)
+    │   ├── openspec: openspec/config.yaml → strict_tdd_suggestion + detection_reason + testing section
+    │   └── Fallback: check project files directly for a real test command (package.json test script, *_test.go, etc.)
+    ├── Use `strict_tdd_suggestion`; fall back to legacy `strict_tdd` only when the suggestion is absent
+    ├── Suggestion is strict AND a real test command exists → STRICT TDD MODE
+    └── Otherwise → STANDARD MODE
 
-Resolve mode:
-├── IF strict_tdd: true AND test runner exists
-│   └── STRICT TDD MODE → Load and follow strict-tdd.md module
-│       (read the file: skills/sdd-apply/strict-tdd.md)
-│
-├── IF strict_tdd: false OR no test runner
-│   └── STANDARD MODE → use Step 4 below (no TDD module loaded)
-│
-└── Cache the resolved mode for the return summary
+Cache the resolved mode for the return summary.
 ```
+
+#### Runnable Test Command Gate (Strict TDD Only)
+
+If Strict TDD Mode is active but no runnable test command exists for the files the assigned tasks touch (for example Deluge code, or a project without a test runner), STOP before the first task and return `blocked` with reason `strict-tdd-unrunnable` and this sentence for the user: `Strict TDD was chosen but these files cannot run under a test runner; choose standard for this feature or provide a test command.` Do not loop writing tests that cannot run, and do not switch to Standard Mode yourself.
 
 **Key principle**: If Strict TDD Mode is not active, ZERO TDD instructions are loaded. The `strict-tdd.md` module is never read, never processed, never consumes tokens.
 
 #### Hard Gate (Strict TDD Only)
 
-If Strict TDD Mode is active (either from orchestrator injection or self-discovery):
+If Strict TDD Mode is active (from the forwarded TDD mode or, for legacy launches only, self-discovery):
 
 - You MUST produce structured v2 `EvidenceEntry` values in the immutable checkpoint batch, not a Markdown TDD table.
 - Every entry MUST name `entry_id`, `task_ids`, `completes_task_ids`, `kind`, `summary`, `command`, `exit_code`, `outcome`, and `files`.
