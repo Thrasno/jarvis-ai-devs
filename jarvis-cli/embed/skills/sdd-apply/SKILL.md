@@ -152,10 +152,9 @@ If Strict TDD Mode is active but no runnable test command exists for the files t
 
 If Strict TDD Mode is active (from the forwarded TDD mode or, for legacy launches only, self-discovery):
 
-- You MUST produce structured v2 `EvidenceEntry` values in the immutable checkpoint batch, not a Markdown TDD table.
-- Every entry MUST name `entry_id`, `task_ids`, `completes_task_ids`, `kind`, `summary`, `command`, `exit_code`, `outcome`, and `files`.
-- Record each RED, GREEN, TRIANGULATE, and REFACTOR event as a distinct entry. RED includes the executed focused failing command and failure summary; GREEN includes the passing command and exit code; a structural triangulation skip is an explicit `triangulate` entry with `outcome: not_run` and its reason.
-- Completion coverage may name a task only from an entry whose evidence actually establishes its completion. Do not infer coverage from a narrative table.
+- You MUST record TDD proof as `task_records` in the batch checkpoint, not a Markdown TDD table; the CLI expands each record into structured v2 `EvidenceEntry` values.
+- Each task gets ONE record whose `red` step carries the executed focused failing command and failure summary, whose `green` step carries the passing command and exit code, and whose `triangulate` step is either an executed case or an explicit structural `skip_reason`.
+- Completion coverage may name a task only when its record's evidence actually establishes completion. Do not infer coverage from a narrative table.
 - Record new TDD evidence in the new immutable batch; do not merge or rewrite prior apply-progress evidence. The verify phase rejects missing or incomplete v2 evidence.
 
 **There is no silent fallback.** If you resolved Strict TDD as active, you follow it or you report failure. You do NOT quietly switch to Standard Mode.
@@ -172,7 +171,7 @@ FOR EACH TASK:
 ├── Read existing code patterns (match the project's style)
 ├── Confirm every target path is under allowedEditRoots
 ├── Write the code
-├── Prepare complete evidence for the guarded progress checkpoint; leave the persisted task checkbox unchecked
+├── Add the task's `task_records` item (files plus a `verification` step with the command you ran, or only a summary when no command applies); leave the persisted task checkbox unchecked
 └── Note any issues or deviations
 ```
 
@@ -180,39 +179,40 @@ FOR EACH TASK:
 
 **This step is MANDATORY — do NOT skip it.**
 
-Use `jarvis sdd progress checkpoint --root <change-root> --request <request.json>` for every normal executor checkpoint. It accepts no positional arguments and is the only planner: it plans at most one whole-entry prefix and commits through the guarded writer. The final serialized snapshot and every batch MUST be at most 40,000 Unicode runes. Do not use `mcp__hive__mem_save` to write, replace, or recover apply-progress.
+Checkpoint ONCE per apply batch, not per task. After every assigned task in the batch is implemented and its evidence is captured, run `jarvis sdd progress checkpoint --root <change-root> --request <request.json>` a single time. It accepts no positional arguments, plans at most one whole-entry prefix, and commits immutable evidence batches through the guarded writer; every serialized snapshot and batch stays at most 40,000 Unicode runes. Do not use `mcp__hive__mem_save` to write, replace, or recover apply-progress.
 
 ##### Canonical v2 checkpoint request
 
-Pass a JSON request with every field below. Freeze `tasks` and the ordered complete entries stream before the first checkpoint; successors reuse the identical stream and change only the returned cursor/base/expected coordinates plus new IDs after a continuation. The request carries immutable evidence batches through a stable base snapshot and cursor; preserve and supply `stream_sha256` unchanged on every continuation.
+Freeze `tasks` and the `task_records` (the ordered complete entries stream they expand to) before the checkpoint; a continuation reuses them unchanged through a stable base snapshot and cursor. Always send `base` and the expected coordinates from the progress read in Step 2b: they are the optimistic-concurrency guard and are never optional.
 
 | Field | Required value |
 | --- | --- |
 | `project`, `change` | Canonical project and change identifiers. Each protocol identifier is 1–64 characters matching `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`. |
-| `tasks` | The ordered task list parsed from the same frozen `tasks.md`: each item is `{id, text, path}`. `id` and normalized text determine `task_manifest_sha256`; do not manufacture, reorder, or edit tasks between continuation calls. |
-| `base` | `null` for the initial generation; otherwise the exact resolved v2 snapshot, including schema, identity, generation, revision, previous digest, manifest digest, lifecycle status, coverage, ordered batch refs, stream hash, next cursor, and digest. |
-| `expected_generation`, `expected_revision`, `expected_digest` | Coordinates of `base`/the current snapshot; use zero values and an empty digest only for an initial snapshot. |
-| `request_id` | Collision-resistant identifier for this attempt. Reuse it only for a byte-identical retry of the same planned advance payload. |
-| `batch_id` | Fresh lowercase `apb-` plus 32 hexadecimal characters for the planned immutable batch. Reuse it only for the same retry; allocate a new one only after `continuation_required`. |
-| `entries` | The complete ordered stream of whole caller-supplied `EvidenceEntry` values, never only a hand-picked remainder. Each entry has `entry_id`, `task_ids`, `completes_task_ids`, `kind` (`red`, `green`, `triangulate`, `refactor`, `verification`, or `delivery`), `summary`, `command`, `exit_code`, `outcome` (`pass`, `fail`, or `not_run`), and `files`. `imported` is internal legacy provenance only; callers MUST NOT supply it in normal checkpoint entries. |
-| `entry_index`, `entry_id` | The cursor to the next unpersisted entry. Initial input is index `0` and the first entry ID. A continuation must exactly use the returned pair. |
-| `stream_sha256` | Omit only on the first request; then preserve the returned lowercase 64-hex SHA-256 unchanged for every successor and retry. It binds the complete ordered stream, so reordered, modified, truncated, or extended entries fail before storage. |
+| `tasks` | The ordered task list parsed from the same frozen `tasks.md`: each item is `{id, text, path}`. `id` and normalized text determine `task_manifest_sha256`; do not manufacture, reorder, or edit tasks. |
+| `base` | `null` for the initial generation; otherwise the exact resolved v2 snapshot from the progress read. |
+| `expected_generation`, `expected_revision`, `expected_digest` | Coordinates of `base`; use zero values and an empty digest only for an initial snapshot. |
+| `task_records` | One record per task this batch covers: `task_id`, `files`, optional `completes` (default `true`), and only the steps that actually ran — `red`, `green`, `triangulate`, `refactor`, `verification` — each `{command, exit_code, summary}`; `triangulate` may instead be `{skip_reason}`. Completion rides on the last step that ran, and that step must pass. |
+| `entry_index`, `entry_id` | `0` with `entry_id` omitted for a new stream; `entry_index: 0` fills the first expanded entry ID. A continuation uses exactly the pair `next.instruction` names. |
 
-`tasks.md` remains the shared human-visible task state: mark a checkbox only after the committed coverage identifies its matching task ID, and do not treat a checkbox as a substitute for v2 evidence. Freeze its text for the stream; a later task edit changes the manifest digest and requires explicit reconciliation, not a continuation.
+Omit `request_id`, `batch_id`, and `stream_sha256`: the checkpoint derives them from the request. Explicit `entries` (whole `EvidenceEntry` values with `entry_id`, `task_ids`, `completes_task_ids`, `kind`, `summary`, `command`, `exit_code`, `outcome`, and `files`) remain accepted but are mutually exclusive with `task_records`. `imported` is internal legacy provenance only; callers MUST NOT supply it.
 
-- The exact checkpoint outcome set is `committed`, `continuation_required`, `evidence_item_too_large`, `snapshot_capacity_exhausted`, `stream_preflight_required`, and `checkpoint_consolidation_required`. JSON `continuation_required`, `evidence_item_too_large`, `snapshot_capacity_exhausted`, `stream_preflight_required`, `checkpoint_consolidation_required`, `conflict`, and `request_id_conflict` are handled outcomes and therefore exit 0. Always inspect `outcome`, `code`, and `recovery`; every other error exits non-zero and must stop the phase.
-- On `committed`, record the committed state and durable receipt, then mark only matching persisted task checkboxes `[x]`.
-- On `continuation_required`, the maximal prefix is committed: retain the receipt and resume only from the returned snapshot, expected coordinates, `next_entry_index`, `next_entry_id`, and `stream_sha256`. Use a new request ID and new batch ID only after `continuation_required`.
-- On `evidence_item_too_large`, STOP with no write: the first pending whole entry cannot fit. On `snapshot_capacity_exhausted`, STOP with no write: reconcile the frozen task/evidence state or evolve the protocol; checkpoint frequency cannot repair a full reference set and excessively tiny batches make it worse. On `stream_preflight_required`, STOP with no write, receipt, or cursor advance: the new stream's complete maximal-batch continuation contains a future oversized indivisible entry or would overflow future snapshot references or coverage, so consolidate evidence or evolve the snapshot before binding it. `checkpoint_consolidation_required` is permitted only before binding a new stream, when the base has no continuation identity: STOP with no write, receipt, or cursor advance, then accumulate or combine pending evidence into a larger checkpoint request without changing committed stream authority. Never modify entries for an active frozen continuation. A full-coverage partial snapshot is valid only with its continuation cursor; without one it is an exhausted incremental stream and must have incomplete coverage. A structured `warning` on a committed successor snapshot is an early capacity preflight: avoid starting new tiny streams and consolidate evidence before the hard ceiling. Checkpoint after a meaningful bounded evidence group, before a batch approaches capacity.
-- A normal unambiguous legacy Markdown artifact is imported automatically by its first checkpoint: the checkpoint writes `imported` evidence using deterministic legacy task IDs hashed from task path plus normalized text, internally binds the exact compared legacy bytes as `legacy_source_sha256`, and leaves those bytes authoritative until that guarded commit succeeds. Normal checkpoint JSON never accepts that compatibility field. `legacy_upgrade_required` applies instead only to a readable historical v2 snapshot whose wire shape explicitly serialized the all-zero continuation group; a current absent group is an unbound snapshot that starts a later stream normally. `upgrade-continuation` remains required for that distinct case: run `jarvis sdd progress upgrade-continuation --root <change-root> --request <request.json>` with the exact current base, tasks, full ordered entries, stream SHA-256, and the same request ID from the blocked checkpoint. It creates only a CAS successor: it retains the generation, batches, coverage, status, task manifest, and immutable evidence; increments revision; sets `previous_digest`; reseals the digest; and adds the all-or-nothing continuation group. Historical pre-continuation reconstruction may advance both generation and revision only while both endpoints omit continuation identity and the successor appends immutable evidence; every current continuation-aware mutation retains its epoch and advances only revision. Partial continuation cursors must equal their appended entry counts, and a terminal snapshot must recompute the full ordered stream digest. Archive and normal reads require every canonical receipt snapshot to be the head or an ancestor in one append-only lineage; a pending successor, fork, orphan, torn receipt, or retained staging file returns typed `publication_interrupted`. Only a deterministic stage bound to the exact destination bytes may be finalized by its exact retry; never delete, rewrite, or treat anonymous, malformed, changed, or symlinked residue as recoverable. Archive moves recursive delta specs and canonical receipt/evidence topology together. On stale state, generation is a stable epoch: retry with the authoritative generation plus the current revision and digest to prepare the next revision. `lock_busy`, `validation`, `backend_diverged`, and publication interruption stop downstream routing and require their typed recovery/current state.
-- On transport loss or partial hybrid recovery, preserve the existing hybrid receipt and retry with the same request ID, batch ID, base, cursor, and byte-identical payload; preserve the stream hash as well. A partial recovery may replay or revalidate the exact request against both backends through their idempotent contracts before accepting acknowledgements. A complete receipt returns without replay. Never change the payload, identity, or authority, and never rewrite confirmed progress.
-- The low-level `advance` remains a recovery/compatibility primitive: `jarvis sdd progress advance --root <change-root> --request <request.json>` accepts no positional arguments, and its HTTP and MCP forms accept only an already planned batch and snapshot. `stale`, `request_id_conflict`, `batch_collision`, and defensive `capacity` responses exit 0 with JSON; validation, lock, backend, transport, and publication failures exit non-zero. Do not ask `advance`, HTTP, or MCP to select prefixes or plan capacity. It MUST NOT plan a prefix or split evidence. It MAY validate a caller-proposed payload, including defensive capacity validation; that validation is not checkpoint planning or a checkpoint capacity outcome.
-- For a legacy artifact, only the next authorized mutation may invoke guarded migration. Keep the legacy source authoritative until the v2 snapshot and referenced batches commit; failure leaves it readable and retryable. Only exact low-level recovery JSON may carry `legacy_source_sha256`; it must match the authoritative source, participates in request identity, and cannot append `imported` evidence to a v2 successor. Do not emit free-form lifecycle markers: the validated v2 snapshot status and referenced batches are authoritative.
+Never invent coverage: a record names only a task this batch implemented and carries only commands that actually ran. `tasks.md` stays the human-visible task state, never a substitute for v2 evidence; a later task edit changes the manifest digest and requires explicit reconciliation, not a continuation.
 
+The checkpoint `outcome` is one of `committed`, `continuation_required`, `evidence_item_too_large`, `snapshot_capacity_exhausted`, `stream_preflight_required`, and `checkpoint_consolidation_required`, or a typed conflict, invalid, blocked, or recovery response. Every response carries `next: {action, instruction}`. After the command, follow `next.action` and `next.instruction` only: `continue_stream` reruns now with the returned cursor, `done` and `continue_tasks` end this batch's checkpointing, and every `stop_*` action ends the phase with `code` and `recovery` reported verbatim. Do not emit free-form lifecycle markers: the validated v2 snapshot status and referenced batches are authoritative.
+
+#### Recovery
+
+Rare paths still follow `next`; these notes only name what it covers.
+
+- `run_upgrade_continuation` (`legacy_upgrade_required`): a historical v2 snapshot serialized an explicit all-zero continuation group. Run `jarvis sdd progress upgrade-continuation --root <change-root> --request <request.json>` with the same request, then rerun the checkpoint from the upgraded snapshot. A legacy Markdown artifact needs no step: its first checkpoint imports it and keeps the legacy source authoritative until that guarded commit succeeds.
+- `stop_consolidate` (`stream_preflight_required`, `checkpoint_consolidation_required`): combine pending evidence into fewer, larger records before binding a new stream. Never modify records for an active frozen continuation.
+- `stop_new_change` (`snapshot_capacity_exhausted`): checkpoint frequency cannot repair a full reference set; stop with apply partial and carry the uncovered task IDs into a new SDD change. A committed `warning` is an early capacity signal: do not start new tiny streams.
+- `retry_identical` (transport loss, `lock_busy`, partial hybrid recovery): preserve the existing hybrid receipt and rerun the identical request, so the same request ID, batch ID, base, cursor, and byte-identical payload replay. A partial recovery may replay or revalidate the exact request against both backends through their idempotent contracts before accepting acknowledgements. A complete receipt returns without replay. Never change the payload, identity, or authority, and never rewrite confirmed progress.
+- The low-level `advance` remains a recovery/compatibility primitive for an already planned batch and snapshot. Do not ask `advance`, HTTP, or MCP to select prefixes or plan capacity.
 
 ### Step 6: Mark Tasks Complete
 
-Only after the guarded progress checkpoint succeeds, update the persisted tasks artifact — change `- [ ]` to `- [x]` for completed tasks:
+Once the batch checkpoint (including any `continue_stream` reruns) has returned `committed`, update the persisted tasks artifact in one edit: change `- [ ]` to `- [x]` for exactly the tasks the committed snapshot coverage names, and nothing else. Never mark a task `[x]` without committed coverage.
 
 ```markdown
 ## Phase 1: Foundation
@@ -244,7 +244,7 @@ Return to the orchestrator:
 | `path/to/file.ext` | Created | {brief description} |
 | `path/to/other.ext` | Modified | {brief description} |
 
-{IF Strict TDD Mode → include structured v2 EvidenceEntry IDs and outcomes from strict-tdd.md}
+{IF Strict TDD Mode → include the safety-net baseline and each task's RED/GREEN/TRIANGULATE/REFACTOR outcomes from strict-tdd.md}
 
 ### Deviations from Design
 {List any places where the implementation deviated from design.md and why. If none, say "None — implementation matches design."}

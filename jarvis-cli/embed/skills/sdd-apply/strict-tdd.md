@@ -2,6 +2,7 @@
 
 > **This module is loaded ONLY when Strict TDD Mode is enabled AND a test runner is available.**
 > If you are reading this, the orchestrator already verified both conditions. Follow every instruction.
+> If the assigned files cannot run under any test runner, the `strict-tdd-unrunnable` gate in `SKILL.md` applies: stop before the first task. There is no silent fallback to Standard Mode.
 
 ## TDD Philosophy
 
@@ -15,31 +16,24 @@ TDD is not testing. TDD is **software design driven by tests**. You write a test
 
 ## TDD Implementation Cycle
 
-For EVERY task assigned to you, follow this cycle strictly:
+```text
+BATCH START:
+└── 0. SAFETY NET — once per affected package at batch start, not per task
+    ├── Run the existing tests of every package the batch will modify
+    ├── Capture the baseline: "{command} → {N} tests passing"
+    └── If any FAIL → STOP, report as "pre-existing failure"
+        (do NOT fix pre-existing failures — report to orchestrator)
 
-```
 FOR EACH TASK:
-├── 0. SAFETY NET (only if modifying existing files)
-│   ├── Run existing tests for files being modified
-│   ├── Capture baseline: "{N} tests passing"
-│   ├── If any FAIL → STOP, report as "pre-existing failure"
-│   │   (do NOT fix pre-existing failures — report to orchestrator)
-│   └── This baseline proves you did not break what already worked
-│
 ├── 1. UNDERSTAND
-│   ├── Read the task description
-│   ├── Read relevant spec scenarios (these ARE your acceptance criteria)
-│   ├── Read the design decisions (these CONSTRAIN your approach)
+│   ├── Read the task, its spec scenarios (acceptance criteria), and design decisions
 │   ├── Read existing code and test patterns (match the style)
 │   └── Determine test layer (see "Choosing Test Layer" below)
 │
 ├── 2. RED — Write a failing test FIRST
-│   ├── Write test(s) that describe the expected behavior from the spec
-│   ├── Prefer pure functions where possible (no side effects = easy to test)
-│   ├── The test MUST reference production code that does NOT exist yet
-│   │   (this should fail at compile time, but you still MUST execute the focused test command)
-│   ├── If the production code/function already exists:
-│   │   └── Write a test for the NEW behavior that is NOT yet implemented
+│   ├── The test describes the expected behavior from the spec
+│   ├── It references production behavior that does NOT exist yet
+│   │   (a compile failure still requires executing the focused test command)
 │   ├── EXECUTE the focused test command and capture the failing output
 │   │   ├── ✅ Failed for the expected reason → proceed to GREEN
 │   │   ├── ❌ Passed → STOP and strengthen the test before implementing
@@ -47,138 +41,62 @@ FOR EACH TASK:
 │   └── GATE: Do NOT proceed to GREEN until RED is confirmed by execution
 │
 ├── 3. GREEN — Write the MINIMUM code to pass
-│   ├── Implement ONLY what the failing test needs
-│   ├── Fake It is VALID here (hardcoded return values are OK)
-│   ├── EXECUTE tests → must PASS
-│   │   ├── ✅ Passed → proceed to TRIANGULATE or REFACTOR
-│   │   └── ❌ Failed → fix the implementation, NOT the test
+│   ├── Implement ONLY what the failing test needs; Fake It is valid here
+│   ├── EXECUTE tests → must PASS; on failure fix the implementation, NOT the test
 │   └── GATE: Do NOT proceed until GREEN is confirmed by execution
 │
 ├── 4. TRIANGULATE (MANDATORY for most tasks)
 │   ├── DEFAULT: triangulation is REQUIRED. You need a compelling reason to skip it.
-│   ├── Add a second test case with DIFFERENT inputs/expected outputs
-│   ├── EXECUTE tests → if Fake It breaks (hardcoded no longer works):
-│   │   └── Generalize to real logic (this is the whole point)
-│   ├── Repeat until ALL spec scenarios for this task are covered
-│   ├── Each triangulation pass: write test → run → fix implementation
+│   ├── Add a case with DIFFERENT inputs/expected outputs until every spec scenario
+│   │   of the task is covered; generalize any Fake It the new case breaks
 │   ├── MINIMUM: at least 2 test cases per behavior (happy path + one edge case)
 │   │   ├── One test with data that produces a NON-EMPTY/NON-TRIVIAL result
 │   │   └── One test with data that exercises a DIFFERENT code path
-│   ├── WATCH OUT for GREEN that passes trivially:
-│   │   ├── If your test passes because the component/element isn't rendered → NOT a real GREEN
-│   │   ├── If your test passes because a loop iterates 0 times → NOT a real GREEN
-│   │   ├── If your test passes because the setup doesn't trigger the code path → NOT a real GREEN
-│   │   └── A real GREEN means: production code RAN and produced the expected output
+│   ├── The new case may run inside GREEN's command; record it as the `triangulate` step
+│   ├── A real GREEN means production code RAN and produced the expected output;
+│   │   a pass because nothing rendered or a loop iterates 0 times is NOT GREEN
 │   ├── Skip triangulation ONLY when ALL of these are true:
 │   │   ├── The task is purely structural (config file, constant definition, type export)
 │   │   ├── There is literally ONE possible output (no branching, no logic)
-│   │   └── Record a `triangulate` `EvidenceEntry` with `outcome: not_run` and the concrete reason: `Triangulation skipped: {reason}`
+│   │   └── Record `triangulate: {skip_reason: "Triangulation skipped: {reason}"}`
 │   ├── A single spec scenario is NOT a triangulation skip reason; only structural one-output work may skip triangulation
 │   └── GATE: All spec scenarios for this task must have tests before REFACTOR
 │
 ├── 5. REFACTOR — Improve without changing behavior
-│   ├── Extract constants (eliminate magic numbers)
-│   ├── Extract functions (reduce cyclomatic complexity)
-│   ├── Improve naming, remove duplication
-│   ├── Push toward pure functions where feasible
-│   ├── Apply Boy Scout Rule: leave code cleaner than you found it
-│   ├── EXECUTE tests after EACH refactoring step → must STILL PASS
-│   │   ├── ✅ Still passing → refactoring is safe, continue
-│   │   └── ❌ Failed → REVERT that refactoring step, try smaller
-│   └── GATE: Tests green after EVERY refactoring change
+│   ├── Extract constants and functions, improve naming, remove duplication
+│   ├── Push toward pure functions; leave code cleaner than you found it
+│   ├── Make one run after refactoring, not after every micro-step → must STILL PASS
+│   │   └── ❌ Failed → revert the refactoring and retry in smaller steps
+│   └── Skip the step when nothing was refactored
 │
-├── 6. Mark task complete [x]
-└── 7. Note any deviations or issues discovered
+└── 6. RECORD — ONE `task_records` item per task for the batch checkpoint
+    ├── Only steps that actually ran, each with its real command, exit code, and summary
+    └── Note any deviations or issues discovered
 ```
+
+Task checkboxes change only through the batch checkpoint in `SKILL.md` Steps 5–6; this module never marks `[x]`.
 
 ## Choosing Test Layer
 
-Based on the testing capabilities cached in Hive (`sdd/{project}/testing-capabilities`), choose the appropriate test layer for each task:
+Use the HIGHEST layer the cached testing capabilities (`sdd/{project}/testing-capabilities`) support for what the task does:
 
-```
-Determine test layer by WHAT the task does:
-├── Pure logic, utility function, calculation, data transformation
-│   └── Unit test (always available if test runner exists)
-│
-├── Component rendering, user interaction, state changes
-│   ├── IF integration tools available → Integration test
-│   └── IF NOT → Unit test with mocks (degrade gracefully)
-│
-├── Multi-component flow, API interaction, context/provider behavior
-│   ├── IF integration tools available → Integration test
-│   └── IF NOT → Unit test with mocks
-│
-├── Critical business flow, full user journey, cross-page navigation
-│   ├── IF E2E tools available → E2E test
-│   ├── IF NOT but integration available → Integration test
-│   └── IF neither → Unit test (degrade gracefully)
-│
-└── Default: Unit test (always the fallback)
-```
+- Pure logic, utility, calculation, data transformation → unit test.
+- Component rendering, interaction, state changes, multi-component or API flows → integration test when available, otherwise unit test with a small fake.
+- Critical business flow or full user journey → E2E when available, otherwise integration, otherwise unit.
 
-**Key rule**: Use the HIGHEST available layer that fits the task. But NEVER skip a task because a layer is unavailable — degrade to the next available layer.
+NEVER skip a task because a layer is unavailable — degrade to the next available layer.
 
 ## Test Execution
 
-Detect the test runner from the cached testing capabilities:
-
-```
-Read test command from:
-├── Cached capabilities → test_runner.command (fastest — already detected)
-├── openspec/config.yaml → rules.apply.test_command (override)
-└── Fallback: detect from package.json/pyproject.toml/go.mod
-
-When executing tests during TDD:
-├── Run ONLY the relevant test file, not the entire suite
-│   ├── JS/TS: {runner} {test-file-path} (e.g., pnpm vitest run src/utils/tax.test.ts)
-│   ├── Python: pytest {test-file-path}
-│   ├── Go: go test ./{package}/... -run {TestName}
-│   └── Adapt to the runner's CLI
-├── This keeps the cycle FAST
-└── Full suite runs happen in sdd-verify, not here
-```
+Read the test command from cached capabilities (`test_runner.command`), then `openspec/config.yaml` `rules.apply.test_command`, then the project manifests. Run ONLY the relevant test file or package during the cycle (for example `go test ./{package}/... -run {TestName}` or `pnpm vitest run {test-file}`); the full suite runs in sdd-verify.
 
 ## Pure Function Preference
 
-When writing production code in GREEN/TRIANGULATE steps, prefer pure functions:
-
-```
-✅ PREFER (pure — easy to test):
-function calculateDiscount(price: number, quantity: number): number {
-  return quantity >= 5 ? price * quantity * 0.1 : 0
-}
-
-❌ AVOID (impure — hard to test):
-function calculateDiscount(item: Item) {
-  globalState.lastDiscount = item.price * 0.1  // side effect
-  updateDOM()                                   // side effect
-  return globalState.lastDiscount
-}
-```
-
-**Why**: Pure functions are deterministic (same input → same output), have no side effects, and are trivially testable. TDD naturally pushes you toward pure functions — embrace it.
+Prefer pure functions in GREEN and TRIANGULATE: same input, same output, no side effects, trivially testable. Do not force them where they do not fit, such as stateful UI components.
 
 ## Approval Testing (for refactoring existing code)
 
-When a task involves REFACTORING existing code (not writing new code):
-
-```
-BEFORE touching production code:
-├── 1. Identify existing behavior to preserve
-├── 2. Write "approval tests" that capture current behavior:
-│   ├── Call the function with known inputs
-│   ├── Assert the CURRENT outputs (even if ugly or wrong)
-│   └── These tests document what the code does NOW
-├── 3. Run approval tests → must PASS (they describe current reality)
-├── 4. NOW refactor the production code
-├── 5. Run approval tests again → must STILL PASS
-│   ├── ✅ Passing → refactoring preserved behavior
-│   └── ❌ Failing → refactoring broke something, revert
-└── 6. If the spec says behavior should CHANGE:
-    ├── Update the approval test to reflect NEW expected behavior
-    ├── Run → test FAILS (RED — new behavior not implemented yet)
-    └── Implement new behavior → GREEN
-```
+BEFORE touching production code in a refactoring task, write approval tests that call the code with known inputs and assert its CURRENT outputs, run them (they must pass), refactor, and run them again (they must still pass). When the spec changes behavior, update the approval test first so it fails (RED), then implement (GREEN).
 
 ## Failure Evidence Requirements
 
@@ -194,226 +112,47 @@ If infrastructure blocks the focused RED command, STOP and report the blocker in
 
 Do not document RED as "would fail"; it is not RED until the focused command was executed and failed. If the focused RED command cannot execute, STOP and report the infrastructure blocker; do NOT implement or move to another task.
 
-Record failure evidence in apply-progress and the return summary. Do not write "RED written" without the exact command and failure output. If a test unexpectedly passes during RED, STOP and strengthen the test before implementing.
+## Evidence Record
 
-Go-friendly RED evidence examples:
-
-```text
-RED: go test ./internal/skills -run TestStrictTDDQualityRules
-Failure: undefined: strictTDDQualityRules
-
-RED: go test ./internal/skills -run TestStrictTDDRejectsTrivialAssertions
-Failure: expected strict TDD source to reject trivial assertion loophole "expect(true).toBe(true)"
-```
-
-## Return Summary Extension
-
-When Strict TDD Mode is active, persist TDD proof as structured v2 entries in the checkpoint request's immutable `entries` stream; each entry is an `EvidenceEntry`. Do not use a Markdown cycle table as apply-progress evidence. When reading prior Hive proof, first call `sdd_apply_progress_get`, then iterate `snapshot.batches` with `sdd_apply_evidence_get` for each referenced `batch_id`; never consume aggregate history from a progress response.
+Persist TDD proof as `task_records` in the batch checkpoint; the CLI expands each record into structured v2 entries, one `EvidenceEntry` per step with `completes_task_ids` on the last step that ran, and the immutable v2 entries are authoritative. Do not use a Markdown cycle table as apply-progress evidence. When reading prior Hive proof, call `sdd_apply_progress_get`, then `sdd_apply_evidence_get` for each referenced `batch_id`.
 
 ```json
 {
-  "entry_id": "tdd-1.1-red",
-  "task_ids": ["1.1"],
-  "completes_task_ids": [],
-  "kind": "red",
-  "summary": "Focused test failed with undefined symbol.",
-  "command": "go test ./internal/skills -run TestExample",
-  "exit_code": 1,
-  "outcome": "fail",
-  "files": ["internal/skills/example_test.go"]
+  "task_id": "1.1",
+  "files": ["internal/skills/example.go", "internal/skills/example_test.go"],
+  "red": {"command": "go test ./internal/skills -run TestExample", "exit_code": 1, "summary": "Safety net: go test ./internal/skills → 42 passing. RED: undefined: Example"},
+  "green": {"command": "go test ./internal/skills -run TestExample", "exit_code": 0, "summary": "Happy path passes"},
+  "triangulate": {"command": "go test ./internal/skills -run TestExample", "exit_code": 0, "summary": "Empty-input case drove real logic"},
+  "refactor": {"command": "go test ./internal/skills", "exit_code": 0, "summary": "Extracted helper; package still green"}
 }
 ```
 
-Emit distinct entries for the safety net, RED, GREEN, TRIANGULATE, and REFACTOR observations. RED carries the executed failing command and failure summary; GREEN carries the passing command and exit code. A task-completion entry names its task in `completes_task_ids` only after the required evidence is satisfied. For a structural one-output skip, use `kind: "triangulate"`, `outcome: "not_run"`, and a concrete reason in `summary`; one scenario is not a skip reason. Return summaries may list entry IDs and outcomes, but immutable v2 entries are authoritative.
+Record each package's safety-net baseline once, in the `red` summary of the first task that touches that package, and in the return summary. A structural skip records a `triangulate` step with only `skip_reason`, which expands to `kind: "triangulate"` with `outcome: not_run`; one scenario is not a skip reason. The record completes its task only when its last executed step passed.
 
 ## Assertion Quality Rules (MANDATORY)
 
-**Every assertion must verify REAL behavior.** A test that passes without exercising production logic is worse than no test because it gives false confidence.
+**Every assertion must verify REAL behavior.** A test that passes without exercising production logic is worse than no test because it gives false confidence. A REAL assertion calls production code, asserts a specific output or observable effect derived from the spec, and would FAIL if the production code were wrong.
 
 ### Banned Assertion Patterns (NEVER write these)
 
-```
-# TRIVIAL ASSERTIONS — test proves nothing
-expect(true).toBe(true)              # ❌ Tautology
-expect(false).toBe(false)            # ❌ Tautology
-expect(1).toBe(1)                    # ❌ Tautology — no production code involved
-assert True                          # ❌ Always passes
-assert 1 == 1                        # ❌ Always passes
-if got := true; !got { t.Fatal("impossible") } # ❌ Always passes
-
-# EMPTY COLLECTION ASSERTIONS without setup context
-expect(result).toEqual([])           # ❌ ONLY valid if you set up conditions for empty
-expect(result).toHaveLength(0)       # ❌ Same — why is it empty? Did production code run?
-assert len(result) == 0              # ❌ Same — prove the emptiness comes from real logic
-assert result == []                  # ❌ Same
-if len(result) != 0 { t.Fatal(...) } # ❌ Same unless setup proves why empty is required
-
-# TYPE-ONLY ASSERTIONS — proves existence, not behavior
-expect(result).toBeDefined()         # ❌ Alone is useless — WHAT is the value?
-expect(result).not.toBeNull()        # ❌ Alone is useless — assert the actual value
-expect(typeof result).toBe('object') # ❌ Alone is useless — what does the object contain?
-assert result is not None            # ❌ Alone — assert what result actually IS
-if result == nil { t.Fatal(...) }    # ❌ Alone — assert the specific value or effect
-
-# GHOST LOOP — assertion inside a loop that iterates 0 times
-const items = screen.queryAllByTestId("item");  // returns []
-for (const item of items) {
-  expect(item).toHaveTextContent("value");       # ❌ NEVER EXECUTES — loop body is dead code
-}
-# FIX: assert the collection is non-empty FIRST, or set up data so it IS non-empty:
-expect(items).toHaveLength(3);                   # ✅ Proves items exist
-for (const item of items) { ... }                # ✅ Now the loop actually runs
-
-# Go ghost-loop equivalent
-for _, got := range results {
-  if got.Status != "FAIL" { t.Fatalf("status = %q", got.Status) } # ❌ NEVER EXECUTES when results is empty
-}
-if len(results) != 3 { t.Fatalf("len(results) = %d, want 3", len(results)) } # ✅ prove loop work exists first
-
-# INCOMPLETE TDD CYCLE — GREEN without TRIANGULATE
-# If your GREEN test passes because the setup doesn't exercise the code path,
-# you are NOT done. You MUST triangulate with a setup that DOES exercise it.
-# Example: testing "search doesn't update until Enter" but the component
-# that receives the search is never rendered → the test proves nothing.
-# FIX: add a test where the component IS rendered and verify the behavior.
-```
-
-### What Makes a REAL Assertion
-
-Every test assertion must satisfy ALL of these:
-
-1. **Calls production code** — the test invokes a function, method, command boundary, or component from the implementation.
-2. **Asserts a specific output or observable effect** — compares against a concrete expected value derived from the spec.
-3. **Would FAIL if the production code were wrong** — changing the implementation logic should break this test.
-
-```
-# ✅ REAL assertions — production code determines the result
-expect(calculateDiscount(100, 10)).toBe(10)       # Real input → real output
-expect(screen.getByText('Welcome, John')).toBeInTheDocument()  # Rendered from data
-assert result[0].status == "FAIL"                 # Specific finding from check execution
-assert response.status_code == 403                # Real HTTP response from the endpoint
-expect(result).toHaveLength(3)                    # AND you set up exactly 3 items
-
-# Go example — table-driven behavior assertion
-got := ResolveDisplayStatus("MUTED", true)
-want := "FAIL"
-if got != want {
-  t.Fatalf("ResolveDisplayStatus() = %q, want %q", got, want)
-}
-```
-
-### Empty Collection Rule
-
-`expect(result).toEqual([])`, `assert len(result) == 0`, or `if len(result) != 0` is ONLY valid when:
-
-1. You set up a specific precondition that SHOULD produce an empty result, such as no matching records.
-2. The production code actually ran and filtered or processed data to arrive at empty.
-3. A companion test with different setup produces a NON-EMPTY result through the same production path.
-
-If you cannot explain WHY the result is empty based on setup, the assertion is trivial.
-
-### Smoke Test Rule
-
-A test that only renders a component or initializes a command without asserting any output is NOT a valid TDD test:
-
-```
-# ❌ SMOKE TEST ONLY — proves nothing about behavior
-render(<MyComponent data={mockData} />);
-expect(screen.getByTestId("wrapper")).toBeInTheDocument();  # Just proves it rendered
-
-# ✅ BEHAVIORAL TEST — proves what the component DOES with the data
-render(<MyComponent data={mockData} />);
-expect(screen.getByText("Expected Title")).toBeInTheDocument();  # Verifies output from data
-expect(screen.getByRole("button")).toHaveTextContent("Submit");  # Verifies real content
-
-# Go command example
-output, err := RunDoctor(fakeEnvWithBrokenConfig())
-if err == nil { t.Fatal("RunDoctor() expected error") }
-if !strings.Contains(output, "invalid config") { t.Fatalf("output missing diagnostic: %q", output) }
-```
-
-"Renders without crash" is a smoke test. It is NOT a unit test, NOT an integration test, and it does NOT count toward TDD coverage. If you need a smoke test, it must be accompanied by real behavioral assertions.
-
-### Mock/Fake Hygiene Rules
-
-**If you need more mocks than assertions, you are testing at the wrong level.** Prefer a real package boundary, a small fake, or a pure function over mock-heavy setup.
-
-```
-Mock/assertion ratio guide:
-├── ≤ 3 mocks or fakes for a test file → ✅ Healthy — focused test
-├── 4–6 mocks or fakes → ⚠️ Consider extracting logic to a pure function
-├── 7+ mocks or fakes → ❌ STOP — you are testing at the wrong layer
-│   ├── Extract the logic under test to a PURE FUNCTION and test it without mocks
-│   ├── OR move the test to integration/E2E layer where real dependencies exist
-│   └── NEVER write 10+ mocks to verify a one-line transformation
-```
-
-**Extract-Before-Mock Rule**: If the behavior you want to test is data transformation, mapping, filtering, or conditional logic, extract it to a pure function first, then test the pure function directly. No mocks needed.
-
-```
-# ❌ BAD: 15 mocks to test a one-line status conversion
-vi.mock("next/navigation", ...);
-vi.mock("next/link", ...);
-vi.mock("@/components/shadcn", ...);
-// ... 12 more mocks ...
-render(<StatusCell row={mutedRow} />);
-expect(screen.getByText("FAIL")).toBeInTheDocument();
-
-# ✅ GOOD: extract and test the logic directly
-// In production code:
-export function resolveDisplayStatus(status: string, isMuted: boolean): string {
-  return status === "MUTED" ? "FAIL" : status;
-}
-
-// In test — ZERO mocks needed:
-expect(resolveDisplayStatus("MUTED", true)).toBe("FAIL");
-expect(resolveDisplayStatus("PASS", false)).toBe("PASS");
-
-# Go equivalent — small fake only at the boundary, not for pure logic
-got := ResolveDisplayStatus("MUTED", true)
-if got != "FAIL" { t.Fatalf("status = %q, want FAIL", got) }
-```
-
-Fakes are valid when they make a real boundary deterministic, such as filesystem, clock, HTTP, or command execution. A fake is unhealthy when it duplicates the production logic you are supposed to test.
-
-### Behavior-First Test Rule
-
-Tests must assert **behavior visible to the user or caller**, not internal implementation details:
-
-```
-# ❌ COUPLED TO IMPLEMENTATION — breaks on any style refactor
-expect(element.className).toContain("text-xs");
-expect(element.className).toContain("-mt-2.5");
-expect(element).toHaveStyle({ color: "red" });
-
-# ❌ COUPLED TO INTERNALS — breaks when implementation changes
-expect(mockService.mock.calls.length).toBe(3);  # Why 3? Brittle.
-expect(component.state.isLoading).toBe(true);    # Internal state, not behavior.
-
-# ✅ BEHAVIORAL — survives refactors, tests what users/callers observe
-expect(screen.getByText("Error: Payment failed")).toBeInTheDocument();
-expect(screen.getByRole("alert")).toHaveTextContent("Risk:");
-expect(screen.getByRole("button")).toBeDisabled();
-
-# Go example — assert the returned diagnostic, not helper call counts
-diagnostics := ValidateConfig(invalidConfig)
-if len(diagnostics) != 1 { t.Fatalf("diagnostics = %d, want 1", len(diagnostics)) }
-if diagnostics[0].Code != "missing-token" { t.Fatalf("code = %q, want missing-token", diagnostics[0].Code) }
-```
-
-CSS class assertions are not valid behavior assertions. If you need to verify visual styling, test the semantic outcome or use a visual regression tool / E2E screenshot comparison.
+- **Tautologies**: `expect(true).toBe(true)`, `assert 1 == 1`, or any check that holds without production code.
+- **Unexplained empty results**: `toEqual([])`, `toHaveLength(0)`, `len(result) == 0` are valid only when the setup should produce empty, production code ran to produce it, and a companion test reaches a NON-EMPTY result through the same path.
+- **Type-only checks**: `toBeDefined()`, `not.toBeNull()`, `result != nil` alone; assert the actual value.
+- **Ghost loops**: assertions inside a loop that iterates 0 times never run; assert the collection is non-empty FIRST, or set up data so it is.
+- **Trivial GREEN**: a pass because the code path never ran (component not rendered, setup does not trigger it) is not GREEN; triangulate with a setup that exercises it.
+- **Smoke Test Rule**: "Renders without crash" or initializing a command without asserting output is a smoke test; it does NOT count toward TDD coverage.
+- **Mock/Fake Hygiene Rules**: If you need more mocks than assertions, you are testing at the wrong level. 4–6 mocks means consider extracting logic; 7+ means STOP and extract or move up a layer.
+- **Extract-Before-Mock Rule**: extract mapping, filtering, or conditional logic to a pure function and test it directly with zero mocks. Fakes are valid only to make a real boundary (filesystem, clock, HTTP, command execution) deterministic, never to duplicate the logic under test.
+- **Behavior-First Test Rule**: Tests must assert **behavior visible to the user or caller**, not internals: no CSS class or inline-style assertions, no mock call counts, no internal state. Verify visual styling with semantic outcomes or visual regression tools.
 
 ## Rules (Strict TDD specific)
 
 - NEVER write production code before writing its test — this is the ONE rule that cannot be broken
-- NEVER skip the GREEN execution gate — you MUST run tests and confirm they pass
+- NEVER skip the RED or GREEN execution gate — you MUST run the tests and observe the result
 - NEVER skip triangulation when the spec defines multiple scenarios — hardcoded Fake It must be forced out
 - NEVER write trivial assertions (see Banned Assertion Patterns above) — they are WORSE than no test
-- ALWAYS verify that every assertion CALLS production code and asserts a SPECIFIC expected value or observable effect
-- ALWAYS capture RED failure evidence before implementing GREEN
-- ALWAYS run the Safety Net before modifying existing files — protect what already works
-- ALWAYS report structured v2 EvidenceEntry IDs and outcomes — the verify phase will check them
+- ALWAYS run the Safety Net once per affected package at batch start, before modifying existing files
+- ALWAYS record exactly ONE `task_records` item per task with only the steps that ran — the verify phase checks them
 - If a test runner execution fails for infrastructure reasons (not test failures), STOP and report the blocker; do not continue with implementation
-- Prefer pure functions — but don't force it where it doesn't fit (e.g., React components with state)
 - For refactoring tasks, ALWAYS write approval tests before touching code
-- Run ONLY the relevant test file during the cycle, not the full suite
+- Run ONLY the relevant test file or package during the cycle, not the full suite
