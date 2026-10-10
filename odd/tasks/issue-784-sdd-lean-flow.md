@@ -18,7 +18,7 @@ Related: #781 operator handoff (approved), lands before the adaptive verify slic
 - [x] S1: Delivery decision gate — resolve only from whole single-valued lines (`Chain strategy: <value>` or `Decision needed before apply: No`); template uses non-matching `<one of: ...>` placeholders (fixes substring bypass).
 - [x] S2: Preflight as the single decision point (TDD mode, size policy, chain strategy); tasks and orchestrator stop re-asking; sticky size exception. Also close S1 advisory: an unfilled `Decision needed before apply: <one of: Yes, No>` placeholder leaves Required=false (gate fails open; pre-existing) and the verbatim-template test injects a literal Yes.
 - [x] S3: TDD detection only suggests (real test command required; Deluge suggests standard; one-line reason); apply consumes forwarded mode.
-- [ ] S4: Question round single owner (orchestrator), offered in both modes, forced only for unusable scope.
+- [x] S4: Question round single owner (orchestrator), offered in both modes, forced only for unusable scope.
 - [ ] S5a: Checkpoint CLI derives request id and stream digest; returns a `next` action.
 - [ ] S5b: Checkpoint CLI accepts a compact per-task strict-TDD record and expands it into evidence entries.
 - [ ] S6: Trim apply prompts (one checkpoint per batch, follow `next`, compact TDD).
@@ -60,5 +60,12 @@ Related: #781 operator handoff (approved), lands before the adaptive verify slic
 - Advisory addressed: cached TDD mode refreshed when the user switches after strict-tdd-unrunnable (docs commit).
 - Known limitation: a legacy `strict_tdd: true` in openspec/config.yaml still seeds a strict suggestion; harmless because the preflight decides.
 
+### S3 delivery
+- PR #787 merged (squash 34a0a4a8), 14/14 checks.
+
+### S4
+- Worker: RED on TestSDDOrchestrator_OwnsTheProposalQuestionRoundInBothModes and TestCatalogContract_SDDProposeNeverRunsItsOwnQuestionRound, GREEN; full suite, vet, gofmt, diff --check clean.
+- Commit `feat(sdd): give the proposal question round a single owner in both modes`; review review-b2b4a8841de42803 approved + acknowledged. Advisories (headless offer handling, input value list) accepted as minor; propose already proceeds best-effort and reports not-run.
+
 ## Next step
-S3 push + PR + merge, then S4 (question round single owner).
+S4 push + PR + merge, then S5a (checkpoint CLI next + derived ids).
