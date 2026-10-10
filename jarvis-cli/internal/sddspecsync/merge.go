@@ -1,6 +1,7 @@
 package sddspecsync
 
 import (
+	"regexp"
 	"strings"
 	"unicode"
 )
@@ -151,11 +152,15 @@ func looksLikeOperation(text string) bool {
 	return false
 }
 
+// requirementLike matches a requirement heading at any level, with or without
+// a space after the hashes, so mis-leveled requirements fail closed.
+var requirementLike = regexp.MustCompile(`(?i)^ {0,3}#{1,6}\s*Requirement:(.*)$`)
+
 // parseDelta splits a delta spec into its operation sections. Only a level-1
 // title and free prose may precede the first section; inside operation
 // sections every non-blank line must belong to a "### Requirement:" block.
 // Other level-2 sections (e.g. notes) are skipped and their headings returned;
-// they may not contain requirement blocks.
+// they may not contain requirement headings of any level outside fenced code.
 func parseDelta(text string) (deltaSpec, []string, error) {
 	fail := func(err *MergeError) (deltaSpec, []string, error) { return nil, nil, err }
 	doc := newDocument(strings.Split(text, "\n"))
@@ -166,6 +171,7 @@ func parseDelta(text string) (deltaSpec, []string, error) {
 	for _, h := range doc.headings {
 		headingAt[h.line] = h
 	}
+	fenced, _ := fencedLines(doc.lines)
 	spec := deltaSpec{}
 	section := ""
 	// ignoring is the heading of the non-operation section being skipped.
@@ -181,6 +187,13 @@ func parseDelta(text string) (deltaSpec, []string, error) {
 	}
 	for i, line := range doc.lines {
 		h, isHeading := headingAt[i]
+		if m := requirementLike.FindStringSubmatch(line); m != nil && !fenced[i] && (ignoring != "" || (isHeading && h.level == 2)) {
+			detail := "requirement heading must be level 3 inside an ADDED/MODIFIED/REMOVED/RENAMED section"
+			if ignoring != "" {
+				detail = "requirement inside non-operation section " + quote(ignoring)
+			}
+			return fail(&MergeError{Kind: ErrInvalidDelta, Section: section, Requirement: strings.TrimSpace(m[1]), Detail: detail})
+		}
 		switch {
 		case isHeading && h.level == 1:
 			if section != "" || ignoring != "" {
@@ -203,9 +216,6 @@ func parseDelta(text string) (deltaSpec, []string, error) {
 			section, ignoring = next, ""
 			spec[section] = nil
 		case ignoring != "":
-			if name, ok := requirementName(h); isHeading && ok {
-				return fail(&MergeError{Kind: ErrInvalidDelta, Requirement: name, Detail: "requirement inside non-operation section " + quote(ignoring)})
-			}
 		case isHeading && h.level == 3:
 			closeBlock()
 			name, ok := requirementName(h)

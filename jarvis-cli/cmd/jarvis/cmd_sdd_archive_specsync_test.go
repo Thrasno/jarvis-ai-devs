@@ -165,6 +165,9 @@ func TestBoundSddArchiveSyncsSpecsThenMoves(t *testing.T) {
 	if output.Outcome != "archived" || output.Code != "" || output.Destination != f.destination || !output.SpecSync.Synced {
 		t.Fatalf("output = %+v", output)
 	}
+	if _, err := os.Stat(filepath.Join(f.destination, specSyncJournalName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("spec sync journal left in the archived change: %v", err)
+	}
 	auth := findSpecSyncTarget(t, output, "auth")
 	if auth.Path != authMainPath || auth.Action != "updated" || auth.BeforeDigest != sha256Digest(authMainSpec) ||
 		auth.AfterDigest != sha256Digest(wantAuth) || strings.Join(auth.Added, ",") != "Logout" ||
@@ -273,6 +276,9 @@ func TestBoundSddArchiveRevertsSpecSyncWhenMoveFails(t *testing.T) {
 					if got, _ := f.read(t, authMainPath); got != authMainSpec+"\n"+logoutRequirement {
 						t.Fatalf("move attempted before sync: auth = %q", got)
 					}
+					if _, err := os.Stat(filepath.Join(f.root, specSyncJournalName)); err != nil {
+						t.Fatalf("spec sync journal missing before the move: %v", err)
+					}
 					if tt.concurrent != "" {
 						if err := os.WriteFile(filepath.Join(f.workspace, filepath.FromSlash(authMainPath)), []byte(tt.concurrent), 0o644); err != nil {
 							t.Fatal(err)
@@ -294,6 +300,10 @@ func TestBoundSddArchiveRevertsSpecSyncWhenMoveFails(t *testing.T) {
 			if _, exists := f.read(t, deliveryMainPath); exists {
 				t.Fatal("created delivery spec was not reverted")
 			}
+			_, journalErr := os.Stat(filepath.Join(f.root, specSyncJournalName))
+			if tt.wantReverted != errors.Is(journalErr, os.ErrNotExist) {
+				t.Fatalf("journal stat after revert = %v, want removed only after a clean revert", journalErr)
+			}
 			got, _ := f.read(t, authMainPath)
 			if tt.concurrent == "" {
 				if got != authMainSpec {
@@ -310,4 +320,134 @@ func TestBoundSddArchiveRevertsSpecSyncWhenMoveFails(t *testing.T) {
 			}
 		})
 	}
+}
+
+const specSyncJournalName = ".spec-sync-journal.json"
+
+// crashDuringMove runs archive with a move that panics after the spec sync
+// wrote the main specs, modeling a process that dies before the rename and
+// before any revert.
+func (f specSyncArchiveFixture) crashDuringMove(t *testing.T) {
+	t.Helper()
+	previous := openArchiveStore
+	t.Cleanup(func() { openArchiveStore = previous })
+	openArchiveStore = func(root string) sddprogress.OpenSpec {
+		return sddprogress.OpenSpec{Root: root, ArchiveRename: func(string, string) error { panic("simulated crash") }}
+	}
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != "simulated crash" {
+				t.Fatalf("recovered = %v, want the simulated crash", recovered)
+			}
+		}()
+		command := newBoundSddArchiveCommand()
+		command.SetOut(&bytes.Buffer{})
+		command.SetErr(&bytes.Buffer{})
+		command.SetArgs([]string{"--root", f.root, "--destination", f.destination, "--project", specSyncProject})
+		_ = command.Execute()
+	}()
+	openArchiveStore = previous
+	if _, err := os.Stat(filepath.Join(f.root, specSyncJournalName)); err != nil {
+		t.Fatalf("spec sync journal missing after crash: %v", err)
+	}
+	if got, _ := f.read(t, authMainPath); got != authMainSpec+"\n"+logoutRequirement {
+		t.Fatalf("auth main spec after crash = %q, want synced", got)
+	}
+	f.requireNotMoved(t)
+}
+
+func (f specSyncArchiveFixture) requireArchivedWithoutJournal(t *testing.T, output archiveOutput, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("archive error = %v (output %+v)", err, output)
+	}
+	if output.Outcome != "archived" || output.Code != "" || output.SpecSync == nil || !output.SpecSync.Synced {
+		t.Fatalf("output = %+v", output)
+	}
+	if got, _ := f.read(t, authMainPath); got != authMainSpec+"\n"+logoutRequirement {
+		t.Fatalf("auth main spec = %q, want synced exactly once", got)
+	}
+	if got, _ := f.read(t, deliveryMainPath); got != boundArchiveDeliveryDelta {
+		t.Fatalf("delivery main spec = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(f.destination, "apply-progress.md")); err != nil {
+		t.Fatalf("change not moved: %v", err)
+	}
+	for _, dir := range []string{f.root, f.destination} {
+		if _, err := os.Stat(filepath.Join(dir, specSyncJournalName)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("spec sync journal left behind in %s: %v", dir, err)
+		}
+	}
+}
+
+func TestBoundSddArchiveResumesFromJournalAfterCrash(t *testing.T) {
+	f := newSpecSyncArchiveFixture(t, authAddedDelta)
+	f.crashDuringMove(t)
+
+	specsBefore := snapshotBoundArchiveFilesystem(t, filepath.Join(f.workspace, "openspec", "specs"))
+	planned, err := f.run(t, "--plan")
+	if err != nil || planned.Outcome != "planned" || planned.SpecSync == nil || !planned.SpecSync.Synced || len(planned.SpecSync.Targets) != 2 {
+		t.Fatalf("--plan after crash = %+v, %v; want a planned resume", planned, err)
+	}
+	if got := snapshotBoundArchiveFilesystem(t, filepath.Join(f.workspace, "openspec", "specs")); got != specsBefore {
+		t.Fatal("--plan after crash changed main specs")
+	}
+	if _, err := os.Stat(filepath.Join(f.root, specSyncJournalName)); err != nil {
+		t.Fatalf("--plan removed the journal: %v", err)
+	}
+	f.requireNotMoved(t)
+
+	output, err := f.run(t)
+	f.requireArchivedWithoutJournal(t, output, err)
+	if !output.SpecSync.Resumed {
+		t.Fatalf("output = %+v, want a resumed spec sync", output.SpecSync)
+	}
+	if auth := findSpecSyncTarget(t, output, "auth"); auth.BeforeDigest != sha256Digest(authMainSpec) || auth.AfterDigest != sha256Digest(authMainSpec+"\n"+logoutRequirement) {
+		t.Fatalf("auth target = %+v", auth)
+	}
+}
+
+func TestBoundSddArchiveJournalAtBeforeRunsNormalSync(t *testing.T) {
+	f := newSpecSyncArchiveFixture(t, authAddedDelta)
+	f.crashDuringMove(t)
+	if err := os.WriteFile(filepath.Join(f.workspace, filepath.FromSlash(authMainPath)), []byte(authMainSpec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(f.workspace, filepath.FromSlash(deliveryMainPath))); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := f.run(t)
+	f.requireArchivedWithoutJournal(t, output, err)
+	if output.SpecSync.Resumed {
+		t.Fatalf("output = %+v, want a fresh spec sync", output.SpecSync)
+	}
+}
+
+func TestBoundSddArchiveMixedJournalRequiresRecovery(t *testing.T) {
+	f := newSpecSyncArchiveFixture(t, authAddedDelta)
+	f.crashDuringMove(t)
+	if err := os.WriteFile(filepath.Join(f.workspace, filepath.FromSlash(authMainPath)), []byte(authMainSpec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	specsBefore := snapshotBoundArchiveFilesystem(t, filepath.Join(f.workspace, "openspec", "specs"))
+
+	output, err := f.run(t)
+	if err == nil || !strings.Contains(err.Error(), sddspecsync.CodeRecoveryRequired) {
+		t.Fatalf("archive error = %v, want %s", err, sddspecsync.CodeRecoveryRequired)
+	}
+	if output.Outcome != "blocked" || output.Code != sddspecsync.CodeRecoveryRequired || output.Recovery == "" || output.SpecSync == nil {
+		t.Fatalf("output = %+v", output)
+	}
+	if len(output.SpecSync.RecoveryTargets) != 1 || output.SpecSync.RecoveryTargets[0].Path != deliveryMainPath ||
+		output.SpecSync.RecoveryTargets[0].ExpectedDigest != sddspecsync.AbsentDigest {
+		t.Fatalf("recovery targets = %+v", output.SpecSync.RecoveryTargets)
+	}
+	if got := snapshotBoundArchiveFilesystem(t, filepath.Join(f.workspace, "openspec", "specs")); got != specsBefore {
+		t.Fatal("mixed journal recovery wrote main specs")
+	}
+	if _, err := os.Stat(filepath.Join(f.root, specSyncJournalName)); err != nil {
+		t.Fatalf("mixed journal recovery removed the journal: %v", err)
+	}
+	f.requireNotMoved(t)
 }

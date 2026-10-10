@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/atomicfile"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddbinding"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress"
@@ -167,7 +169,10 @@ func runBoundSddArchive(ctx context.Context, root, destination, projectFlag, cha
 		if err != nil {
 			return err
 		}
-		return validateHiveArchiveStatus(status, contents)
+		if err := validateHiveArchiveStatus(status, contents); err != nil {
+			return err
+		}
+		return reportHiveArchiveSpecSyncFlags(syncOptions)
 	case sddruntime.StoreModeOpenSpec:
 		if err := requireOpenSpecArchiveCoordinates(coordinates.root, destination); err != nil {
 			return err
@@ -183,6 +188,32 @@ func runBoundSddArchive(ctx context.Context, root, destination, projectFlag, cha
 	default:
 		return fmt.Errorf("unsupported SDD archive store binding %q", binding.Mode)
 	}
+}
+
+// reportHiveArchiveSpecSyncFlags answers --plan and --confirm-destructive on
+// a Hive-only binding with the archive JSON result instead of ignoring them.
+// Hive changes have no OpenSpec spec files, so neither flag has an effect and
+// nothing is written. Without either flag the logical close stays silent.
+func reportHiveArchiveSpecSyncFlags(options archiveSpecSyncOptions) error {
+	if !options.planOnly && !options.confirmDestructive {
+		return nil
+	}
+	output := archiveOutput{Outcome: archiveOutcomeArchived, SpecSync: &specSyncOutput{Targets: []specSyncTargetOutput{}}}
+	var details []string
+	if options.planOnly {
+		output.Outcome = archiveOutcomePlanned
+		details = append(details, "Hive-only changes have no OpenSpec spec files to sync; nothing was written or archived.")
+	}
+	if options.confirmDestructive {
+		details = append(details, "--confirm-destructive has no effect on a Hive-only change.")
+	}
+	output.Detail = strings.Join(details, " ")
+	encoder := json.NewEncoder(options.out)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(output); err != nil {
+		return fmt.Errorf("write archive result: %w", err)
+	}
+	return nil
 }
 
 func resolveBoundSddArchiveCoordinates(root, projectFlag, changeFlag string) (boundSddArchiveCoordinates, error) {
@@ -330,6 +361,7 @@ type specSyncOutput struct {
 	Destructive     bool                     `json:"destructive"`
 	Synced          bool                     `json:"synced"`
 	Reverted        bool                     `json:"reverted,omitempty"`
+	Resumed         bool                     `json:"resumed,omitempty"`
 	Targets         []specSyncTargetOutput   `json:"targets"`
 	Removals        []specSyncRemovalOutput  `json:"removals,omitempty"`
 	RecoveryTargets []specSyncRecoveryOutput `json:"recovery_targets,omitempty"`
@@ -417,6 +449,10 @@ var specSyncRecovery = map[string]string{
 	sddspecsync.CodeRecoveryRequired:         "Main specs could not be verifiably restored. Restore each recovery_targets path to its expected_digest (absent means the file must not exist) without overwriting other edits, then rerun archive.",
 }
 
+// journalRecovery replaces the CodeRecoveryRequired recovery when the spec
+// sync journal of an interrupted archive cannot be resumed.
+const journalRecovery = "An interrupted archive left the spec sync journal " + sddspecsync.JournalName + " in the change, and the main specs match neither its pre-sync nor its post-sync digests (or the journal is unreadable). Nothing was written or moved. Restore each recovery_targets path to its expected_digest (absent means the file must not exist) without overwriting other edits, then rerun archive; it resumes from the journal."
+
 // archiveSpecSync merges the change's delta specs into openspec/specs as the
 // archive pre-move step, so the merge and the topology rename share the
 // archive lock. It records the JSON result for runArchiveWithSpecSync.
@@ -445,6 +481,12 @@ func runArchiveWithSpecSync(coordinates boundSddArchiveCoordinates, destination 
 
 func (a *archiveSpecSync) step() (func() error, error) {
 	a.ran = true
+	store := sddspecsync.OSStore{Root: a.workspace}
+	journalPath := path.Join(a.changeRoot, sddspecsync.JournalName)
+	resumed, err := a.inspectJournal(store, journalPath)
+	if err != nil || resumed {
+		return a.resume(err)
+	}
 	plan, err := sddspecsync.BuildPlan(os.DirFS(a.workspace), a.changeRoot, archiveSpecsRoot)
 	if err != nil {
 		code := sddspecsync.CodePlanFailed
@@ -464,17 +506,110 @@ func (a *archiveSpecSync) step() (func() error, error) {
 		a.block(sddspecsync.CodeConfirmationRequired, err)
 		return nil, err
 	}
-	store := sddspecsync.OSStore{Root: a.workspace}
+	// The journal is durable before the first spec write, so a crash at any
+	// later point leaves a rerun able to resume or demand recovery.
+	if err := sddspecsync.WriteJournal(store, journalPath, sddspecsync.NewJournal(plan)); err != nil {
+		a.block(sddspecsync.CodeWriteFailed, fmt.Errorf("write spec sync journal: %w", err))
+		return nil, err
+	}
 	if _, err := sddspecsync.Apply(plan, store); err != nil {
 		a.blockApply(err)
+		if !errors.Is(err, sddspecsync.ErrRecoveryRequired) {
+			discardJournal(store, journalPath)
+		}
 		return nil, err
 	}
 	a.output.SpecSync.Synced = true
 	return func() error {
 		a.moveFailed = true
 		a.revertErr = sddspecsync.Revert(plan, store)
+		if a.revertErr == nil {
+			discardJournal(store, journalPath)
+		}
 		return a.revertErr
 	}, nil
+}
+
+// inspectJournal looks for the journal of an interrupted archive. It reports
+// true when every journaled spec already holds its synced bytes. A journal
+// whose specs are all still at their pre-sync bytes is discarded (kept under
+// --plan, which writes nothing) so the normal sync runs again.
+func (a *archiveSpecSync) inspectJournal(store sddspecsync.OSStore, journalPath string) (bool, error) {
+	journal, found, err := sddspecsync.ReadJournal(store, journalPath, archiveSpecsRoot)
+	if err != nil || !found {
+		return false, err
+	}
+	state, err := journal.Inspect(store)
+	if err != nil {
+		return false, err
+	}
+	if state == sddspecsync.JournalApplied {
+		a.output.SpecSync = specSyncJournalOutput(journal, a.changeRoot)
+		return true, nil
+	}
+	if a.options.planOnly {
+		return false, nil
+	}
+	return false, sddspecsync.RemoveJournal(store, journalPath)
+}
+
+// resume finishes the step for a journal that is already applied, or blocks
+// on a journal that cannot be resumed. A resumed sync has nothing to revert:
+// if the move fails again the journal stays and the next rerun resumes.
+func (a *archiveSpecSync) resume(err error) (func() error, error) {
+	if err != nil {
+		a.output.SpecSync = &specSyncOutput{Targets: []specSyncTargetOutput{}}
+		a.blockApply(err)
+		if errors.Is(err, sddspecsync.ErrJournal) {
+			a.output.Recovery = journalRecovery
+		}
+		return nil, err
+	}
+	if a.options.planOnly {
+		a.output.Detail = "An interrupted archive already synced the main specs; rerun without --plan to finish the move."
+		return nil, errArchivePlanOnly
+	}
+	return func() error {
+		a.moveFailed = true
+		return nil
+	}, nil
+}
+
+// discardJournal removes the journal once the main specs are verifiably back
+// at their pre-sync bytes. Failing to remove it is harmless: a rerun finds
+// every target at its before digest and discards it then.
+func discardJournal(store sddspecsync.OSStore, journalPath string) {
+	_ = sddspecsync.RemoveJournal(store, journalPath)
+}
+
+// removeArchivedJournal deletes the journal that moved with the change into
+// the archive destination; it has no meaning once the move succeeded.
+func removeArchivedJournal(destination string) error {
+	err := atomicfile.Remove(filepath.Join(destination, sddspecsync.JournalName))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove spec sync journal from the archived change: %w", err)
+	}
+	return nil
+}
+
+func specSyncJournalOutput(journal sddspecsync.Journal, changeRoot string) *specSyncOutput {
+	output := &specSyncOutput{Destructive: journal.Destructive, Synced: true, Resumed: true, Targets: []specSyncTargetOutput{}}
+	for _, t := range journal.Targets {
+		capability := path.Base(path.Dir(t.Path))
+		action := "updated"
+		if t.BeforeDigest == sddspecsync.AbsentDigest {
+			action = "created"
+		}
+		output.Targets = append(output.Targets, specSyncTargetOutput{
+			Capability:   capability,
+			Path:         t.Path,
+			DeltaPath:    path.Join(changeRoot, "specs", capability, "spec.md"),
+			Action:       action,
+			BeforeDigest: t.BeforeDigest,
+			AfterDigest:  t.AfterDigest,
+		})
+	}
+	return output
 }
 
 func (a *archiveSpecSync) block(code string, err error) {
@@ -510,8 +645,16 @@ func (a *archiveSpecSync) finish(archiveErr error, destination string) error {
 	case archiveErr == nil:
 		a.output.Outcome = archiveOutcomeArchived
 		a.output.Destination = destination
+		if archiveErr = removeArchivedJournal(destination); archiveErr != nil {
+			a.block(codeArchiveRecoveryRequired, archiveErr)
+			a.output.Destination = destination
+			a.output.Recovery = "The change was archived and its main specs synced, but the spec sync journal could not be removed from the archived change. Delete " + sddspecsync.JournalName + " from the destination."
+		}
 	case a.output.Code != "":
 		// The step itself blocked; its code and recovery are already recorded.
+	case a.moveFailed && a.output.SpecSync.Resumed:
+		a.block(codeArchiveRecoveryRequired, archiveErr)
+		a.output.Recovery = "The archive move failed again after resuming an interrupted archive; main specs stay synced and the spec sync journal is kept. Fix the move error in detail, then rerun archive to resume."
 	case a.moveFailed && a.revertErr != nil:
 		a.blockApply(a.revertErr)
 		a.output.Detail = archiveErr.Error()
@@ -520,6 +663,7 @@ func (a *archiveSpecSync) finish(archiveErr error, destination string) error {
 		a.block(codeArchiveRecoveryRequired, archiveErr)
 		a.output.Recovery = "The archive move failed after spec sync; main specs were restored to their pre-sync bytes and the change was not moved. Fix the move error in detail, then rerun archive."
 	default:
+		archiveErr = errors.Join(archiveErr, removeArchivedJournal(destination))
 		a.block(codeArchiveRecoveryRequired, archiveErr)
 		a.output.Destination = destination
 		a.output.Recovery = "Main specs were synced and the change was moved, but the move could not be made durable. Verify the destination topology and the main spec digests in spec_sync before continuing."

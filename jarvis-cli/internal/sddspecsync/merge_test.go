@@ -190,6 +190,7 @@ func TestMergeSpecFailsClosed(t *testing.T) {
 		{name: "duplicate name within a section", delta: delta("## ADDED Requirements\n\n" + reqLogout + "\n" + reqLogout), wantErr: ErrInvalidDelta, wantReq: "Logout"},
 		{name: "duplicate section", delta: delta("## ADDED Requirements\n\n"+reqLogout, "## ADDED Requirements\n\n### Requirement: Other\n\nText.\n"), wantErr: ErrInvalidDelta},
 		{name: "requirement inside an ignored section", delta: delta("## Notes\n\n"+reqLogout, "## ADDED Requirements\n\n### Requirement: Other\n\nText.\n"), wantErr: ErrInvalidDelta, wantReq: "Logout"},
+		{name: "level-2 requirement heading after an operation section", delta: delta("## ADDED Requirements\n\n"+reqLogout, "## Requirement: Stray\n\nText.\n"), wantErr: ErrInvalidDelta, wantReq: "Stray"},
 		{name: "misspelled operation section", delta: delta("## Added Requirements\n\nText.\n", "## ADDED Requirements\n\n"+reqLogout), wantErr: ErrInvalidDelta},
 		{name: "lowercase operation section", delta: delta("## MODIFIED requirements\n\nText.\n", "## ADDED Requirements\n\n"+reqLogout), wantErr: ErrInvalidDelta},
 		{name: "only ignored sections", delta: delta("## Notes\n\nNothing to merge.\n"), wantErr: ErrInvalidDelta},
@@ -301,6 +302,39 @@ func TestMergeSpecIgnoresNonDeltaSections(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMergeSpecRejectsMisleveledRequirementsInIgnoredSections(t *testing.T) {
+	tests := []struct {
+		name  string
+		notes string
+	}{
+		{name: "level 4", notes: "#### Requirement: Logout\n\nText.\n"},
+		{name: "level 2", notes: "## Requirement: Logout\n\nText.\n"},
+		{name: "level 1", notes: "# Requirement: Logout\n\nText.\n"},
+		{name: "level 6", notes: "###### Requirement: Logout\n"},
+		{name: "no space after hashes", notes: "####Requirement: Logout\n"},
+		{name: "after a nested heading", notes: "### Open question\n\nText.\n\n##### Requirement: Logout\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := delta("## ADDED Requirements\n\n### Requirement: Other\n\nText.\n", "## Notes\n\n"+tt.notes)
+			got, err := MergeSpec([]byte(authMain()), []byte(d))
+			var mergeErr *MergeError
+			if !errors.As(err, &mergeErr) || !errors.Is(err, ErrInvalidDelta) {
+				t.Fatalf("MergeSpec() = %q, %v; want ErrInvalidDelta *MergeError", got, err)
+			}
+			if mergeErr.Code() != CodeMergeBlocked || mergeErr.Requirement != "Logout" || !strings.Contains(mergeErr.Detail, `"Notes"`) {
+				t.Fatalf("MergeError = %+v, want code %s naming requirement Logout and section Notes", mergeErr, CodeMergeBlocked)
+			}
+		})
+	}
+	t.Run("fenced requirement-like lines stay ignored", func(t *testing.T) {
+		notes := "## Notes\n\n```md\n#### Requirement: Fenced\n## Requirement: Fenced Two\n# Requirement: Fenced Three\n```\n"
+		if _, err := MergeSpec([]byte(authMain()), []byte(delta("## ADDED Requirements\n\n"+reqLogout, notes))); err != nil {
+			t.Fatalf("MergeSpec() error = %v", err)
+		}
+	})
 }
 
 func ptr(s string) *string { return &s }

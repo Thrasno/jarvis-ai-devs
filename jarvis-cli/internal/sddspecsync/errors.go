@@ -123,7 +123,7 @@ func (e *ApplyError) Unwrap() []error {
 // Code maps the failure to the sdd-archive return code.
 func (e *ApplyError) Code() string {
 	switch {
-	case len(e.Recovery) > 0:
+	case len(e.Recovery) > 0, errors.Is(e.Kind, ErrJournal):
 		return CodeRecoveryRequired
 	case errors.Is(e.Kind, ErrStale):
 		return CodeConflictRecoveryRequired

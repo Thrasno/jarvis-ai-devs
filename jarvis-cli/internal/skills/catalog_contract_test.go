@@ -489,6 +489,7 @@ func TestCatalogContract_SDDArchiveDelegatesSpecSyncGuardsToCLI(t *testing.T) {
 		"If `code` is `spec_sync_confirmation_required`, the plan removes requirements. Show the listed `spec_sync.removals` to the user once, and rerun the same command with `--confirm-destructive` only after the user explicitly confirms.",
 		"Never add `--confirm-destructive` without that confirmation.",
 		"return `blocked` and report the code, `detail`, `recovery`, and any `spec_sync.recovery_targets` verbatim.",
+		"A rerun after an interrupted archive resumes from the change's `.spec-sync-journal.json` instead of merging already-synced main specs again.",
 		"| {domain} | Created/Updated | {N added, M modified, K removed, R renamed requirements} |",
 	}
 	for _, snippet := range requiredSnippets {
