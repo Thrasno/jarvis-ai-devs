@@ -144,7 +144,7 @@ Cache the resolved mode for the return summary.
 
 #### Runnable Test Command Gate (Strict TDD Only)
 
-If Strict TDD Mode is active but no runnable test command exists for the files the assigned tasks touch (for example Deluge code, or a project without a test runner), STOP before the first task and return `blocked` with reason `strict-tdd-unrunnable` and this sentence for the user: `Strict TDD was chosen but these files cannot run under a test runner; choose standard for this feature or provide a test command.` Do not loop writing tests that cannot run, and do not switch to Standard Mode yourself.
+If Strict TDD Mode is active but no runnable test command exists for the files the assigned tasks touch (for example Deluge code, or a project without a test runner), STOP before the first task and return `blocked` with reason `strict-tdd-unrunnable` and this sentence for the user: `Strict TDD was chosen but these files cannot run under a test runner; choose standard for this feature or provide a test command.` Do not loop writing tests that cannot run, and do not switch to Standard Mode yourself. `[operator]` tasks are executed by the developer and never trigger this gate.
 
 **Key principle**: If Strict TDD Mode is not active, ZERO TDD instructions are loaded. The `strict-tdd.md` module is never read, never processed, never consumes tokens.
 
@@ -175,6 +175,16 @@ FOR EACH TASK:
 └── Note any issues or deviations
 ```
 
+### Operator Handoff Tasks
+
+A task marked `[operator]` (for example `- [ ] 2.3 [operator] Upload ...` under `## Operator Handoff`) is executed by the developer, never by you. SDD controls the agent, not the developer: the developer's word in chat is enough.
+
+- **Next pending task is `[operator]`**: Checkpoint any agent work done before the handoff first (Steps 5–6). Then emit the handoff in plain language, one or two sentences saying what to do and which cases to try, return `partial` with reason `operator-handoff`, and STOP. Do not continue with later agent tasks, even when they look independent.
+- **Launched with `OPERATOR_ACK: <task-id> — <developer message>`**: record a `task_records` item `{"task_id": "2.3", "operator": {"summary": "<developer message>"}}` through the normal guarded checkpoint, mark the checkbox `[x]` only after `committed`, and resume with the next agent task. The `operator` step carries only the summary: no command, no exit code, and no other step in the same record.
+- **Launched on an unacknowledged `[operator]` task without an ack**: restate the pending handoff in one line and return `partial` with reason `operator-handoff`, asking once whether it is done. That is the only question.
+
+Never ask for screenshots, IDs, or logs, and never verify the step yourself. Never use Zoho MCP servers to check an operator step: they point at our own account, never the client tenant. Strict TDD never applies to `[operator]` tasks.
+
 ### Step 5: Persist Progress
 
 **This step is MANDATORY — do NOT skip it.**
@@ -191,7 +201,7 @@ Freeze `tasks` and the `task_records` (the ordered complete entries stream they 
 | `tasks` | The ordered task list parsed from the same frozen `tasks.md`: each item is `{id, text, path}`. `id` and normalized text determine `task_manifest_sha256`; do not manufacture, reorder, or edit tasks. |
 | `base` | `null` for the initial generation; otherwise the exact resolved v2 snapshot from the progress read. |
 | `expected_generation`, `expected_revision`, `expected_digest` | Coordinates of `base`; use zero values and an empty digest only for an initial snapshot. |
-| `task_records` | One record per task this batch covers: `task_id`, `files`, optional `completes` (default `true`), and only the steps that actually ran — `red`, `green`, `triangulate`, `refactor`, `verification` — each `{command, exit_code, summary}`; `triangulate` may instead be `{skip_reason}`. Completion rides on the last step that ran (a `skip_reason` triangulation did not run), and that step must pass. |
+| `task_records` | One record per task this batch covers: `task_id`, `files`, optional `completes` (default `true`), and only the steps that actually ran — `red`, `green`, `triangulate`, `refactor`, `verification` — each `{command, exit_code, summary}`, or a lone `operator` step `{summary}` carrying the developer's acknowledgement of an `[operator]` task; `triangulate` may instead be `{skip_reason}`. Completion rides on the last step that ran (a `skip_reason` triangulation did not run), and that step must pass. |
 | `entry_index`, `entry_id` | `0` with `entry_id` omitted for a new stream; `entry_index: 0` fills the first expanded entry ID. A continuation uses exactly the pair `next.instruction` names. |
 
 Omit `request_id`, `batch_id`, and `stream_sha256`: the checkpoint derives them from the request. Explicit `entries` (whole `EvidenceEntry` values with `entry_id`, `task_ids`, `completes_task_ids`, `kind`, `summary`, `command`, `exit_code`, `outcome`, and `files`) remain accepted but are mutually exclusive with `task_records`. `imported` is internal legacy provenance only; callers MUST NOT supply it.
@@ -263,7 +273,7 @@ Return to the orchestrator:
 - Estimated review budget impact: {brief note}
 
 ### Status
-{N}/{total} tasks complete. {Ready for next batch / Ready for verify / Blocked by X}
+{N}/{total} tasks complete. {Ready for next batch / Ready for verify / Waiting for operator task X / Blocked by X}
 ```
 
 ## Rules

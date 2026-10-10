@@ -8,6 +8,8 @@
 - ❌ `FAILING`: covering test exists but failed.
 - ❌ `UNTESTED`: no covering test found.
 - ⚠️ `PARTIAL`: test passes but covers only part of the scenario.
+- 👤 `operator-attested`: the scenario depends on an `[operator]` task the developer acknowledged in chat; it is developer attestation, never a test-backed PASS.
+- ⏳ `pending-operator`: the scenario depends on an unchecked `[operator]` task; not CRITICAL, but archive waits for the acknowledgement.
 
 ## Report Template
 

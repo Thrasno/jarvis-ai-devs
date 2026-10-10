@@ -68,7 +68,13 @@ const (
 	EvidenceDelivery     EvidenceKind = "delivery"
 	// EvidenceImported records a completion imported from a legacy artifact. It makes no RED/GREEN/REFACTOR claim.
 	EvidenceImported EvidenceKind = "imported"
+	// EvidenceOperator records the developer's acknowledgement that an operator
+	// handoff step the agent cannot execute is done. It makes no RED/GREEN/REFACTOR claim.
+	EvidenceOperator EvidenceKind = "operator"
 )
+
+// operatorTaskTag marks a task in tasks.md that only the developer can perform.
+const operatorTaskTag = "[operator]"
 
 type Outcome string
 

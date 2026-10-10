@@ -456,6 +456,10 @@ func validateEvidenceEntry(entry EvidenceEntry) error {
 	if !validKind(entry.Kind) || !validOutcome(entry.Outcome) {
 		return ErrInvalidValue
 	}
+	// Operator evidence is the developer's chat attestation: it never claims a run.
+	if entry.Kind == EvidenceOperator && (entry.Command != "" || entry.ExitCode != 0 || entry.Outcome != OutcomePass) {
+		return ErrInvalidValue
+	}
 	return nil
 }
 
@@ -480,7 +484,7 @@ func validTextSlice(values []string) bool { return validText(values...) }
 func validID(id string) bool              { return idPattern.MatchString(id) }
 func validDigest(digest string) bool      { return digestPattern.MatchString(digest) }
 func validKind(kind EvidenceKind) bool {
-	return kind == EvidenceRed || kind == EvidenceGreen || kind == EvidenceTriangulate || kind == EvidenceRefactor || kind == EvidenceVerification || kind == EvidenceDelivery || kind == EvidenceImported
+	return kind == EvidenceRed || kind == EvidenceGreen || kind == EvidenceTriangulate || kind == EvidenceRefactor || kind == EvidenceVerification || kind == EvidenceDelivery || kind == EvidenceImported || kind == EvidenceOperator
 }
 func validOutcome(outcome Outcome) bool {
 	return outcome == OutcomePass || outcome == OutcomeFail || outcome == OutcomeNotRun

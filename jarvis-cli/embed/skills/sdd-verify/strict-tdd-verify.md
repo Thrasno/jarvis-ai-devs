@@ -26,6 +26,7 @@ Resolve canonical v2 progress:
 ├── FOR EACH EvidenceEntry in snapshot batch order:
 │   ├── Require entry_id, task_ids, completes_task_ids, kind, summary, command, exit_code, outcome, and files
 │   ├── IMPORTED (`kind=imported`): preserve it as migration provenance only; it NEVER satisfies RED, GREEN, TRIANGULATE, or REFACTOR quality for Strict TDD
+│   ├── OPERATOR (`kind=operator`): developer attestation only; it NEVER satisfies RED, GREEN, TRIANGULATE, or REFACTOR. It completes only its `[operator]` task, which needs no TDD evidence; report dependent scenarios `operator-attested`
 │   ├── RED (`kind=red`): must record an executed focused failing command, non-zero exit code, failure summary, and real test file
 │   ├── GREEN (`kind=green`): must record an executable passing command and zero exit code; re-run it during verify
 │   ├── TRIANGULATE (`kind=triangulate`): verify varied meaningful cases; accept `outcome=not_run` only with a structural one-output reason
@@ -289,6 +290,7 @@ Use this rule of thumb:
 - If canonical v2 progress has no referenced TDD evidence entries, flag CRITICAL.
 - If tautology assertions are found, flag CRITICAL.
 - Imported legacy evidence never counts toward Strict-TDD quality; require fresh RED/GREEN evidence for the completed task.
+- Operator evidence is developer attestation for an `[operator]` task only; never require RED/GREEN for that task, and flag CRITICAL when operator evidence completes a task not marked `[operator]`.
 - If RED evidence is hypothetical or lacks executed failing-command output, flag CRITICAL.
 - If GREEN evidence cannot be reproduced, flag CRITICAL.
 - If triangulation is skipped without a structural one-output rationale, flag WARNING.

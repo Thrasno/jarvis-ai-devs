@@ -75,6 +75,7 @@ The orchestrator should provide structured status from `jarvis sdd status <chang
 | Proposal/specs/design/tasks exist | Verify all dimensions. |
 | apply-progress missing or partial while implementation tasks are checked | CRITICAL; route back to `sdd-apply` for reconciliation. |
 | Task incomplete | CRITICAL for implementation/core task, WARNING for cleanup or explicitly deferred task. |
+| Unchecked `[operator]` task | Report `pending-operator`, not CRITICAL. It still blocks archive readiness; route to `sdd-apply`, which pauses for the developer's acknowledgement. |
 | Test command exits non-zero | CRITICAL. |
 | Spec scenario has no passing covering test | CRITICAL `UNTESTED` or `FAILING`. |
 | Design deviation exists | WARNING unless it breaks a spec. |
@@ -88,6 +89,7 @@ The orchestrator should provide structured status from `jarvis sdd status <chang
 - A documented manual verification path is not evidence by itself.
 - Manual or runtime verification counts as `PASS` only when it was executed and the report records the command or manual action, result, timestamp or session, and operator/evidence source.
 - Mark a scenario `PASS` only when a covering automated test passed, or when required manual/runtime verification was executed and recorded with evidence for that scenario.
+- A spec scenario that depends on an `[operator]` task is reported `operator-attested`, never `PASS` backed by a test: the developer's acknowledgement is attestation, not runtime evidence. It is neither CRITICAL nor `UNTESTED`. Never ask for screenshots, IDs, or logs, and never use Zoho MCP servers to check it; they point at our own account, never the client tenant.
 - If tests fail to execute because of infrastructure, missing dependencies, or absent runner configuration, record runtime evidence as `skipped`, explain why, and classify behavior that depends on execution as `UNTESTED` instead of `PASS`.
 
 ## Skipped Dimensions
@@ -110,7 +112,7 @@ The orchestrator should provide structured status from `jarvis sdd status <chang
 2. Read structured status first when provided. Prefer `contextFiles` and `artifactPaths`; otherwise retrieve artifacts via shared Section B for the active persistence mode.
 3. Confirm native status authority: `schema` is `jarvis.sdd-status`, `dependencies["sdd-verify"]` is `ready`, `blockedReasons` do not block verify, `actionContext.mode` is `workspace-edit`, and `allowedEditRoots` is non-empty. Do not use manual recovery to bypass any missing authority.
 4. Resolve TDD mode: the forwarded TDD mode first (`STRICT TDD MODE IS ACTIVE` → strict; `TDD MODE: standard` → standard); only when nothing was forwarded, use the cached `strict_tdd_suggestion` (legacy `strict_tdd` when the suggestion is absent). Resolve runnable test commands from cached capabilities, config, or project files either way.
-5. Count completed and incomplete tasks. Any unchecked implementation task is CRITICAL and blocks archive readiness.
+5. Count completed and incomplete tasks. Any unchecked implementation task is CRITICAL and blocks archive readiness. An unchecked `[operator]` task is reported `pending-operator` instead, not CRITICAL; it still blocks archive readiness until `sdd-apply` records the developer's acknowledgement.
 6. Read apply-progress when available. If it is missing, partial, or inconsistent with checked tasks, mark CRITICAL and recommend `sdd-apply` reconciliation.
 7. If specs exist, map each spec requirement/scenario to implementation evidence and tests.
 8. If design exists, check design decisions against changed code. If design is missing, skip design coherence and record why.
@@ -190,7 +192,7 @@ When blocked, return the Section D envelope with:
   "status": "pass|pass_with_warnings|fail|blocked",
   "checks": [{"criterion": "text", "result": "pass|fail|skipped", "evidence": "one-line"}],
   "runtime_evidence": {"result": "passed|failed|skipped", "command": "text-or-empty", "reason": "text-or-empty"},
-  "blocked_by": ["unchecked-task|missing-artifact|partial-apply-progress|workspace-planning|critical-finding"],
+  "blocked_by": ["unchecked-task|pending-operator|missing-artifact|partial-apply-progress|workspace-planning|critical-finding"],
   "next": "ready-for-archive|sdd-apply|missing-evidence-required"
 }
 ```

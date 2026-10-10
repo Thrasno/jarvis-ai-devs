@@ -22,7 +22,7 @@ Related: #781 operator handoff (approved), lands before the adaptive verify slic
 - [x] S5a: Checkpoint CLI derives request id and stream digest; returns a `next` action.
 - [x] S5b: Checkpoint CLI accepts a compact per-task strict-TDD record and expands it into evidence entries.
 - [x] S6: Trim apply prompts (one checkpoint per batch, follow `next`, compact TDD).
-- [ ] S7: #781 operator handoff (EvidenceOperator kind + tasks/apply/verify skills).
+- [x] S7: #781 operator handoff (EvidenceOperator kind + tasks/apply/verify skills).
 - [ ] S8: Adaptive verify (stop early on pending tasks; run detected commands once; static review without runner; operator-attested).
 - [ ] S9a: Spec-merge engine in Go.
 - [ ] S9b: `jarvis sdd archive` performs spec sync; trim archive skill.
@@ -95,5 +95,14 @@ Related: #781 operator handoff (approved), lands before the adaptive verify slic
 - Accepted residual: "cursor advance" wording nuance.
 - Workaround to revisit in S8: safety-net baseline is recorded in the first task's red summary (no dedicated step kind).
 
+### S6 delivery
+- PR #791 merged (squash 1369a8c1), 14/14 checks.
+
+### S7 (#781)
+- Worker: EvidenceOperator kind, TaskRecord `operator` step (summary only, exclusive with agent steps), Operator Handoff section in sdd-tasks (ID first), apply pause `operator-handoff` + `OPERATOR_ACK` relaunch, orchestrator relay in both modes, verify `pending-operator` / `operator-attested`, strict-tdd-verify OPERATOR branch. RED (compile + behavior + contract), GREEN; hivederive, jarvis-cli, hive-daemon, hive-api suites ok.
+- Parent: report-format.md statuses. Commit `feat(sdd): pause apply at operator handoff tasks and complete them on chat ack` (Closes #781); review review-5b5709067461c4ce approved.
+- Advisories fixed test-first: operator evidence only on `[operator]` tasks and attestation shape (no command/exit/non-pass) — review review-ac9406ac0e602cf6 approved.
+- Accepted residuals: tag variants (e.g. different casing) are not recognized as operator tasks; low-level `advance` recovery primitive is not re-validated here.
+
 ## Next step
-S6 push + PR + merge, then S7 (#781 operator handoff).
+S7 push + PR + merge, then S8 (adaptive verify).

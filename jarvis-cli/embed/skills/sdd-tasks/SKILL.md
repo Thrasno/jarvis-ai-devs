@@ -125,7 +125,23 @@ Budget risk: <one of: Low, Medium, High>
 
 - [ ] 4.1 {Update docs/comments}
 - [ ] 4.2 {Remove temporary code}
+
+## Operator Handoff
+
+- [ ] 5.1 [operator] {What the developer does and which cases to try}
 ```
+
+### Operator Handoff Tasks
+
+Some steps cannot be executed by the agent: uploading Deluge functions to a client tenant, creating workflow rules, manual tests on tenant data, acceptance, or rollback. Put each one in a `## Operator Handoff` section as a normal checkbox with the task ID first, then the `[operator]` marker:
+
+```markdown
+- [ ] 2.3 [operator] Upload `enrichConpasLead` to the tenant and run test cases A and B
+```
+
+- Say what to do and which cases to try, in one line. Never ask the developer for screenshots, IDs, or logs; the developer's acknowledgement in chat completes the task.
+- Order the section after the agent tasks it depends on. Omit it when every step is agent-executable.
+- Never put operator rows under a heading containing "parent action": the task parser skips those sections, so the handoff would never pause apply.
 
 ### Task Writing Rules
 
@@ -260,6 +276,7 @@ Return to the orchestrator:
 - Each task should be completable in ONE session (if a task feels too big, split it)
 - Use hierarchical numbering: 1.1, 1.2, 2.1, 2.2, etc.
 - NEVER include vague tasks like "implement feature" or "add tests"
+- Steps the agent cannot execute go in `## Operator Handoff` as ID-first `[operator]` rows; never disguise them as agent tasks
 - Apply any `rules.tasks` from `openspec/config.yaml`
 - If the forwarded TDD mode is `strict`, integrate test-first tasks: RED task (write failing test) → GREEN task (make it pass) → REFACTOR task (clean up)
 - **Size budget**: Tasks artifact MUST be under 530 words. Each task: 1-2 lines max. Use checklist format, not paragraphs.

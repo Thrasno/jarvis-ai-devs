@@ -2369,6 +2369,27 @@ func TestSddProgressCheckpointCommitsTaskRecordsEndToEnd(t *testing.T) {
 	}
 }
 
+func TestSddProgressCheckpointCommitsOperatorTaskRecord(t *testing.T) {
+	root := newProgressTestRoot(t)
+	tasks := []applyprogress.Task{{ID: "2.2", Text: "write the function"}, {ID: "2.3", Text: "[operator] Upload the function to the tenant and run cases A and B"}}
+	request := checkpointInput{Project: "jarvis-dev", Change: "issue-781", Tasks: tasks, TaskRecords: []applyprogress.TaskRecord{
+		strictTaskRecord("2.2", "a.go", "a_test.go"),
+		{TaskID: "2.3", Operator: &applyprogress.TaskStep{Summary: "done, A and B worked"}},
+	}}
+	output, err := executeSddProgressCheckpoint(t, newSddProgressCommand(defaultOpenSpec), root, request)
+	if err != nil || output.Outcome != string(applyprogress.PlanCommitted) || output.Snapshot == nil || output.Snapshot.Status != applyprogress.StatusComplete {
+		t.Fatalf("checkpoint = %#v, %v; want the operator acknowledgement to complete the change", output, err)
+	}
+	batchID := output.Snapshot.Batches[0].BatchID
+	wantCoverage := []applyprogress.Coverage{{TaskID: "2.2", BatchID: batchID, EntryID: "2.2-verification"}, {TaskID: "2.3", BatchID: batchID, EntryID: "2.3-operator"}}
+	if !slices.Equal(output.Snapshot.Coverage, wantCoverage) {
+		t.Fatalf("coverage = %#v, want %#v", output.Snapshot.Coverage, wantCoverage)
+	}
+	if output.Next == nil || output.Next.Action != checkpointNextDone {
+		t.Fatalf("next = %#v, want done", output.Next)
+	}
+}
+
 func TestSddProgressCheckpointRejectsEntriesWithTaskRecords(t *testing.T) {
 	request := checkpointRequest(t, "", "", nil, 0, "entry-1", []applyprogress.EvidenceEntry{checkpointEntry("entry-1", "1", "evidence")})
 	request.TaskRecords = []applyprogress.TaskRecord{strictTaskRecord("1")}
