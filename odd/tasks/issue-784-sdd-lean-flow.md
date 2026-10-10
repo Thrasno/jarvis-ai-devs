@@ -23,7 +23,7 @@ Related: #781 operator handoff (approved), lands before the adaptive verify slic
 - [x] S5b: Checkpoint CLI accepts a compact per-task strict-TDD record and expands it into evidence entries.
 - [x] S6: Trim apply prompts (one checkpoint per batch, follow `next`, compact TDD).
 - [x] S7: #781 operator handoff (EvidenceOperator kind + tasks/apply/verify skills).
-- [ ] S8: Adaptive verify (stop early on pending tasks; run detected commands once; static review without runner; operator-attested).
+- [x] S8: Adaptive verify (stop early on pending tasks; run detected commands once; static review without runner; operator-attested).
 - [ ] S9a: Spec-merge engine in Go.
 - [ ] S9b: `jarvis sdd archive` performs spec sync; trim archive skill.
 - [ ] S10: Validate authority once in the orchestrator; executors trust forwarded status.
@@ -104,5 +104,14 @@ Related: #781 operator handoff (approved), lands before the adaptive verify slic
 - Advisories fixed test-first: operator evidence only on `[operator]` tasks and attestation shape (no command/exit/non-pass) — review review-ac9406ac0e602cf6 approved.
 - Accepted residuals: tag variants (e.g. different casing) are not recognized as operator tasks; low-level `advance` recovery primitive is not re-validated here.
 
+### S7 delivery
+- PR #792 merged (squash 1006b8c3), 14/14 checks; #781 closed.
+
+### S8
+- Worker: verify stops before any command on pending implementation work; runtime mode runs test + quality commands once and confirms GREEN via the suite; static mode (no runner) reports `static-reviewed`, max archive-ready PASS WITH WARNINGS; strict-tdd-verify.md 300 -> ~140 lines; install_test pins rescoped. RED on new catalog + install pins, GREEN. Archive acceptance already in Go: hivederive/applyprogress/verify.go:43-46, sddstatus/status.go:580,657.
+- Parent fixes (RED observed by stashing Markdown): tests that cannot fail stay CRITICAL when the optional audit runs; static mode only when no real test command exists (missing cache never selects it).
+- Reviews: review-614fed8046e4be00 (S8) and review-b5885e38b6e6d299 (static-mode fix) approved.
+- Process note: a commit was created while one test failed (grep pipeline hid the exit code); amended before push with the pin fixed and full suite green.
+
 ## Next step
-S7 push + PR + merge, then S8 (adaptive verify).
+S8 push + PR + merge, then S9a (Go spec-merge engine).
