@@ -304,6 +304,42 @@ func TestCatalogContract_SDDExploreHiveTopicAgreesAcrossSharedContractAndPhaseSk
 	}
 }
 
+// TestCatalogContract_SDDProposeNeverRunsItsOwnQuestionRound pins the orchestrator as
+// the single owner of the proposal question round: propose only consumes the forwarded
+// QUESTION_ROUND outcome and reports not-run when it is absent.
+func TestCatalogContract_SDDProposeNeverRunsItsOwnQuestionRound(t *testing.T) {
+	t.Parallel()
+
+	content := strings.ReplaceAll(readEmbeddedSkillAsset(t, "embed/skills/sdd-propose/SKILL.md"), "\r\n", "\n")
+
+	for _, required := range []string{
+		"`QUESTION_ROUND` (`completed | declined | forced`)",
+		"You never run your own question round",
+		"If `QUESTION_ROUND` is absent (legacy or headless launch), proceed best-effort with the available input",
+		"report `QUESTION_ROUND: not-run (no orchestrator round)` in the Return Summary",
+		"- **Question Round**: {completed | declined | forced | not-run}\n",
+	} {
+		if !strings.Contains(content, required) {
+			t.Fatalf("expected sdd-propose to contain %q", required)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"Pre-Phase: Proposal Question Round",
+		"Safety Net",
+		"controls whether the Pre-Phase question round runs",
+		"Ask 3–5 concrete product questions",
+		"native structured question tool",
+		"Headless / CI fallback",
+		"completed (executor)",
+		"skipped (auto)",
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("expected sdd-propose not to contain executor question round wording %q", forbidden)
+		}
+	}
+}
+
 func TestCatalogContract_SDDQuestionFlowsPreferNativeUIWithCompleteFallbacks(t *testing.T) {
 	t.Parallel()
 
@@ -311,16 +347,6 @@ func TestCatalogContract_SDDQuestionFlowsPreferNativeUIWithCompleteFallbacks(t *
 		path     string
 		required []string
 	}{
-		{
-			path: "embed/skills/sdd-propose/SKILL.md",
-			required: []string{
-				"native structured question tool",
-				"complete envelope",
-				"all 3–5 questions in one call",
-				"complete plain-text question round",
-				"Headless / CI fallback",
-			},
-		},
 		{
 			path: "embed/skills/sdd-onboard/SKILL.md",
 			required: []string{
