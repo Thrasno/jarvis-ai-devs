@@ -288,6 +288,29 @@ func TestLayer1Content_IncludesCodeCommentPolicy(t *testing.T) {
 	}
 }
 
+// TestLayer1Content_IncludesZohoMCPUsagePolicy verifies that every generated
+// runtime is told Zoho MCP servers point at internal company accounts and may
+// only be used on explicit, per-request user instruction.
+func TestLayer1Content_IncludesZohoMCPUsagePolicy(t *testing.T) {
+	layer1 := Layer1Content()
+
+	for _, phrase := range []string{
+		"## Zoho MCP Usage Policy",
+		"connected to the company's internal Zoho accounts, never to client accounts",
+		"NEVER use any Zoho MCP server unless the user explicitly asks for it by name in the current request.",
+		"Other MCP servers are not affected by this policy.",
+		"is not authorization",
+		"Do NOT offer or suggest using a Zoho MCP server on your own initiative.",
+		"Authorization applies only to the request in which it is given",
+		"Before any write operation (create, update, delete), state what you will do and wait for confirmation.",
+		"NEVER copy data read from these accounts into code, fixtures, examples, commits, or client deliverables.",
+	} {
+		if !strings.Contains(layer1, phrase) {
+			t.Fatalf("layer1.md missing zoho-mcp-usage-policy phrase %q", phrase)
+		}
+	}
+}
+
 // TestLayer1Content_LayerBoundaryRuleStaysFinalSection verifies that the layer
 // boundary rule remains the closing statement of the Layer1 template.
 func TestLayer1Content_LayerBoundaryRuleStaysFinalSection(t *testing.T) {
@@ -307,7 +330,15 @@ func TestLayer1Content_LayerBoundaryRuleStaysFinalSection(t *testing.T) {
 // that one policy text reaches the JARVIS:LAYER1 region of both rendered
 // instruction files and never reaches the Layer2 presentation region.
 func TestRenderedInstructions_CodeCommentPolicyLivesInLayer1ForBothAgents(t *testing.T) {
-	const policyHeading = "## Code Comment Policy"
+	assertPolicyLivesInLayer1ForBothAgents(t, "## Code Comment Policy")
+}
+
+func TestRenderedInstructions_ZohoMCPUsagePolicyLivesInLayer1ForBothAgents(t *testing.T) {
+	assertPolicyLivesInLayer1ForBothAgents(t, "## Zoho MCP Usage Policy")
+}
+
+func assertPolicyLivesInLayer1ForBothAgents(t *testing.T, policyHeading string) {
+	t.Helper()
 
 	for _, tc := range []struct {
 		name   string
