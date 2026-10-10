@@ -196,7 +196,7 @@ Before `sdd-apply`, inspect the tasks artifact for review workload forecast, est
 
 If `jarvis sdd status <change> --json` is available and reports `dependencies["sdd-apply"]` as `"blocked"`, the orchestrator MUST NOT launch apply and MUST surface the `blockedReasons` to the user. This native gate enforces the `Decision needed before apply` contract at runtime — the orchestrator does not need to reparse the tasks artifact when native status is available.
 
-When the native CLI is unavailable, fall back to reading the tasks artifact directly: if it contains `Decision needed before apply: Yes` and no resolved delivery decision is recorded in the session (no `Chain strategy: stacked-to-main`, `Chain strategy: feature-branch-chain`, or `size:exception`), stop and ask the user for a delivery decision before delegating apply.
+When the native CLI is unavailable, fall back to reading the tasks artifact directly: if it contains `Decision needed before apply: Yes` and no resolved delivery decision is recorded, stop and ask the user for a delivery decision before delegating apply. A decision is resolved only by a whole line with exactly one value: `Decision needed before apply: No`, `Chain strategy: stacked-to-main`, `Chain strategy: feature-branch-chain`, or `Chain strategy: size:exception`. Option-list lines (`stacked-to-main|feature-branch-chain|...`), `Chain strategy: pending`, table cells, prose mentions, and a bare `size:exception` token do NOT resolve the gate.
 
 ### Delivery Strategy
 

@@ -87,10 +87,10 @@ openspec/changes/{change-name}/
 | Delivery strategy | <ask-on-risk / auto-chain / single-pr / exception-ok> |
 | Chain strategy | <stacked-to-main / feature-branch-chain / size:exception / pending> |
 
-Decision needed before apply: <Yes|No>
-Chained PRs recommended: <Yes|No>
-Chain strategy: <stacked-to-main|feature-branch-chain|size:exception|pending>
-400-line budget risk: <Low|Medium|High>
+Decision needed before apply: <one of: Yes, No>
+Chained PRs recommended: <one of: Yes, No>
+Chain strategy: <one of: stacked-to-main, feature-branch-chain, size:exception, pending>
+400-line budget risk: <one of: Low, Medium, High>
 
 ### Suggested Work Units
 
@@ -158,16 +158,23 @@ If the estimate is **High** or likely above 400 lines:
 
 Do not bury this in prose. Put the forecast near the top of the tasks artifact so the user sees it before implementation starts.
 
-The forecast MUST include these exact plain-text lines so downstream guards can match them literally:
+The forecast MUST include these plain-text lines so downstream guards can match them literally. Replace each `<one of: ...>` placeholder with exactly ONE chosen value; never copy the placeholder or an option list:
 
 ```text
-Decision needed before apply: Yes|No
-Chained PRs recommended: Yes|No
-Chain strategy: stacked-to-main|feature-branch-chain|size:exception|pending
-400-line budget risk: Low|Medium|High
+Decision needed before apply: <one of: Yes, No>
+Chained PRs recommended: <one of: Yes, No>
+Chain strategy: <one of: stacked-to-main, feature-branch-chain, size:exception, pending>
+400-line budget risk: <one of: Low, Medium, High>
 ```
 
-You may keep the table for readability, but the plain-text lines are the guard contract.
+Guard contract rules:
+
+- Write exactly one chosen value per line, for example `Chain strategy: stacked-to-main`. Never write the option list (`stacked-to-main|feature-branch-chain|...`) or several values on one line.
+- Write `Chain strategy: pending` until the user has decided. `pending` never unblocks apply.
+- When `Decision needed before apply: Yes`, apply stays blocked until the artifact contains a whole line `Chain strategy: stacked-to-main`, `Chain strategy: feature-branch-chain`, or `Chain strategy: size:exception`, or a whole line `Decision needed before apply: No`.
+- Mentions in tables, prose, bullets, or a bare `size:exception` token do not count as a decision.
+
+You may keep the table for readability, but only the plain-text lines are the guard contract.
 
 For `feature-branch-chain`, suggested work units SHOULD name the intended base boundary: PR #1 base = feature/tracker branch; PR #2 base = PR #1 branch; PR #3 base = PR #2 branch. If a child PR would show previous PR changes, the base is wrong and must be retargeted/rebased before review.
 
