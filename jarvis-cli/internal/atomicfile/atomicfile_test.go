@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -21,7 +22,7 @@ func TestWriteReplacesContentWithMode(t *testing.T) {
 		t.Fatalf("ReadFile() = %q, %v", got, err)
 	}
 	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0o644 {
+	if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o644) {
 		t.Fatalf("mode = %v, %v", info.Mode(), err)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -310,11 +311,11 @@ func TestOSStoreAppliesPlanOnDisk(t *testing.T) {
 		}
 	}
 	info, err := os.Stat(mainPath)
-	if err != nil || info.Mode().Perm() != 0o640 {
+	if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o640) {
 		t.Fatalf("existing mode not preserved: %v %v", info.Mode(), err)
 	}
 	info, err = os.Stat(filepath.Join(root, filepath.FromSlash(zetaPath)))
-	if err != nil || info.Mode().Perm() != 0o644 {
+	if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o644) {
 		t.Fatalf("new spec mode = %v, %v", info.Mode(), err)
 	}
 }
