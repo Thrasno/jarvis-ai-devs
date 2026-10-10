@@ -24,6 +24,15 @@ const (
 	PlanCheckpointConsolidationRequired PlanOutcome = "checkpoint_consolidation_required"
 )
 
+// PlanOutcomes lists every planner outcome so callers can prove that their
+// outcome handling is exhaustive.
+func PlanOutcomes() []PlanOutcome {
+	return []PlanOutcome{
+		PlanCommitted, PlanContinuationRequired, PlanEvidenceItemTooLarge, PlanSnapshotCapacityExhausted,
+		PlanStreamPreflightRequired, PlanCheckpointConsolidationRequired,
+	}
+}
+
 // PlanInput contains the stable stream and the snapshot from which one batch may advance.
 type PlanInput struct {
 	Project, Change  string
