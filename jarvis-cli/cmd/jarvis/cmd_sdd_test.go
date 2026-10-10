@@ -616,11 +616,13 @@ func TestRunSddContinue_BlockedWhenProposalMissing(t *testing.T) {
 // sdd-apply is blocked and the continue routing surfaces a descriptive reason.
 // This tests the CLI-level enforcement of spec scenario "apply blocked when tasks declare
 // unresolved decision".
-// A verbatim copy of the sdd-tasks option-list line must not count as a decision.
+// A verbatim copy of the sdd-tasks option-list line or an unfilled decision placeholder
+// must not count as a decision.
 func TestRunSddContinue_BlockedWhenApplyDecisionUnresolved(t *testing.T) {
 	for name, tasks := range map[string]string{
 		"decision flag only":   "Decision needed before apply: Yes\n",
 		"template option list": "Decision needed before apply: Yes\nChain strategy: stacked-to-main|feature-branch-chain|size:exception|pending\n",
+		"unfilled placeholder": "Decision needed before apply: <one of: Yes, No>\nChain strategy: pending\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			status, err := buildStatus("my-feature", fakeSddArtifactSource{

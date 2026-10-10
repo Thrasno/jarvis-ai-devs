@@ -88,6 +88,8 @@ func TestGateDrift_OrchestratorDocNamesApplyDecisionKeyword(t *testing.T) {
 		"`chain strategy: size:exception`",
 		"`chain strategy: pending`",
 		"bare `size:exception` token do not resolve",
+		// The native gate activates on any decision line, including an unfilled placeholder.
+		"any `decision needed before apply:` line (including `yes` or an unfilled placeholder)",
 	} {
 		if !strings.Contains(lower, required) {
 			t.Errorf("sdd-orchestrator.md missing whole-line apply-decision fallback rule %q", required)

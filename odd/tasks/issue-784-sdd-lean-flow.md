@@ -16,7 +16,7 @@ Related: #781 operator handoff (approved), lands before the adaptive verify slic
 
 ## Tasks (slices)
 - [x] S1: Delivery decision gate — resolve only from whole single-valued lines (`Chain strategy: <value>` or `Decision needed before apply: No`); template uses non-matching `<one of: ...>` placeholders (fixes substring bypass).
-- [ ] S2: Preflight as the single decision point (TDD mode, size policy, chain strategy); tasks and orchestrator stop re-asking; sticky size exception. Also close S1 advisory: an unfilled `Decision needed before apply: <one of: Yes, No>` placeholder leaves Required=false (gate fails open; pre-existing) and the verbatim-template test injects a literal Yes.
+- [x] S2: Preflight as the single decision point (TDD mode, size policy, chain strategy); tasks and orchestrator stop re-asking; sticky size exception. Also close S1 advisory: an unfilled `Decision needed before apply: <one of: Yes, No>` placeholder leaves Required=false (gate fails open; pre-existing) and the verbatim-template test injects a literal Yes.
 - [ ] S3: TDD detection only suggests (real test command required; Deluge suggests standard; one-line reason); apply consumes forwarded mode.
 - [ ] S4: Question round single owner (orchestrator), offered in both modes, forced only for unusable scope.
 - [ ] S5a: Checkpoint CLI derives request id and stream digest; returns a `next` action.
@@ -40,5 +40,16 @@ Related: #781 operator handoff (approved), lands before the adaptive verify slic
 - Commit d09c487a `fix(sdd): resolve the apply delivery gate only from single-valued decision lines`.
 - Native review review-a0314eb79b65bc1b (medium, reliability lens) approved; acknowledgement burned authority. Advisory findings carried to S2.
 
+### S1 delivery
+- PR #785 merged (squash ca16dde4) after all CI checks passed.
+
+### S2
+- Worker: RED `go test ./internal/sddstatus/ -run TestApplyDecisionGate` (unfilled placeholder left gate inactive), GREEN; full `go test ./...`, `go vet ./...`, gofmt, `git diff --check` clean.
+- Commit 38f97037 `feat(sdd): make the session preflight the single decision point for a feature`; review review-f42afa2356658bd7 approved + acknowledged.
+- Review advisory fixed test-first: qualified `No (within budget)` regressed to blocked -> commit 0d183a03 (review review-8054a6ba640799cd approved); No-first option lists -> commit bfdf70ba (review review-35b487c973f2e8e0 approved).
+- Known limitation (accepted): free-text values like `No, Yes` or `No / within budget` stay ambiguous; structured preflight decisions written by sdd-tasks are the real fix.
+- Carried to S3: sdd-verify still lets cached strict_tdd win over a Standard choice; legacy in-flight changes without `## SDD Decisions` get the preflight again.
+- Carried to later: chained-pr and work-unit-commits skills still describe the 400-line ask-on-risk flow.
+
 ## Next step
-S1 push + PR, then S2.
+S2 push + PR + merge, then S3.

@@ -12,6 +12,7 @@ func readPolicyFile(t *testing.T, rel string) string {
 
 func markdownSection(t *testing.T, content, startHeading, nextHeading string) string {
 	t.Helper()
+	content = strings.ReplaceAll(content, "\r\n", "\n")
 
 	start := strings.Index(content, startHeading)
 	if start == -1 {
@@ -251,7 +252,7 @@ func TestSDDOrchestrator_PreflightDirectCommandPrecedenceKeepsStatusExceptionBou
 		"`/sdd-status` may run without session preflight; it reports available state and recovery hints without running init, delegating phases, or editing project artifacts.",
 		"binding adoption is an allowed persistence action, not a claim that status is purely read-only.",
 		"mutating, planning, apply, verify, and archive sdd commands require session preflight",
-		"unless all four preflight choices were already provided",
+		"unless all five preflight choices were already provided",
 		"the sdd session preflight hard gate takes precedence over direct-command bypass wording",
 		"outside this sdd hard gate",
 	} {
@@ -279,11 +280,12 @@ func TestSDDOrchestrator_PreflightPromptsAndMappingsAreLocalizedAndCanonical(t *
 
 	for _, required := range []string{
 		"before continuing with sdd, choose one option per group.",
-		"reply with \"use recommended\" or with codes like: a1, b1, c1, d1.",
+		"reply with \"use recommended\" or with codes like: a1, b1, c1, d1, e1.",
 		"a. pace",
 		"b. artifacts",
-		"c. prs",
-		"d. review",
+		"c. tdd",
+		"d. size",
+		"e. chain strategy",
 		"never mix languages in a single preflight prompt",
 		"headings, option titles, and descriptions together",
 	} {
@@ -293,29 +295,94 @@ func TestSDDOrchestrator_PreflightPromptsAndMappingsAreLocalizedAndCanonical(t *
 	}
 
 	mappings := map[string]string{
-		"a1/interactive":  "`interactive`",
-		"a2/automatic":    "`auto`",
-		"b1/hive":         "`hive`",
-		"b2/openspec":     "`openspec`",
-		"b3/hybrid":       "`hybrid`",
-		"b4/none":         "`none`",
-		"c1/ask me":       "`ask-on-risk`",
-		"c2/auto-chain":   "`auto-chain`",
-		"c3/single pr":    "`single-pr`",
-		"c4/exception-ok": "`exception-ok`",
+		"a1/interactive": "`interactive`",
+		"a2/automatic":   "`auto`",
+		"b1/hive":        "`hive`",
+		"b2/openspec":    "`openspec`",
+		"b3/hybrid":      "`hybrid`",
+		"b4/none":        "`none`",
 	}
 	for code, canonical := range mappings {
 		if !strings.Contains(orchestrator, code) || !strings.Contains(orchestrator, canonical) {
 			t.Fatalf("orchestrator preflight mapping must include %s -> %s", code, canonical)
 		}
 	}
-	for _, reviewMapping := range []string{
-		"d1/400 lines -> `review_budget_lines: 400`",
-		"d2/800 lines -> `review_budget_lines: 800`",
-		"d3/other -> ask one follow-up for the number",
+	for _, mapping := range []string{
+		"c1/strict tdd -> `tdd_mode: strict`",
+		"c2/standard -> `tdd_mode: standard`",
+		"d1/400-line budget -> `delivery_strategy: auto-chain`, `review_budget_lines: 400`",
+		"d2/800-line budget -> `delivery_strategy: auto-chain`, `review_budget_lines: 800`",
+		"d3/other budget -> ask one follow-up for the number, then `delivery_strategy: auto-chain`, `review_budget_lines: n`",
+		"d4/size:exception -> `delivery_strategy: exception-ok`, `chain_strategy: size:exception`, no budget",
+		"e1/stacked prs to main -> `chain_strategy: stacked-to-main`",
+		"e2/feature branch chain -> `chain_strategy: feature-branch-chain`",
+		"`use recommended` / `usar recomendado` -> a1, b1, the suggested c option, d1, e1.",
 	} {
-		if !strings.Contains(orchestrator, reviewMapping) {
-			t.Fatalf("orchestrator preflight review mapping missing %q", reviewMapping)
+		if !strings.Contains(orchestrator, mapping) {
+			t.Fatalf("orchestrator preflight mapping missing %q", mapping)
+		}
+	}
+}
+
+// TestSDDOrchestrator_PreflightIsTheSingleDecisionPointForTheFeature pins the lean
+// preflight: five groups including TDD and a sticky size:exception, decisions persisted
+// in the proposal, and no mid-flow delivery question.
+func TestSDDOrchestrator_PreflightIsTheSingleDecisionPointForTheFeature(t *testing.T) {
+	orchestrator := readPolicyFile(t, "embed/orchestrator/sdd-orchestrator.md")
+	preflightSection := markdownSection(t, orchestrator, "### sdd session preflight", "### review workload guard")
+	guardSection := markdownSection(t, orchestrator, "### review workload guard", "### delivery strategy")
+	deliverySection := markdownSection(t, orchestrator, "### delivery strategy", "### chain strategy")
+
+	for _, required := range []string{
+		"the preflight is the single decision point for the whole feature",
+		"**tdd mode**: `strict` or `standard`",
+		"append `(suggested)` to the group c option that matches them",
+		"state in one line what was detected and why",
+		"the suggestion never decides",
+		"overrides the cached `strict_tdd` capability for this feature",
+		"d4 size:exception: no line limit for this feature",
+		"d4 needs no reason, amount, or approval",
+		"`size:exception` is sticky for the feature",
+		"when the user picks d4, ignore any group e answer",
+		"## sdd decisions\nexecution mode: interactive\nartifact store: hive\ntdd mode: strict\nsize policy: budget 400\nchain strategy: stacked-to-main",
+		"forward it verbatim to `sdd-propose`",
+		"for d4 write `size policy: size:exception` and `chain strategy: size:exception`",
+		"a change whose proposal already contains an `## sdd decisions` block satisfies preflight for that change in any later session",
+		"never re-ask. a new change always gets the preflight",
+	} {
+		if !strings.Contains(preflightSection, required) {
+			t.Fatalf("orchestrator lean preflight contract missing %q", required)
+		}
+	}
+	if !strings.Contains(orchestrator, "automatic only removes the \"continue\" confirmations between phases; it never skips preflight decisions") {
+		t.Fatalf("orchestrator must state that automatic mode never skips preflight decisions")
+	}
+
+	for _, forbidden := range []string{"ask-on-risk", "single-pr", "c. prs", "d. review"} {
+		if strings.Contains(orchestrator, forbidden) {
+			t.Fatalf("orchestrator must not offer the removed delivery option %q", forbidden)
+		}
+	}
+
+	for _, required := range []string{
+		"when decisions are recorded, never stop to ask for a chain strategy or size exception",
+		"only surface a native `sdd-apply` blocked reason if status reports one",
+	} {
+		if !strings.Contains(guardSection, required) {
+			t.Fatalf("orchestrator review workload guard missing %q", required)
+		}
+	}
+	if !strings.Contains(deliverySection, "there is no mid-flow delivery question") {
+		t.Fatalf("orchestrator delivery strategy must state there is no mid-flow delivery question")
+	}
+
+	tddSection := markdownSection(t, orchestrator, "#### strict tdd forwarding", "## bounded apply-progress continuation")
+	for _, required := range []string{
+		"forward the `tdd mode` recorded in the `## sdd decisions` block",
+		"tdd mode: standard (chosen in preflight). do not activate strict tdd",
+	} {
+		if !strings.Contains(tddSection, required) {
+			t.Fatalf("orchestrator strict TDD forwarding missing %q", required)
 		}
 	}
 }
@@ -328,7 +395,7 @@ func TestSDDOrchestrator_UsesNativeStructuredQuestionsWithCompleteFallbacks(t *t
 	for _, required := range []string{
 		"native structured question tool",
 		"complete envelope",
-		"all four decision groups in one call",
+		"all five decision groups in one call",
 		"recommended options",
 		"fall back to the complete numbered plain-text prompt",
 	} {

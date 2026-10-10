@@ -108,13 +108,14 @@ Example:
 
 SDD must protect reviewer cognitive load, not only generate tasks.
 
-- The default PR review budget is **400 changed lines** (`additions + deletions`).
-- The orchestrator MUST cache a delivery strategy at session start: `ask-on-risk` (default), `auto-chain`, `single-pr`, or `exception-ok`.
-- The orchestrator MUST pass `delivery_strategy` to `sdd-tasks` and the resolved decision to `sdd-apply`.
-- `sdd-tasks` MUST forecast whether the planned work may exceed that budget.
-- The forecast MUST include exact plain-text guard lines: `Decision needed before apply: Yes|No`, `Chained PRs recommended: Yes|No`, and `400-line budget risk: Low|Medium|High`.
-- If the forecast is high, `sdd-tasks` MUST recommend chained or stacked PRs using deliverable work units.
-- `sdd-apply` MUST NOT start oversized work unless the delivery strategy resolves to chained/stacked PR slices or explicitly accepted `size:exception`.
+- The size policy comes from the SDD Session Preflight and is recorded in the proposal's `## SDD Decisions` block: a review budget of N changed lines (`additions + deletions`; 400 is the recommended option) with `delivery_strategy: auto-chain`, or `size:exception` with `delivery_strategy: exception-ok`. There is no hidden default budget.
+- The orchestrator MUST pass `delivery_strategy`, `review_budget_lines`, and `chain_strategy` to `sdd-tasks` and `sdd-apply`. No phase asks the user for a chain strategy, size exception, or budget again.
+- `size:exception` is sticky for the feature: no line forecast, no size question, and no further size checks for that change.
+- Under a budget, `sdd-tasks` MUST forecast whether the planned work may exceed the forwarded N.
+- The forecast MUST include exact plain-text guard lines, one chosen value per line: `Decision needed before apply: <Yes or No>`, `Chained PRs recommended: <Yes or No>`, `Chain strategy: <value>`, and `Budget risk: <Low, Medium, or High>` (omitted under `size:exception`).
+- If the forecast exceeds N, `sdd-tasks` MUST split the work into deliverable work units for the forwarded chain strategy.
+- When decisions were not forwarded, `sdd-tasks` writes `Decision needed before apply: Yes` and `Chain strategy: pending` so apply stays blocked until the preflight runs.
+- `sdd-apply` MUST NOT start oversized work unless the recorded decisions resolve to chained/stacked PR slices or `size:exception`.
 - Each chained PR slice must have a clear start, clear finish, autonomous scope, verification, and reasonable rollback.
 - In a Feature Branch Chain, PR #1 targets the feature/tracker branch and later child PRs target the immediate previous PR branch; if GitHub shows previous slices in a child diff, retarget/rebase until the diff is clean.
 

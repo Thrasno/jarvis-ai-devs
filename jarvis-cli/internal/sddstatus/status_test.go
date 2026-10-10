@@ -930,9 +930,8 @@ func TestApplyDecisionGate_BlockedWhenDecisionRequired(t *testing.T) {
 }
 
 // TestApplyDecisionGate_ReadyWhenDecisionNo covers spec scenario
-// "apply ready when tasks carry only the No resolution token" (gate inactive: required=false).
-// A tasks artifact with only "No" means the author explicitly flagged this as not needing
-// a decision — the gate does not trigger.
+// "apply ready when tasks carry only the No resolution token". The decision line
+// activates the gate and the same whole "No" line resolves it.
 func TestApplyDecisionGate_ReadyWhenDecisionNo(t *testing.T) {
 	content := "Decision needed before apply: No\n"
 	s := sddstatus.ComputeStatus("my-feature", "hive",
@@ -1021,17 +1020,17 @@ func TestApplyDecisionGate_ResolutionRequiresWholeSingleValuedLine(t *testing.T)
 }
 
 // TestApplyDecisionGate_VerbatimTemplateCopyStaysBlocked pins that copying the
-// sdd-tasks forecast template without choosing a value never opens the gate.
+// sdd-tasks forecast template without choosing a value never opens the gate. The
+// decision line is the real unfilled placeholder, not an injected literal Yes.
 func TestApplyDecisionGate_VerbatimTemplateCopyStaysBlocked(t *testing.T) {
 	content := "## Review Workload Forecast\n\n" +
 		"| Field | Value |\n|-------|-------|\n" +
-		"| Delivery strategy | <ask-on-risk / auto-chain / single-pr / exception-ok> |\n" +
+		"| Delivery strategy | <auto-chain / exception-ok> |\n" +
 		"| Chain strategy | <stacked-to-main / feature-branch-chain / size:exception / pending> |\n\n" +
-		"Decision needed before apply: Yes\n" +
-		"Chained PRs recommended: <Yes|No>\n" +
+		"Decision needed before apply: <one of: Yes, No>\n" +
+		"Chained PRs recommended: <one of: Yes, No>\n" +
 		"Chain strategy: <one of: stacked-to-main, feature-branch-chain, size:exception, pending>\n" +
-		"Chain strategy: stacked-to-main|feature-branch-chain|size:exception|pending\n" +
-		"400-line budget risk: <Low|Medium|High>\n"
+		"Budget risk: <one of: Low, Medium, High>\n"
 	s := sddstatus.ComputeStatus("my-feature", "hive", allPlanningDoneWithTasksContent(content))
 
 	if s.Dependencies[sddstatus.PhaseApply] != sddstatus.DepBlocked {
@@ -1039,6 +1038,62 @@ func TestApplyDecisionGate_VerbatimTemplateCopyStaysBlocked(t *testing.T) {
 	}
 	if s.ApplyDecision == nil || !s.ApplyDecision.Required || s.ApplyDecision.Resolved {
 		t.Errorf("ApplyDecision = %+v, want required and unresolved", s.ApplyDecision)
+	}
+}
+
+// TestApplyDecisionGate_AnyDecisionLineActivatesGate pins the fail-closed rule: any
+// whole line starting with "Decision needed before apply:" activates the gate, so an
+// unfilled placeholder blocks apply instead of silently leaving the gate inactive.
+func TestApplyDecisionGate_AnyDecisionLineActivatesGate(t *testing.T) {
+	cases := []struct {
+		name     string
+		content  string
+		resolved bool
+	}{
+		{name: "unfilled placeholder", content: "Decision needed before apply: <one of: Yes, No>\n"},
+		{name: "indented placeholder", content: "  decision needed before apply: <one of: Yes, No>\n"},
+		{name: "empty value", content: "Decision needed before apply:\n"},
+		{name: "None is not No", content: "Decision needed before apply: None\n"},
+		{name: "No-first option list", content: "Decision needed before apply: No|Yes\n"},
+		{name: "No-first slash list", content: "Decision needed before apply: No / Yes\n"},
+		{name: "placeholder with pending chain", content: "Decision needed before apply: <one of: Yes, No>\nChain strategy: pending\n"},
+		{name: "placeholder with chosen chain", content: "Decision needed before apply: <one of: Yes, No>\nChain strategy: feature-branch-chain\n", resolved: true},
+		{name: "Yes with size:exception", content: "Decision needed before apply: Yes\nChain strategy: size:exception\n", resolved: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := sddstatus.ComputeStatus("my-feature", "hive", allPlanningDoneWithTasksContent(tc.content))
+			if s.ApplyDecision == nil || !s.ApplyDecision.Required {
+				t.Fatalf("ApplyDecision = %+v, want required for %q", s.ApplyDecision, tc.content)
+			}
+			if s.ApplyDecision.Resolved != tc.resolved {
+				t.Errorf("ApplyDecision.Resolved = %v, want %v for %q", s.ApplyDecision.Resolved, tc.resolved, tc.content)
+			}
+			want := sddstatus.DepBlocked
+			if tc.resolved {
+				want = sddstatus.DepReady
+			}
+			if got := s.Dependencies[sddstatus.PhaseApply]; got != want {
+				t.Errorf("apply dep = %q, want %q for %q", got, want, tc.content)
+			}
+		})
+	}
+}
+
+// TestApplyDecisionGate_QualifiedNoKeepsGateInactive keeps legacy tasks artifacts that
+// declare a qualified "No" (for example "No (within budget)") apply-ready: a decision
+// line activates the gate only when its value does not start with the word No.
+func TestApplyDecisionGate_QualifiedNoKeepsGateInactive(t *testing.T) {
+	for _, content := range []string{
+		"Decision needed before apply: No\n",
+		"Decision needed before apply: No (within budget)\n",
+		"Decision needed before apply: No — single PR within the 400-line budget\n",
+		"  decision needed before apply: no, within budget\r\n",
+	} {
+		s := sddstatus.ComputeStatus("my-feature", "hive", allPlanningDoneWithTasksContent(content))
+		if got := s.Dependencies[sddstatus.PhaseApply]; got != sddstatus.DepReady {
+			t.Errorf("apply dep = %q, want %q for %q (ApplyDecision=%+v)", got, sddstatus.DepReady, content, s.ApplyDecision)
+		}
 	}
 }
 
@@ -1246,7 +1301,7 @@ func TestComputeStatus_WorkspaceAuthorityConjoinsGenuinePhaseSpecificBlockers(t 
 			contents:  map[string]string{sddstatus.ArtifactTasks: applyDecisionBlockedContent},
 			want: []string{
 				"phase sdd-apply blocked — workspace-edit mode with non-empty allowed edit roots required",
-				"phase sdd-apply blocked — delivery decision required (tasks declare 'Decision needed before apply: Yes' and no resolved chain strategy/size:exception)",
+				"phase sdd-apply blocked — delivery decision required (tasks carry a 'Decision needed before apply' line but no whole 'No' line or a single resolved chain strategy/size:exception; record the SDD preflight decisions)",
 			},
 		},
 		{

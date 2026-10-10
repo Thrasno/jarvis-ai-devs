@@ -114,16 +114,21 @@ Before executing any mutating, planning, init, apply, verify, or archive SDD com
 
 This applies to `/sdd-init`, `/sdd-new`, `/sdd-ff`, `/sdd-continue`, `/sdd-explore`, `/sdd-apply`, `/sdd-verify`, `/sdd-archive`, and natural-language equivalents such as "use SDD to add dark mode" or "do it with SDD". `/sdd-status` may inspect or adopt binding state without session preflight; it must not run phases or edit project artifacts.
 
+The preflight is the single decision point for the whole feature. The user decides everything once; later phases consume the recorded decisions and never ask again, recompute them, or apply a hidden default.
+
 Required preflight choices:
 
 1. **Execution mode**: `interactive` or `auto`.
 2. **Artifact store**: `hive`, `openspec`, `hybrid`, or `none`.
-3. **Chained PR strategy / delivery strategy**: `ask-on-risk`, `auto-chain`, `single-pr`, or `exception-ok`.
-4. **Review budget**: maximum changed lines before stopping for reviewer-burden approval.
+3. **TDD mode**: `strict` or `standard`.
+4. **Size policy**: a review budget in changed lines, or `size:exception` (no line limit for this feature).
+5. **Chain strategy**: `stacked-to-main` or `feature-branch-chain`, used only when a budget is chosen and the forecast exceeds it. Not used with `size:exception`.
 
 User-facing preflight question format:
 
-Use the harness's native structured question tool when it is available and can represent the complete envelope: all four decision groups in one call, every option and description, single-select behavior per group, custom answers, and the recommended options identified in their labels. Match the user's current language. Keep option codes (`A1`, `B1`, `C1`, `D1`) and canonical values unchanged — translate only the user-facing labels and descriptions, not the codes. Do NOT ask the user to type raw keys like `execution mode`, `artifact store`, `delivery strategy`, or `review budget`. Do NOT invent informal values; use only the canonical values after the user chooses.
+Use the harness's native structured question tool when it is available and can represent the complete envelope: all five decision groups in one call, every option and description, single-select behavior per group, custom answers, and the recommended options identified in their labels. Match the user's current language. Keep option codes (`A1`, `B1`, `C1`, `D1`, `E1`) and canonical values unchanged — translate only the user-facing labels and descriptions, not the codes. Do NOT ask the user to type raw keys like `execution mode`, `artifact store`, `tdd mode`, `size policy`, or `chain strategy`. Do NOT invent informal values; use only the canonical values after the user chooses.
+
+Before asking, read the cached testing capabilities from `sdd-init` (`strict_tdd` and the test command). Append `(suggested)` to the group C option that matches them (C1 when `strict_tdd: true` and a test runner exists, otherwise C2) and state in one line what was detected and why. When no capabilities are cached yet, suggest C2 and say that no test runner has been detected. The suggestion never decides; only the user's choice counts.
 
 If the native structured question tool is unavailable, rejects questions because no interactive client is attached, or cannot represent that complete envelope, fall back to the complete numbered plain-text prompt below. Do not split or silently omit groups or options. Never emit both the native UI and the fallback prompt in the same attempt.
 
@@ -133,11 +138,11 @@ Use this shape, translated to the user's current language:
 
 ```text
 Before continuing with SDD, choose one option per group.
-Reply with "use recommended" or with codes like: A1, B1, C1, D1.
+Reply with "use recommended" or with codes like: A1, B1, C1, D1, E1.
 
 A. Pace
    A1 Interactive (recommended): show each phase and wait for confirmation before continuing.
-   A2 Automatic: run phases back-to-back and stop only on high risk.
+   A2 Automatic: skip only the "continue?" confirmations between phases; decisions and questions you must answer are still asked.
 
 B. Artifacts
    B1 Hive (recommended): fast, no spec files in the repo; use Hive artifact topics.
@@ -145,17 +150,23 @@ B. Artifacts
    B3 Hybrid: OpenSpec files plus Hive artifact saves.
    B4 None: inline-only results; no persisted SDD artifacts.
 
-C. PRs
-   C1 Ask me (recommended): stop and ask if the forecast exceeds the budget.
-   C2 Auto-chain: split into chained PRs automatically when the forecast is high.
-   C3 Single PR: try to keep the change in one PR; require exception approval if over budget.
-   C4 Exception-OK: allow an oversized PR because the maintainer accepts the review cost.
+C. TDD
+   Detected: <one line: cached testing capabilities and why the suggestion matches them>
+   C1 Strict TDD: write a failing test before each change; apply and verify enforce RED -> GREEN.
+   C2 Standard: no TDD; tests are written alongside or after the code.
 
-D. Review
-   D1 400 lines (recommended): stop if forecast exceeds 400 changed lines.
-   D2 800 lines: more permissive; useful for medium changes.
-   D3 Other: ask for the number afterwards.
+D. Size
+   D1 400-line budget (recommended): split into chained PRs if the forecast exceeds 400 changed lines.
+   D2 800-line budget: more permissive; useful for medium changes.
+   D3 Other budget: ask for the number once afterwards.
+   D4 size:exception: no line limit for this feature; one PR, no line forecast, and no size questions later.
+
+E. Chain strategy (used only with D1-D3 when the forecast exceeds the budget)
+   E1 Stacked PRs to main (recommended): each PR merges to main in order.
+   E2 Feature branch chain: PRs chain on a tracker branch; only the tracker merges to main.
 ```
+
+Show group E in the same envelope. When the user picks D4, ignore any group E answer; do not ask for it.
 
 After asking this, STOP and wait for the user's answer.
 
@@ -163,19 +174,38 @@ Map answers to canonical values:
 
 - Pace: A1/Interactive -> `interactive`; A2/Automatic -> `auto`.
 - Artifacts: B1/Hive -> `hive`; B2/OpenSpec -> `openspec`; B3/Hybrid -> `hybrid`; B4/None -> `none`.
-- PRs: C1/Ask me -> `ask-on-risk`; C2/Auto-chain -> `auto-chain`; C3/Single PR -> `single-pr`; C4/Exception-OK -> `exception-ok`.
-- Review: D1/400 lines -> `review_budget_lines: 400`; D2/800 lines -> `review_budget_lines: 800`; D3/Other -> ask one follow-up for the number.
-- Recommended shortcut: `use recommended` / `usar recomendado` -> A1, B1, C1, D1.
+- TDD: C1/Strict TDD -> `tdd_mode: strict`; C2/Standard -> `tdd_mode: standard`. The choice overrides the cached `strict_tdd` capability for this feature.
+- Size: D1/400-line budget -> `delivery_strategy: auto-chain`, `review_budget_lines: 400`; D2/800-line budget -> `delivery_strategy: auto-chain`, `review_budget_lines: 800`; D3/Other budget -> ask one follow-up for the number, then `delivery_strategy: auto-chain`, `review_budget_lines: N`; D4/size:exception -> `delivery_strategy: exception-ok`, `chain_strategy: size:exception`, no budget. D4 needs no reason, amount, or approval.
+- Chain: E1/Stacked PRs to main -> `chain_strategy: stacked-to-main`; E2/Feature branch chain -> `chain_strategy: feature-branch-chain`.
+- Recommended shortcut: `use recommended` / `usar recomendado` -> A1, B1, the suggested C option, D1, E1.
+
+`size:exception` is sticky for the feature: once chosen, no phase forecasts lines, asks a size question, or checks the budget again for this change.
+
+#### SDD Decisions Record
+
+After mapping, write the decisions as an `## SDD Decisions` block with one value per line and forward it verbatim to `sdd-propose`, which writes it into the proposal artifact:
+
+```text
+## SDD Decisions
+Execution mode: interactive
+Artifact store: hive
+TDD mode: strict
+Size policy: budget 400
+Chain strategy: stacked-to-main
+```
+
+Values: `Execution mode` is `interactive` or `auto`; `Artifact store` is `hive`, `openspec`, `hybrid`, or `none`; `TDD mode` is `strict` or `standard`; `Size policy` is `budget <N>` or `size:exception`; `Chain strategy` is `stacked-to-main` or `feature-branch-chain`, or `size:exception` when the size policy is `size:exception`. For D4 write `Size policy: size:exception` and `Chain strategy: size:exception`.
 
 Hard gate rules:
 
 - `/sdd-status` may run without session preflight; it reports available state and recovery hints without running init, delegating phases, or editing project artifacts. Binding adoption is an allowed persistence action, not a claim that status is purely read-only.
-- Mutating, planning, apply, verify, and archive SDD commands require session preflight unless all four preflight choices were already provided in the current conversation.
+- Mutating, planning, apply, verify, and archive SDD commands require session preflight unless all five preflight choices were already provided in the current conversation or the change's proposal already contains an `## SDD Decisions` block.
+- A change whose proposal already contains an `## SDD Decisions` block satisfies preflight for that change in any later session: read the block, cache its values, and never re-ask. A NEW change always gets the preflight.
 - The SDD Session Preflight hard gate takes precedence over direct-command bypass wording. Outside this SDD hard gate, direct command warnings remain advisory.
-- `openspec/config.yaml`, existing SDD artifacts, previous `sdd-init` results, installed SDD assets, or generated local skill copies do NOT satisfy session preflight.
+- `openspec/config.yaml`, other SDD artifacts, previous `sdd-init` results, installed SDD assets, or generated local skill copies do NOT satisfy session preflight. Only an `## SDD Decisions` block in the change's own proposal does.
 - If the session has no preflight block, ask the localized user-facing preflight prompt, then stop and wait. Do not run init, do not delegate phases, do not edit files, and do not apply tasks in the same turn.
-- Cache the choices for this session and include them in later phase prompts.
-- If the user explicitly provided all four choices in the current conversation, summarize them as the session preflight block and continue.
+- Cache the choices for this change and include them in later phase prompts. No later phase asks for them again.
+- If the user explicitly provided all five choices in the current conversation, summarize them as the `## SDD Decisions` block and continue.
 
 After preflight is complete, resolve and cache:
 
@@ -183,7 +213,7 @@ After preflight is complete, resolve and cache:
 - execution mode (`interactive` or `auto`);
 - artifact store mode (`hive`, `openspec`, `hybrid`, or `none`);
 - change name and current dependency graph state;
-- strict TDD status and test command from cached testing capabilities;
+- TDD mode from the preflight (it overrides the cached strict TDD capability for this feature) and the test command from cached testing capabilities;
 - issue context, branch/tracker branch, delivery strategy, review budget, and chain strategy when relevant;
 - exact `SKILL.md` paths from the skill registry;
 - phase model assignments from the Model Assignments table below.
@@ -192,22 +222,22 @@ Forward these values to every SDD sub-agent prompt. If a value is unknown and ch
 
 ### Review Workload Guard
 
-Before `sdd-apply`, inspect the tasks artifact for review workload forecast, estimated changed lines, chained PR recommendation, and any `Decision needed before apply` flag. If the work may exceed the configured review budget and no delivery path is resolved, stop and ask for a chain strategy or explicit size exception before launching apply. Do not let child PRs target `main` directly when a feature-branch chain is active.
+Before `sdd-apply`, inspect the tasks artifact for review workload forecast, estimated changed lines, chained PR recommendation, and the `Decision needed before apply` line. The recorded `## SDD Decisions` already resolve the delivery path: with a budget, work above it is split into work units for the recorded chain strategy; with `size:exception`, the feature ships as one PR with no forecast. When decisions are recorded, never stop to ask for a chain strategy or size exception; only surface a native `sdd-apply` blocked reason if status reports one. If the change has no recorded decisions, run the preflight instead of asking a standalone delivery question. Do not let child PRs target `main` directly when a feature-branch chain is active.
 
 If `jarvis sdd status <change> --json` is available and reports `dependencies["sdd-apply"]` as `"blocked"`, the orchestrator MUST NOT launch apply and MUST surface the `blockedReasons` to the user. This native gate enforces the `Decision needed before apply` contract at runtime — the orchestrator does not need to reparse the tasks artifact when native status is available.
 
-When the native CLI is unavailable, fall back to reading the tasks artifact directly: if it contains `Decision needed before apply: Yes` and no resolved delivery decision is recorded, stop and ask the user for a delivery decision before delegating apply. A decision is resolved only by a whole line with exactly one value: `Decision needed before apply: No`, `Chain strategy: stacked-to-main`, `Chain strategy: feature-branch-chain`, or `Chain strategy: size:exception`. Option-list lines (`stacked-to-main|feature-branch-chain|...`), `Chain strategy: pending`, table cells, prose mentions, and a bare `size:exception` token do NOT resolve the gate.
+When the native CLI is unavailable, fall back to reading the tasks artifact directly: if it contains any `Decision needed before apply:` line (including `Yes` or an unfilled placeholder) and no resolution line, do not delegate apply; report that the preflight decisions are missing and run the preflight when the change has no `## SDD Decisions` block. A decision is resolved only by a whole line with exactly one value: `Decision needed before apply: No`, `Chain strategy: stacked-to-main`, `Chain strategy: feature-branch-chain`, or `Chain strategy: size:exception`. Option-list lines (`stacked-to-main|feature-branch-chain|...`), `Chain strategy: pending`, table cells, prose mentions, and a bare `size:exception` token do NOT resolve the gate.
 
 ### Delivery Strategy
 
-Forward the resolved delivery strategy to apply and verify agents:
+Forward the recorded delivery strategy, review budget, chain strategy, and TDD mode to tasks, apply, and verify agents:
 
-- `single-pr` only when the work is within budget or the prompt explicitly records `size:exception`;
-- `auto-chain` when the change is split into reviewable work units automatically after the forecast;
-- `ask-on-risk` when the orchestrator must ask before exceeding the review budget;
-- `exception-ok` only when the maintainer explicitly accepts the oversized review.
+- `auto-chain` with `review_budget_lines: N` (D1-D3): `sdd-tasks` forecasts against N; work above N is split into reviewable work units for the recorded chain strategy without asking.
+- `exception-ok` with `chain_strategy: size:exception` (D4): the feature ships as one PR with no line forecast, no size question, and no further size checks.
 
-Each apply batch must state its PR boundary, rollback scope, verification plan, and estimated review budget impact.
+There is no mid-flow delivery question; the preflight already decided.
+
+Each apply batch must state its PR boundary, rollback scope, verification plan, and estimated review budget impact (omit the budget impact under `size:exception`).
 
 ### Chain Strategy
 
@@ -268,7 +298,7 @@ After `SDD Session Preflight` is complete and before executing any mutating, pla
 This ensures:
 
 - Testing capabilities are always detected and cached
-- Strict TDD Mode is activated when the project supports it
+- Strict TDD Mode is available when the project supports it and the preflight chose `TDD mode: strict`
 - The project context (stack, conventions) is available for all phases
 
 Do NOT skip this check. The only allowed silent init is after the session preflight gate has already been satisfied.
@@ -277,7 +307,7 @@ Do NOT skip this check. The only allowed silent init is after the session prefli
 
 Execution mode is collected by `SDD Session Preflight`. Missing execution-mode choice means preflight is incomplete; ask the localized preflight prompt and stop before init, planning, delegation, or file edits.
 
-- **Automatic** (`auto`): Run all phases back-to-back without pausing. Show the final result only. Use this when the user wants speed and trusts the process.
+- **Automatic** (`auto`): Run all phases back-to-back without pausing. Show the final result only. Use this when the user wants speed and trusts the process. Automatic only removes the "continue" confirmations between phases; it never skips preflight decisions or questions the user must answer.
 - **Interactive** (`interactive`): After each phase completes, show the result summary and ASK: "Want to adjust anything or continue?" before proceeding to the next phase. Use this when the user wants to review and steer each step.
 
 Cache the mode choice for the session — don't ask again unless the user explicitly requests a mode change.
@@ -422,15 +452,16 @@ For phases with required dependencies, sub-agent reads directly from the backend
 
 #### Strict TDD Forwarding (MANDATORY)
 
-When launching `sdd-apply` or `sdd-verify` sub-agents, the orchestrator MUST:
+When launching `sdd-apply` or `sdd-verify` sub-agents, the orchestrator MUST forward the `TDD mode` recorded in the `## SDD Decisions` block. The user's preflight choice overrides the cached `strict_tdd` capability for this feature.
 
-1. Search for testing capabilities: `mem_search(query: "sdd-init/{project}", project: "{project}")`
-2. If the result contains `strict_tdd: true`:
+1. If `TDD mode: strict`:
+   - Resolve the test runner from cached testing capabilities: `mem_search(query: "sdd-init/{project}", project: "{project}")`
    - Add to the sub-agent prompt: `"STRICT TDD MODE IS ACTIVE. Test runner: {test_command}. You MUST follow strict-tdd.md. Do NOT fall back to Standard Mode."`
    - This is NON-NEGOTIABLE. Do not rely on the sub-agent discovering this independently.
-3. If the search fails or `strict_tdd` is not found, do NOT add the TDD instruction (sub-agent uses Standard Mode).
+2. If `TDD mode: standard`, add to the sub-agent prompt: `"TDD MODE: standard (chosen in preflight). Do NOT activate Strict TDD, even if cached capabilities report strict_tdd: true."`
+3. If no TDD mode is recorded for the change, run the preflight before launching apply or verify; do not guess from cached capabilities.
 
-The orchestrator resolves TDD status ONCE per session (at first apply/verify launch) and caches it.
+The orchestrator resolves the TDD mode ONCE per change from the recorded decisions and caches it.
 
 ## Bounded Apply-Progress Continuation (MANDATORY)
 

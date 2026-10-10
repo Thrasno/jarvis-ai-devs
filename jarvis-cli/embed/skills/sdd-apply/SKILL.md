@@ -43,7 +43,7 @@ From the orchestrator:
 - The specific task(s) to implement (for example, "Phase 1, tasks 1.1-1.3")
 - Artifact store mode (`hive | openspec | hybrid | none`)
 - Structured status from `jarvis sdd status <change> --json` (schema: `jarvis.sdd-status`): `schemaName`/`schema`, `planningHome`, `changeRoot`, `artifactPaths`, `contextFiles`, `blockedReasons`, `applyState`, task progress, dependency states, `relationships`, `phaseInstructions`, and `actionContext`
-- Delivery strategy and resolved workload decision (`ask-on-risk | auto-chain | single-pr | exception-ok`, plus PR slice or `size:exception` when applicable)
+- Preflight decisions for the feature: delivery strategy (`auto-chain | exception-ok`), review budget, chain strategy (or `size:exception`), assigned PR slice when chained, and TDD mode (`strict | standard`)
 
 ## Execution and Persistence Contract
 
@@ -98,22 +98,21 @@ Before implementing, inspect the tasks artifact for `Review Workload Forecast`.
 
 If the forecast says any of the following:
 
-- `400-line budget risk: High`
+- `Budget risk: High`
 - `Chained PRs recommended: Yes`
 - `Decision needed before apply: Yes`
 
-Then you MUST confirm the orchestrator/user provided a resolved delivery path:
+Then you MUST confirm the preflight decisions forwarded by the orchestrator resolve the delivery path:
 
-1. **`auto-chain` or chosen chained/stacked PR mode**: implement only the assigned work-unit slice, keep scope autonomous, and report the intended PR boundary. Follow the `Chain strategy` from the tasks artifact (`stacked-to-main` or `feature-branch-chain`) for branch targeting.
-2. **`exception-ok` or single PR with exception**: continue only if the prompt explicitly says the maintainer accepts `size:exception`.
-3. **`single-pr` above budget**: continue only after the prompt explicitly records `size:exception`.
+1. **`auto-chain` with a chain strategy**: implement only the assigned work-unit slice, keep scope autonomous, and report the intended PR boundary. Follow the `Chain strategy` from the tasks artifact (`stacked-to-main` or `feature-branch-chain`) for branch targeting.
+2. **`exception-ok` / `size:exception`**: implement the feature as one PR with no further size checks; do not forecast lines or ask about size.
 
 Also check for `Chain strategy` in the tasks artifact. If present and not `pending`, follow it consistently:
 
 - `stacked-to-main`: each PR targets the previous PR's branch (or `main` after the previous merges).
 - `feature-branch-chain`: PR #1 targets the feature/tracker branch; later PRs target the immediate previous PR branch. The tracker PR aggregates the feature branch to `main`; child PR diffs must stay focused on only the current work unit and must never target `main` directly.
 
-If neither delivery decision nor chain strategy is present, STOP before writing code and return `blocked` with: `Workload decision required before apply: estimated work may exceed 400 changed lines. Ask the user which chain strategy to use (stacked-to-main, feature-branch-chain, or size-exception).`
+If neither delivery decision nor chain strategy is present, STOP before writing code and return `blocked` with: `Preflight decisions missing before apply: the tasks artifact has no resolved size policy or chain strategy. The orchestrator must run the SDD Session Preflight and record the ## SDD Decisions block.`
 
 #### Step 2b: Read Previous Apply-Progress (if exists)
 
@@ -122,6 +121,8 @@ Before starting work, read `skills/_shared/apply-progress.md` and use the mode-s
 Continue only from validated canonical bounded state. Do not merge or rewrite historical evidence. Reconcile current task state against validated coverage, then do not jump to `sdd-verify` until apply progress and task checkboxes agree. The guarded snapshot is the authoritative progress state.
 
 ### Step 3: Read Testing Capabilities and Resolve Mode
+
+The TDD mode chosen in the preflight is authoritative and overrides cached `strict_tdd` for this feature: `STRICT TDD MODE IS ACTIVE` means strict mode; `TDD MODE: standard` means standard mode even if capabilities report `strict_tdd: true`. Use the resolution below only to find the test runner, or when no TDD mode was forwarded.
 
 Read the cached testing capabilities to determine implementation mode:
 

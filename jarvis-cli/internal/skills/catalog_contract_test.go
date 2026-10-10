@@ -70,12 +70,27 @@ func TestCatalogContract_SharedSDDPhaseCommonMatchesJarvisAdaptedUpstreamShape(t
 		"## D. Return Envelope",
 		"status`: `success`, `partial`, or `blocked`",
 		"## E. Review Workload Guard",
+		"The size policy comes from the SDD Session Preflight",
+		"400 is the recommended option",
+		"There is no hidden default budget.",
+		"`size:exception` is sticky for the feature",
+		"`Budget risk: <Low, Medium, or High>`",
 		"Feature Branch Chain",
 	}
 
 	for _, snippet := range requiredSnippets {
 		if !strings.Contains(content, snippet) {
 			t.Fatalf("expected %s to contain %q", sharedPhaseCommonPath, snippet)
+		}
+	}
+
+	for _, snippet := range []string{
+		"The default PR review budget is",
+		"`ask-on-risk` (default)",
+		"400-line budget risk",
+	} {
+		if strings.Contains(content, snippet) {
+			t.Fatalf("expected %s not to contain obsolete review-guard default %q", sharedPhaseCommonPath, snippet)
 		}
 	}
 }
@@ -511,6 +526,11 @@ func TestCatalogContract_SDDCoreSkillsMatchJarvisAdaptedUpstreamContract(t *test
 				"disable-model-invocation: true",
 				"user-invocable: false",
 				"## Capabilities",
+				// The preflight decisions persist verbatim in the proposal so later sessions never re-ask.
+				"write it verbatim near the top of the proposal",
+				"never invent, reorder, or change values",
+				"If the block is absent, do NOT fabricate it",
+				"## SDD Decisions\nExecution mode: {forwarded value}\nArtifact store: {forwarded value}\nTDD mode: {forwarded value}\nSize policy: {forwarded value}\nChain strategy: {forwarded value}",
 				"Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.",
 			},
 		},
@@ -543,13 +563,24 @@ func TestCatalogContract_SDDCoreSkillsMatchJarvisAdaptedUpstreamContract(t *test
 				"## Review Workload Forecast",
 				"Chain strategy: <one of: stacked-to-main, feature-branch-chain, size:exception, pending>",
 				"Write exactly one chosen value per line, for example `Chain strategy: stacked-to-main`.",
-				"Write `Chain strategy: pending` until the user has decided.",
+				"Write `Chain strategy: pending` only when no decisions were forwarded.",
+				"Budget risk: <one of: Low, Medium, High>",
+				// Tasks consume the preflight decisions and never ask again.
+				"never ask the user for a chain strategy, a size exception, or a budget",
+				"forwarded budget of N changed lines",
+				"Decision needed before apply: No\nChained PRs recommended: No\nChain strategy: size:exception",
+				"Write `Decision needed before apply: Yes` and `Chain strategy: pending`",
 				"Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.",
 			},
 			// Literal option lists would satisfy a careless guard if copied verbatim.
 			forbidden: []string{
 				"Chain strategy: stacked-to-main|feature-branch-chain|size:exception|pending",
 				"Chain strategy: <stacked-to-main|feature-branch-chain|size:exception|pending>",
+				"Ask the user which chain strategy to use",
+				"Cache the user's choice",
+				"400-line budget risk",
+				"ask-on-risk",
+				"single-pr",
 			},
 		},
 		{
@@ -566,9 +597,18 @@ func TestCatalogContract_SDDCoreSkillsMatchJarvisAdaptedUpstreamContract(t *test
 				"Hive calls `sdd_apply_progress_get`",
 				"Canonical v2 checkpoint request",
 				"There is no silent fallback.",
+				"`Budget risk: High`",
+				"implement the feature as one PR with no further size checks",
+				"The orchestrator must run the SDD Session Preflight",
 				"Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.",
 			},
-			forbidden: []string{"Ready for sdd-qa", "next_recommended: sdd-qa"},
+			forbidden: []string{
+				"Ready for sdd-qa",
+				"next_recommended: sdd-qa",
+				"400-line budget risk",
+				"Ask the user which chain strategy",
+				"single-pr",
+			},
 		},
 		{
 			name: "sdd-verify",
@@ -606,7 +646,7 @@ func TestCatalogContract_SDDCoreSkillsMatchJarvisAdaptedUpstreamContract(t *test
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			content := readEmbeddedSkillAsset(t, tc.path)
+			content := strings.ReplaceAll(readEmbeddedSkillAsset(t, tc.path), "\r\n", "\n")
 
 			upstreamVersion := "v1.26.5"
 			if tc.name == "sdd-verify" || tc.name == "sdd-apply" || tc.name == "sdd-archive" {
