@@ -29,9 +29,12 @@ Worker: focused Deluge contracts passed after observed RED; gofmt and git diff -
 No broader suite or live Zoho runtime tests performed; no builds. Commit/push/PR/conditional merge/beta subsequently authorized by the user. Functional verification is limited to packaged guidance contracts.
 
 ## Delivery tasks
-- [ ] T3 (in progress): Commit verified implementation, push feature branch, open PR linked to approved issue 779.
-- [ ] T4 (pending): Observe CI success for exact PR head, then merge without bypass.
-- [ ] T5 (pending): Update master, run Beta Release, verify source SHA, prerelease and fresh assets for jarvis and hive-daemon.
+- [x] T3: Implementation f826b7e0 and tracking 74d38536 committed; feature branch pushed; PR #780 opened with type:feature, closing approved #779.
+- [x] T4: All 14 CI checks passed exact head 74d38536f893bda3d926272fab3b9463b2d4d863. Squash merged as a742eea6ed303e3aec7582d0dd412823c85d90d5 without bypass.
+- [x] T5: master updated ff-only; Beta Release run 37885188389 succeeded. Remote master, beta, v0.0.1-beta and release target match merge SHA. Prerelease not draft, 19 fresh assets; jarvis and hive-daemon Linux archive availability HTTP 200.
+
+## Final evidence and limitations
+Full affected-module checks passed: cd jarvis-cli && go test ./... && go vet ./... (30 packages, no failures). Release: https://github.com/Thrasno/jarvis-ai-devs/releases/tag/beta . Published 2026-10-09T04:44:28Z. Both installer sources support JARVIS_INSTALL_VERSION=beta. Installers and archive runtime execution were not run; macOS remains best effort. No local builds or real Zoho parser execution.
 
 ## Next step
-Full affected-module checks passed: cd jarvis-cli && go test ./... && go vet ./... (30 packages, no failures). Implementation work-unit commit: f826b7e0. Prepare tracking commit, push and PR.
+User can update testing machine from beta and reapply managed configuration. Final delivery tracking updated locally after release; no additional remote source commit created.
