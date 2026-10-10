@@ -1053,6 +1053,7 @@ func TestApplyDecisionGate_AnyDecisionLineActivatesGate(t *testing.T) {
 		{name: "unfilled placeholder", content: "Decision needed before apply: <one of: Yes, No>\n"},
 		{name: "indented placeholder", content: "  decision needed before apply: <one of: Yes, No>\n"},
 		{name: "empty value", content: "Decision needed before apply:\n"},
+		{name: "None is not No", content: "Decision needed before apply: None\n"},
 		{name: "placeholder with pending chain", content: "Decision needed before apply: <one of: Yes, No>\nChain strategy: pending\n"},
 		{name: "placeholder with chosen chain", content: "Decision needed before apply: <one of: Yes, No>\nChain strategy: feature-branch-chain\n", resolved: true},
 		{name: "Yes with size:exception", content: "Decision needed before apply: Yes\nChain strategy: size:exception\n", resolved: true},
@@ -1074,6 +1075,23 @@ func TestApplyDecisionGate_AnyDecisionLineActivatesGate(t *testing.T) {
 				t.Errorf("apply dep = %q, want %q for %q", got, want, tc.content)
 			}
 		})
+	}
+}
+
+// TestApplyDecisionGate_QualifiedNoKeepsGateInactive keeps legacy tasks artifacts that
+// declare a qualified "No" (for example "No (within budget)") apply-ready: a decision
+// line activates the gate only when its value does not start with the word No.
+func TestApplyDecisionGate_QualifiedNoKeepsGateInactive(t *testing.T) {
+	for _, content := range []string{
+		"Decision needed before apply: No\n",
+		"Decision needed before apply: No (within budget)\n",
+		"Decision needed before apply: No — single PR within the 400-line budget\n",
+		"  decision needed before apply: no, within budget\r\n",
+	} {
+		s := sddstatus.ComputeStatus("my-feature", "hive", allPlanningDoneWithTasksContent(content))
+		if got := s.Dependencies[sddstatus.PhaseApply]; got != sddstatus.DepReady {
+			t.Errorf("apply dep = %q, want %q for %q (ApplyDecision=%+v)", got, sddstatus.DepReady, content, s.ApplyDecision)
+		}
 	}
 }
 

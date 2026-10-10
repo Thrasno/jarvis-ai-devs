@@ -108,9 +108,13 @@ var (
 	// rxApplyDecisionRequired matches "Decision needed before apply: Yes" anywhere with word
 	// boundary to avoid prefix collisions like "Yesterday". Case-insensitive for robustness.
 	rxApplyDecisionRequired = regexp.MustCompile(`(?i)Decision needed before apply:\s*Yes\b`)
-	// rxApplyDecisionLine matches any whole line starting with "Decision needed before apply:",
-	// whatever its value. An unfilled placeholder therefore activates the gate (fails closed).
-	rxApplyDecisionLine = regexp.MustCompile(`(?im)^[ \t]*Decision needed before apply:`)
+	// rxApplyDecisionLine captures the value of every "Decision needed before apply:" line.
+	// A value that does not start with the word No (an unfilled placeholder, an empty
+	// value, "None") activates the gate, so it fails closed.
+	rxApplyDecisionLine = regexp.MustCompile(`(?im)^[ \t]*Decision needed before apply:[ \t]*([^\r\n]*)`)
+	// rxDecisionValueNo matches a decision value that starts with the word No, including
+	// legacy qualified forms such as "No (within budget)".
+	rxDecisionValueNo = regexp.MustCompile(`(?i)^no\b`)
 	// rxApplyDecisionNo matches a whole "Decision needed before apply: No" line. Anchoring
 	// to the full line rejects option lists ("Yes|No"), "None", and trailing qualifiers.
 	rxApplyDecisionNo = regexp.MustCompile(`(?im)^[ \t]*Decision needed before apply:[ \t]*No[ \t]*\r?$`)
@@ -120,8 +124,8 @@ var (
 )
 
 // ApplyDecision reports whether an unresolved delivery decision blocks apply.
-// Required is true when the tasks artifact carries any "Decision needed before apply:" line,
-// including an unfilled placeholder. Resolved is true when a whole resolution line is present (explicit No or a single chosen
+// Required is true when the tasks artifact carries a "Decision needed before apply:" line whose
+// value does not start with the word No, including an unfilled placeholder. Resolved is true when a whole resolution line is present (explicit No or a single chosen
 // chain strategy, including size:exception). Apply is blocked only when Required && !Resolved.
 type ApplyDecision struct {
 	Required bool `json:"required"`
@@ -419,8 +423,8 @@ func parseTaskProgress(content string, observed bool) *TaskProgress {
 // unresolved delivery decision is blocking apply. It mirrors the parseTaskProgress
 // pattern: pure content inspection, no I/O.
 //
-// Required is set when any whole line starts with "Decision needed before apply:"
-// (case-insensitive, leading whitespace allowed), whatever its value, or when the literal
+// Required is set when a line starts with "Decision needed before apply:" (case-insensitive,
+// leading whitespace allowed) and its value does not start with the word No, or when the literal
 // phrase "Decision needed before apply: Yes" appears anywhere. An unfilled placeholder such
 // as "Decision needed before apply: <one of: Yes, No>" therefore keeps apply blocked.
 //
@@ -441,8 +445,12 @@ func parseApplyDecision(tasksContent string) *ApplyDecision {
 	if tasksContent == "" {
 		return nil
 	}
-	required := rxApplyDecisionLine.MatchString(tasksContent) ||
-		rxApplyDecisionRequired.MatchString(tasksContent)
+	required := rxApplyDecisionRequired.MatchString(tasksContent)
+	for _, m := range rxApplyDecisionLine.FindAllStringSubmatch(tasksContent, -1) {
+		if !rxDecisionValueNo.MatchString(m[1]) {
+			required = true
+		}
+	}
 	if !required {
 		// Gate inactive — not required, therefore not blocking.
 		return &ApplyDecision{Required: false, Resolved: true}
