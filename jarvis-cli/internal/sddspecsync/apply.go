@@ -82,6 +82,28 @@ func Apply(p Plan, s Store) (Result, error) {
 	return result, nil
 }
 
+// Revert undoes a successful Apply of p, e.g. when the archive move that
+// follows it fails. Targets still holding their planned bytes are restored to
+// their captured before-bytes (created targets are removed); a target edited
+// by someone else since Apply is never overwritten and is reported for
+// recovery. Reverting an already reverted plan is a no-op.
+func Revert(p Plan, s Store) error {
+	if err := validatePlan(p); err != nil {
+		return err
+	}
+	done := make([]touched, 0, len(p.Targets))
+	for _, t := range p.Targets {
+		done = append(done, touched{target: t, written: t.After})
+	}
+	failure := &ApplyError{Kind: ErrRevertIncomplete}
+	rollback(s, done, failure)
+	if len(failure.Recovery) == 0 {
+		return nil
+	}
+	failure.Path = failure.Recovery[0].Path
+	return failure
+}
+
 func validatePlan(p Plan) error {
 	seen := map[string]bool{}
 	for _, t := range p.Targets {

@@ -441,6 +441,74 @@ func TestBoundSddArchiveHivePersistedBindingIgnoresEnvironmentWithoutFilesystemM
 	}
 }
 
+func TestBoundSddArchiveHiveReportsSpecSyncFlagsWithoutEffects(t *testing.T) {
+	const (
+		project = "jarvis-dev"
+		change  = "issue-784"
+	)
+	for _, tt := range []struct {
+		name        string
+		flags       []string
+		wantOutcome string
+		wantDetail  []string
+	}{
+		{name: "plan", flags: []string{"--plan"}, wantOutcome: "planned", wantDetail: []string{"Hive-only", "no OpenSpec spec files"}},
+		{name: "confirm destructive", flags: []string{"--confirm-destructive"}, wantOutcome: "archived", wantDetail: []string{"--confirm-destructive", "no effect"}},
+		{name: "plan and confirm destructive", flags: []string{"--plan", "--confirm-destructive"}, wantOutcome: "planned", wantDetail: []string{"Hive-only", "--confirm-destructive"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			workspace := canonicalSddTestWorkspace(t)
+			before := snapshotBoundArchiveFilesystem(t, workspace)
+			t.Chdir(workspace)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/sdd/changes/" + change + "/store-binding":
+					requireSDDRequest(t, r, http.MethodGet, r.URL.Path, "project="+project, "")
+					_, _ = fmt.Fprintf(w, `{"binding":{"project":%q,"change":%q,"schema_version":"1","mode":"hive","provenance":"persisted:test","created_at":"2026-08-01T10:00:00Z"}}`, project, change)
+				case "/sdd/changes/" + change + "/artifacts":
+					requireSDDRequest(t, r, http.MethodGet, r.URL.Path, "project="+project, "")
+					_, _ = fmt.Fprint(w, `{"artifacts":[{"artifact":"proposal","content":"# Proposal"},{"artifact":"spec","content":"# Spec"},{"artifact":"design","content":"# Design"},{"artifact":"tasks","content":"- [x] 1.1 task\n"},{"artifact":"apply-progress","content":"status: complete\n"},{"artifact":"verify-report","content":"## Verdict\n\n**PASS — archive ready.**\n\n## Critical Findings\n\n0\n\n## Blockers\n\nNone\n"},{"artifact":"archive-report","content":"# Archive report\n"}]}`)
+				case "/sdd/changes/" + change + "/apply-progress":
+					requireSDDRequest(t, r, http.MethodGet, r.URL.Path, "project="+project, "")
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = fmt.Fprint(w, `{"outcome":"unavailable","code":"compatibility"}`)
+				default:
+					t.Fatalf("unexpected request: %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+				}
+			}))
+			t.Cleanup(server.Close)
+			t.Setenv("HIVE_DAEMON_URL", server.URL)
+
+			command := newBoundSddArchiveCommand()
+			var stdout bytes.Buffer
+			command.SetOut(&stdout)
+			command.SetArgs(append([]string{"--project", project, "--change", change}, tt.flags...))
+			if err := command.Execute(); err != nil {
+				t.Fatalf("Hive archive %v: %v", tt.flags, err)
+			}
+			var output archiveOutput
+			if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+				t.Fatalf("Hive archive %v stdout is not JSON: %v\n%s", tt.flags, err, stdout.String())
+			}
+			if output.Outcome != tt.wantOutcome || output.Code != "" || output.SpecSync == nil || output.SpecSync.Targets == nil ||
+				len(output.SpecSync.Targets) != 0 || output.SpecSync.Synced {
+				t.Fatalf("output = %+v", output)
+			}
+			for _, want := range tt.wantDetail {
+				if !strings.Contains(output.Detail, want) {
+					t.Fatalf("detail = %q, want it to mention %q", output.Detail, want)
+				}
+			}
+			if !strings.Contains(stdout.String(), `"targets": []`) {
+				t.Fatalf("stdout does not print an empty targets list:\n%s", stdout.String())
+			}
+			if after := snapshotBoundArchiveFilesystem(t, workspace); after != before {
+				t.Fatalf("filesystem changed during Hive archive %v:\nwant %q\n got %q", tt.flags, before, after)
+			}
+		})
+	}
+}
+
 func TestBoundSddArchiveUnboundAdoptsBindingBeforeBlockingLifecycleMutation(t *testing.T) {
 	const (
 		project = "jarvis-dev"
@@ -569,6 +637,10 @@ func TestBoundSddArchiveHiveBlocksMissingBlankOrUnreadyClosure(t *testing.T) {
 	}
 }
 
+// boundArchiveDeliveryDelta is a full spec for a capability without a main
+// spec, so the archive spec sync copies it to openspec/specs/delivery/spec.md.
+const boundArchiveDeliveryDelta = "# Delivery Specification\n\n## Requirements\n\n### Requirement: Delivery\n\nThe system MUST deliver.\n"
+
 func writeBoundArchiveReadyOpenSpec(t *testing.T, workspace, change, archiveReport string) (string, sddprogress.AdvanceRequest) {
 	t.Helper()
 	root := filepath.Join(workspace, "openspec", "changes", change)
@@ -608,7 +680,7 @@ func writeBoundArchiveReadyOpenSpec(t *testing.T, workspace, change, archiveRepo
 		"spec.md":          "# Spec\n",
 		"design.md":        "# Design\n",
 		"verify-report.md": "## Verdict\n\n**PASS — archive ready.**\n\n## Critical Findings\n\n0\n\n## Blockers\n\nNone\n",
-		filepath.Join("specs", "delivery", "spec.md"): "# Delivery Delta\n",
+		filepath.Join("specs", "delivery", "spec.md"): boundArchiveDeliveryDelta,
 	}
 	if archiveReport != "" {
 		files["archive-report.md"] = archiveReport
@@ -712,14 +784,21 @@ func TestBoundSddArchiveHybridRequiresMatchingReportsBeforeRename(t *testing.T) 
 			if (err == nil) != tt.wantSuccess {
 				t.Fatalf("archive error = %v, want success=%t", err, tt.wantSuccess)
 			}
+			mainSpec := filepath.Join(workspace, "openspec", "specs", "delivery", "spec.md")
 			if tt.wantSuccess {
 				if _, err := os.Stat(filepath.Join(destination, "archive-report.md")); err != nil {
 					t.Fatalf("hybrid archive destination: %v", err)
+				}
+				if data, err := os.ReadFile(mainSpec); err != nil || string(data) != boundArchiveDeliveryDelta {
+					t.Fatalf("hybrid archive main spec = %q, %v; want synced before the move", data, err)
 				}
 				return
 			}
 			if _, err := os.Stat(root); err != nil {
 				t.Fatalf("source moved after blocked hybrid archive: %v", err)
+			}
+			if _, err := os.Stat(mainSpec); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("blocked hybrid archive synced main specs: %v", err)
 			}
 		})
 	}

@@ -2,17 +2,22 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/atomicfile"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddbinding"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddspecsync"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
 )
 
@@ -141,7 +146,7 @@ type boundSddArchiveCoordinates struct {
 // runBoundSddArchive resolves the immutable binding before choosing archive
 // behavior. Hive archive is a logical, idempotent close; OpenSpec remains the
 // sole filesystem mover.
-func runBoundSddArchive(ctx context.Context, root, destination, projectFlag, changeFlag string) error {
+func runBoundSddArchive(ctx context.Context, root, destination, projectFlag, changeFlag string, syncOptions archiveSpecSyncOptions) error {
 	coordinates, err := resolveBoundSddArchiveCoordinates(root, projectFlag, changeFlag)
 	if err != nil {
 		return err
@@ -164,22 +169,51 @@ func runBoundSddArchive(ctx context.Context, root, destination, projectFlag, cha
 		if err != nil {
 			return err
 		}
-		return validateHiveArchiveStatus(status, contents)
+		if err := validateHiveArchiveStatus(status, contents); err != nil {
+			return err
+		}
+		return reportHiveArchiveSpecSyncFlags(syncOptions)
 	case sddruntime.StoreModeOpenSpec:
 		if err := requireOpenSpecArchiveCoordinates(coordinates.root, destination); err != nil {
 			return err
 		}
-		return archiveOpenSpecWithBinding(ctx, openSpecSource, coordinates, destination, sddruntime.StoreModeOpenSpec)
+		return archiveOpenSpecWithBinding(ctx, openSpecSource, coordinates, destination, sddruntime.StoreModeOpenSpec, syncOptions)
 	case sddruntime.StoreModeHybrid:
 		if err := requireOpenSpecArchiveCoordinates(coordinates.root, destination); err != nil {
 			return err
 		}
-		return archiveHybridWithBinding(ctx, hiveSource, openSpecSource, coordinates, destination)
+		return archiveHybridWithBinding(ctx, hiveSource, openSpecSource, coordinates, destination, syncOptions)
 	case sddruntime.StoreModeNone:
 		return errors.New("sdd archive is blocked because the resolved store binding is none")
 	default:
 		return fmt.Errorf("unsupported SDD archive store binding %q", binding.Mode)
 	}
+}
+
+// reportHiveArchiveSpecSyncFlags answers --plan and --confirm-destructive on
+// a Hive-only binding with the archive JSON result instead of ignoring them.
+// Hive changes have no OpenSpec spec files, so neither flag has an effect and
+// nothing is written. Without either flag the logical close stays silent.
+func reportHiveArchiveSpecSyncFlags(options archiveSpecSyncOptions) error {
+	if !options.planOnly && !options.confirmDestructive {
+		return nil
+	}
+	output := archiveOutput{Outcome: archiveOutcomeArchived, SpecSync: &specSyncOutput{Targets: []specSyncTargetOutput{}}}
+	var details []string
+	if options.planOnly {
+		output.Outcome = archiveOutcomePlanned
+		details = append(details, "Hive-only changes have no OpenSpec spec files to sync; nothing was written or archived.")
+	}
+	if options.confirmDestructive {
+		details = append(details, "--confirm-destructive has no effect on a Hive-only change.")
+	}
+	output.Detail = strings.Join(details, " ")
+	encoder := json.NewEncoder(options.out)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(output); err != nil {
+		return fmt.Errorf("write archive result: %w", err)
+	}
+	return nil
 }
 
 func resolveBoundSddArchiveCoordinates(root, projectFlag, changeFlag string) (boundSddArchiveCoordinates, error) {
@@ -303,7 +337,66 @@ func validateHiveArchiveStatus(status *sddstatus.ChangeStatus, contents map[stri
 	return nil
 }
 
-func archiveOpenSpecWithBinding(ctx context.Context, source sddstatus.ArtifactSource, coordinates boundSddArchiveCoordinates, destination string, mode sddruntime.StoreMode) error {
+// archiveSpecSyncOptions selects how archive treats the OpenSpec spec sync.
+type archiveSpecSyncOptions struct {
+	planOnly           bool
+	confirmDestructive bool
+	out                io.Writer
+}
+
+// openArchiveStore is the OpenSpec archive mover; tests replace it to inject
+// move failures.
+var openArchiveStore = func(root string) sddprogress.OpenSpec { return sddprogress.OpenSpec{Root: root} }
+
+type archiveOutput struct {
+	Outcome     string          `json:"outcome"`
+	Code        string          `json:"code,omitempty"`
+	Detail      string          `json:"detail,omitempty"`
+	Recovery    string          `json:"recovery,omitempty"`
+	Destination string          `json:"destination,omitempty"`
+	SpecSync    *specSyncOutput `json:"spec_sync,omitempty"`
+}
+
+type specSyncOutput struct {
+	Destructive     bool                     `json:"destructive"`
+	Synced          bool                     `json:"synced"`
+	Reverted        bool                     `json:"reverted,omitempty"`
+	Resumed         bool                     `json:"resumed,omitempty"`
+	Targets         []specSyncTargetOutput   `json:"targets"`
+	Removals        []specSyncRemovalOutput  `json:"removals,omitempty"`
+	RecoveryTargets []specSyncRecoveryOutput `json:"recovery_targets,omitempty"`
+}
+
+type specSyncTargetOutput struct {
+	Capability      string                 `json:"capability"`
+	Path            string                 `json:"path"`
+	DeltaPath       string                 `json:"delta_path"`
+	Action          string                 `json:"action"`
+	BeforeDigest    string                 `json:"before_digest"`
+	AfterDigest     string                 `json:"after_digest"`
+	Added           []string               `json:"added,omitempty"`
+	Modified        []string               `json:"modified,omitempty"`
+	Removed         []string               `json:"removed,omitempty"`
+	Renamed         []specSyncRenameOutput `json:"renamed,omitempty"`
+	IgnoredSections []string               `json:"ignored_sections,omitempty"`
+}
+
+type specSyncRenameOutput struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+type specSyncRemovalOutput struct {
+	Capability   string   `json:"capability"`
+	Requirements []string `json:"requirements"`
+}
+
+type specSyncRecoveryOutput struct {
+	Path           string `json:"path"`
+	ExpectedDigest string `json:"expected_digest"`
+}
+
+func archiveOpenSpecWithBinding(ctx context.Context, source sddstatus.ArtifactSource, coordinates boundSddArchiveCoordinates, destination string, mode sddruntime.StoreMode, syncOptions archiveSpecSyncOptions) error {
 	validate := func() error {
 		status, _, err := boundArchiveStatus(ctx, source, coordinates, mode)
 		if err != nil {
@@ -314,10 +407,10 @@ func archiveOpenSpecWithBinding(ctx context.Context, source sddstatus.ArtifactSo
 	if err := validate(); err != nil {
 		return err
 	}
-	return (sddprogress.OpenSpec{Root: coordinates.root}).ArchiveWithLifecycleValidation(destination, validate)
+	return runArchiveWithSpecSync(coordinates, destination, validate, syncOptions)
 }
 
-func archiveHybridWithBinding(ctx context.Context, hiveSource *sddstatus.HiveSource, openSpecSource *sddstatus.OpenSpecSource, coordinates boundSddArchiveCoordinates, destination string) error {
+func archiveHybridWithBinding(ctx context.Context, hiveSource *sddstatus.HiveSource, openSpecSource *sddstatus.OpenSpecSource, coordinates boundSddArchiveCoordinates, destination string, syncOptions archiveSpecSyncOptions) error {
 	validate := func() error {
 		hive, err := captureBoundArchiveView(ctx, hiveSource, coordinates, sddruntime.StoreModeHive)
 		if err != nil {
@@ -332,7 +425,288 @@ func archiveHybridWithBinding(ctx context.Context, hiveSource *sddstatus.HiveSou
 	if err := validate(); err != nil {
 		return err
 	}
-	return (sddprogress.OpenSpec{Root: coordinates.root}).ArchiveWithLifecycleValidation(destination, validate)
+	return runArchiveWithSpecSync(coordinates, destination, validate, syncOptions)
+}
+
+const (
+	archiveOutcomeArchived = "archived"
+	archiveOutcomePlanned  = "planned"
+	archiveOutcomeBlocked  = "blocked"
+
+	// codeArchiveRecoveryRequired reports an archive move that failed or could
+	// not be made durable after the spec sync was applied.
+	codeArchiveRecoveryRequired = "archive_recovery_required"
+
+	archiveSpecsRoot = "openspec/specs"
+)
+
+var specSyncRecovery = map[string]string{
+	sddspecsync.CodeConfirmationRequired:     "The spec sync removes the listed requirements. Show the removals to the user once and rerun the same command with --confirm-destructive only after explicit confirmation. Nothing was written or moved.",
+	sddspecsync.CodeMergeBlocked:             "Fix the delta spec (or main spec) named in detail, then rerun archive. Nothing was written or moved; never hand-edit main specs.",
+	sddspecsync.CodePlanFailed:               "Spec sync could not read the delta or main specs. Fix the cause in detail, then rerun archive. Nothing was written or moved.",
+	sddspecsync.CodeConflictRecoveryRequired: "A main spec changed while archive was syncing; nothing was overwritten and the change was not moved. Review the concurrent edit, then rerun archive.",
+	sddspecsync.CodeWriteFailed:              "A main spec write failed and every written spec was restored; the change was not moved. Fix the cause in detail, then rerun archive.",
+	sddspecsync.CodeRecoveryRequired:         "Main specs could not be verifiably restored. Restore each recovery_targets path to its expected_digest (absent means the file must not exist) without overwriting other edits, then rerun archive.",
+}
+
+// journalRecovery replaces the CodeRecoveryRequired recovery when the spec
+// sync journal of an interrupted archive cannot be resumed.
+const journalRecovery = "An interrupted archive left the spec sync journal " + sddspecsync.JournalName + " in the change, and the main specs match neither its pre-sync nor its post-sync digests (or the journal is unreadable). Nothing was written or moved. Restore each recovery_targets path to its expected_digest (absent means the file must not exist) without overwriting other edits, then rerun archive; it resumes from the journal."
+
+// archiveSpecSync merges the change's delta specs into openspec/specs as the
+// archive pre-move step, so the merge and the topology rename share the
+// archive lock. It records the JSON result for runArchiveWithSpecSync.
+type archiveSpecSync struct {
+	workspace  string
+	changeRoot string
+	options    archiveSpecSyncOptions
+	ran        bool
+	moveFailed bool
+	revertErr  error
+	output     archiveOutput
+}
+
+// errArchivePlanOnly stops a --plan archive after the plan is recorded.
+var errArchivePlanOnly = errors.New("sdd archive plan only")
+
+func runArchiveWithSpecSync(coordinates boundSddArchiveCoordinates, destination string, validate func() error, options archiveSpecSyncOptions) error {
+	sync := &archiveSpecSync{
+		workspace:  coordinates.workspace,
+		changeRoot: "openspec/changes/" + coordinates.change,
+		options:    options,
+	}
+	err := openArchiveStore(coordinates.root).ArchiveWithPreMoveStep(destination, validate, sync.step)
+	return sync.finish(err, destination)
+}
+
+func (a *archiveSpecSync) step() (func() error, error) {
+	a.ran = true
+	store := sddspecsync.OSStore{Root: a.workspace}
+	journalPath := path.Join(a.changeRoot, sddspecsync.JournalName)
+	resumed, err := a.inspectJournal(store, journalPath)
+	if err != nil || resumed {
+		return a.resume(err)
+	}
+	plan, err := sddspecsync.BuildPlan(os.DirFS(a.workspace), a.changeRoot, archiveSpecsRoot)
+	if err != nil {
+		code := sddspecsync.CodePlanFailed
+		var mergeErr *sddspecsync.MergeError
+		if errors.As(err, &mergeErr) {
+			code = mergeErr.Code()
+		}
+		a.block(code, err)
+		return nil, err
+	}
+	a.output.SpecSync = specSyncPlanOutput(plan)
+	if a.options.planOnly {
+		return nil, errArchivePlanOnly
+	}
+	if plan.Destructive() && !a.options.confirmDestructive {
+		err := errors.New("spec sync removes requirements and needs --confirm-destructive")
+		a.block(sddspecsync.CodeConfirmationRequired, err)
+		return nil, err
+	}
+	// The journal is durable before the first spec write, so a crash at any
+	// later point leaves a rerun able to resume or demand recovery.
+	if err := sddspecsync.WriteJournal(store, journalPath, sddspecsync.NewJournal(plan)); err != nil {
+		a.block(sddspecsync.CodeWriteFailed, fmt.Errorf("write spec sync journal: %w", err))
+		return nil, err
+	}
+	if _, err := sddspecsync.Apply(plan, store); err != nil {
+		a.blockApply(err)
+		if !errors.Is(err, sddspecsync.ErrRecoveryRequired) {
+			discardJournal(store, journalPath)
+		}
+		return nil, err
+	}
+	a.output.SpecSync.Synced = true
+	return func() error {
+		a.moveFailed = true
+		a.revertErr = sddspecsync.Revert(plan, store)
+		if a.revertErr == nil {
+			discardJournal(store, journalPath)
+		}
+		return a.revertErr
+	}, nil
+}
+
+// inspectJournal looks for the journal of an interrupted archive. It reports
+// true when every journaled spec already holds its synced bytes. A journal
+// whose specs are all still at their pre-sync bytes is discarded (kept under
+// --plan, which writes nothing) so the normal sync runs again.
+func (a *archiveSpecSync) inspectJournal(store sddspecsync.OSStore, journalPath string) (bool, error) {
+	journal, found, err := sddspecsync.ReadJournal(store, journalPath, archiveSpecsRoot)
+	if err != nil || !found {
+		return false, err
+	}
+	state, err := journal.Inspect(store)
+	if err != nil {
+		return false, err
+	}
+	if state == sddspecsync.JournalApplied {
+		a.output.SpecSync = specSyncJournalOutput(journal, a.changeRoot)
+		return true, nil
+	}
+	if a.options.planOnly {
+		return false, nil
+	}
+	return false, sddspecsync.RemoveJournal(store, journalPath)
+}
+
+// resume finishes the step for a journal that is already applied, or blocks
+// on a journal that cannot be resumed. A resumed sync has nothing to revert:
+// if the move fails again the journal stays and the next rerun resumes.
+func (a *archiveSpecSync) resume(err error) (func() error, error) {
+	if err != nil {
+		a.output.SpecSync = &specSyncOutput{Targets: []specSyncTargetOutput{}}
+		a.blockApply(err)
+		if errors.Is(err, sddspecsync.ErrJournal) {
+			a.output.Recovery = journalRecovery
+		}
+		return nil, err
+	}
+	if a.options.planOnly {
+		a.output.Detail = "An interrupted archive already synced the main specs; rerun without --plan to finish the move."
+		return nil, errArchivePlanOnly
+	}
+	return func() error {
+		a.moveFailed = true
+		return nil
+	}, nil
+}
+
+// discardJournal removes the journal once the main specs are verifiably back
+// at their pre-sync bytes. Failing to remove it is harmless: a rerun finds
+// every target at its before digest and discards it then.
+func discardJournal(store sddspecsync.OSStore, journalPath string) {
+	_ = sddspecsync.RemoveJournal(store, journalPath)
+}
+
+// removeArchivedJournal deletes the journal that moved with the change into
+// the archive destination; it has no meaning once the move succeeded.
+func removeArchivedJournal(destination string) error {
+	err := atomicfile.Remove(filepath.Join(destination, sddspecsync.JournalName))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove spec sync journal from the archived change: %w", err)
+	}
+	return nil
+}
+
+func specSyncJournalOutput(journal sddspecsync.Journal, changeRoot string) *specSyncOutput {
+	output := &specSyncOutput{Destructive: journal.Destructive, Synced: true, Resumed: true, Targets: []specSyncTargetOutput{}}
+	for _, t := range journal.Targets {
+		capability := path.Base(path.Dir(t.Path))
+		action := "updated"
+		if t.BeforeDigest == sddspecsync.AbsentDigest {
+			action = "created"
+		}
+		output.Targets = append(output.Targets, specSyncTargetOutput{
+			Capability:   capability,
+			Path:         t.Path,
+			DeltaPath:    path.Join(changeRoot, "specs", capability, "spec.md"),
+			Action:       action,
+			BeforeDigest: t.BeforeDigest,
+			AfterDigest:  t.AfterDigest,
+		})
+	}
+	return output
+}
+
+func (a *archiveSpecSync) block(code string, err error) {
+	a.output.Outcome = archiveOutcomeBlocked
+	a.output.Code = code
+	a.output.Detail = err.Error()
+	a.output.Recovery = specSyncRecovery[code]
+}
+
+// blockApply records an Apply or Revert failure with its recovery targets.
+func (a *archiveSpecSync) blockApply(err error) {
+	code := sddspecsync.CodeWriteFailed
+	var applyErr *sddspecsync.ApplyError
+	if errors.As(err, &applyErr) {
+		code = applyErr.Code()
+		for _, target := range applyErr.Recovery {
+			a.output.SpecSync.RecoveryTargets = append(a.output.SpecSync.RecoveryTargets, specSyncRecoveryOutput{Path: target.Path, ExpectedDigest: target.ExpectedDigest})
+		}
+	}
+	a.block(code, err)
+}
+
+// finish prints the JSON result once spec sync was reached and maps the
+// archive error. Earlier gate failures keep their historical plain errors.
+func (a *archiveSpecSync) finish(archiveErr error, destination string) error {
+	if !a.ran {
+		return archiveErr
+	}
+	switch {
+	case errors.Is(archiveErr, errArchivePlanOnly):
+		a.output.Outcome = archiveOutcomePlanned
+		archiveErr = nil
+	case archiveErr == nil:
+		a.output.Outcome = archiveOutcomeArchived
+		a.output.Destination = destination
+		if archiveErr = removeArchivedJournal(destination); archiveErr != nil {
+			a.block(codeArchiveRecoveryRequired, archiveErr)
+			a.output.Destination = destination
+			a.output.Recovery = "The change was archived and its main specs synced, but the spec sync journal could not be removed from the archived change. Delete " + sddspecsync.JournalName + " from the destination."
+		}
+	case a.output.Code != "":
+		// The step itself blocked; its code and recovery are already recorded.
+	case a.moveFailed && a.output.SpecSync.Resumed:
+		a.block(codeArchiveRecoveryRequired, archiveErr)
+		a.output.Recovery = "The archive move failed again after resuming an interrupted archive; main specs stay synced and the spec sync journal is kept. Fix the move error in detail, then rerun archive to resume."
+	case a.moveFailed && a.revertErr != nil:
+		a.blockApply(a.revertErr)
+		a.output.Detail = archiveErr.Error()
+	case a.moveFailed:
+		a.output.SpecSync.Reverted = true
+		a.block(codeArchiveRecoveryRequired, archiveErr)
+		a.output.Recovery = "The archive move failed after spec sync; main specs were restored to their pre-sync bytes and the change was not moved. Fix the move error in detail, then rerun archive."
+	default:
+		archiveErr = errors.Join(archiveErr, removeArchivedJournal(destination))
+		a.block(codeArchiveRecoveryRequired, archiveErr)
+		a.output.Destination = destination
+		a.output.Recovery = "Main specs were synced and the change was moved, but the move could not be made durable. Verify the destination topology and the main spec digests in spec_sync before continuing."
+	}
+	encoder := json.NewEncoder(a.options.out)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(a.output); err != nil {
+		return errors.Join(archiveErr, fmt.Errorf("write archive result: %w", err))
+	}
+	if archiveErr != nil {
+		return fmt.Errorf("sdd archive blocked: %s: %w", a.output.Code, archiveErr)
+	}
+	return nil
+}
+
+func specSyncPlanOutput(plan sddspecsync.Plan) *specSyncOutput {
+	output := &specSyncOutput{Destructive: plan.Destructive(), Targets: []specSyncTargetOutput{}}
+	for _, t := range plan.Targets {
+		action := "updated"
+		if !t.Existed {
+			action = "created"
+		}
+		target := specSyncTargetOutput{
+			Capability:      t.Capability,
+			Path:            t.MainPath,
+			DeltaPath:       t.DeltaPath,
+			Action:          action,
+			BeforeDigest:    t.BeforeDigest,
+			AfterDigest:     t.AfterDigest,
+			Added:           t.Changes.Added,
+			Modified:        t.Changes.Modified,
+			Removed:         t.Changes.Removed,
+			IgnoredSections: t.Changes.IgnoredSections,
+		}
+		for _, r := range t.Changes.Renamed {
+			target.Renamed = append(target.Renamed, specSyncRenameOutput{From: r.From, To: r.To})
+		}
+		output.Targets = append(output.Targets, target)
+		if len(t.Changes.Removed) > 0 {
+			output.Removals = append(output.Removals, specSyncRemovalOutput{Capability: t.Capability, Requirements: t.Changes.Removed})
+		}
+	}
+	return output
 }
 
 func validateHybridArchiveViews(hive, openSpec boundArchiveView, destination string) error {

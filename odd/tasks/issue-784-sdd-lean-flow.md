@@ -25,7 +25,7 @@ Related: #781 operator handoff (approved), lands before the adaptive verify slic
 - [x] S7: #781 operator handoff (EvidenceOperator kind + tasks/apply/verify skills).
 - [x] S8: Adaptive verify (stop early on pending tasks; run detected commands once; static review without runner; operator-attested).
 - [x] S9a: Spec-merge engine in Go.
-- [ ] S9b: `jarvis sdd archive` performs spec sync; trim archive skill.
+- [x] S9b: `jarvis sdd archive` performs spec sync; trim archive skill.
 - [ ] S10: Validate authority once in the orchestrator; executors trust forwarded status.
 - [ ] S11: Before/after measurement on the same small real change (user-run; records time, tool calls, test runs, user messages).
 
@@ -121,5 +121,14 @@ Related: #781 operator handoff (approved), lands before the adaptive verify slic
 - Review review-811c1b4fbca90168 approved. Advisory fixed test-first: rollback no longer overwrites unexpected post-write bytes (treated as another writer, reported for recovery) — review review-14d6c38fcf10afd0 approved.
 - For S9b: fail-closed rules reject (a) a delta `##` section outside the four requirement sections (one archived delta has one) and (b) RENAMED blocks with body text (sdd-spec template allows it). Align template and decide tolerance before wiring; decide destructive-plan confirmation; map ApplyError codes to CLI output; empty capability dirs after rollback.
 
+### S9a delivery
+- PR #794 merged (squash 4f92e163). Windows CI: POSIX mode assertions skipped on Windows (test-only fix, review review-0d318e65e5abf895); one rerun of the known OpenCode lifecycle flake (unrelated, no bypass).
+
+### S9b
+- Worker: `jarvis sdd archive` plans, confirms (`--confirm-destructive`), applies the spec merge and moves under the same archive lock; reverts the sync if the move fails; JSON output with typed spec_sync codes; `--plan` dry run; non-requirement delta sections ignored and reported; sdd-archive skill delegates to the CLI; sdd-spec RENAMED without body. RED/GREEN; full suite, vet (linux + windows), gofmt clean. Review review-53b2f6d609373589 approved.
+- Review fixes (RED observed each): misleveled requirement headings in ignored sections block; durable `.spec-sync-journal.json` lets a rerun resume an interrupted archive; `--plan` on Hive reports nothing to sync. Review review-54041fb34af473f9 approved.
+- Accepted residuals: delta edited after an interrupted sync is not re-checked on resume; a journal left in an archived change after a failed delete is reported, not auto-cleaned.
+- One unrelated flake seen once locally (TestBoundSddArchiveOpenSpecPersistedBindingIgnoresHiveEnvironmentAndRenames); 20/20 on rerun.
+
 ## Next step
-S9a push + PR + merge, then S9b (wire spec sync into jarvis sdd archive, trim archive skill).
+S9b push + PR + merge, then S10 (authority validated once).

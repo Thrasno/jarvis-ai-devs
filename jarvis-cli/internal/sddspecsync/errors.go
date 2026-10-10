@@ -26,6 +26,7 @@ var (
 	ErrWriteFailed      = errors.New("main spec write failed")
 	ErrRecoveryRequired = errors.New("spec sync rollback could not be verified")
 	ErrUnsafePath       = errors.New("unsafe spec path")
+	ErrRevertIncomplete = errors.New("spec sync revert could not restore every target")
 )
 
 // Stable failure codes shared with the sdd-archive contract.
@@ -33,6 +34,15 @@ const (
 	CodeConflictRecoveryRequired = "spec_sync_conflict_recovery_required"
 	CodeRecoveryRequired         = "spec_sync_recovery_required"
 	CodeWriteFailed              = "spec_sync_write_failed"
+	// CodeMergeBlocked reports a delta or main spec that cannot be merged
+	// safely; nothing was written.
+	CodeMergeBlocked = "spec_sync_merge_blocked"
+	// CodeConfirmationRequired reports a destructive plan (REMOVED
+	// requirements) that needs explicit confirmation; nothing was written.
+	CodeConfirmationRequired = "spec_sync_confirmation_required"
+	// CodePlanFailed reports delta or main specs that could not be read while
+	// building the plan; nothing was written.
+	CodePlanFailed = "spec_sync_plan_failed"
 )
 
 // MergeError describes why a delta cannot be merged into a main spec.
@@ -64,6 +74,9 @@ func (e *MergeError) Error() string {
 }
 
 func (e *MergeError) Unwrap() error { return e.Kind }
+
+// Code maps the failure to the sdd-archive return code.
+func (e *MergeError) Code() string { return CodeMergeBlocked }
 
 // RecoveryTarget is a main spec whose rollback could not be verified, with the
 // digest it must be restored to (AbsentDigest means it must not exist).
@@ -110,7 +123,7 @@ func (e *ApplyError) Unwrap() []error {
 // Code maps the failure to the sdd-archive return code.
 func (e *ApplyError) Code() string {
 	switch {
-	case len(e.Recovery) > 0:
+	case len(e.Recovery) > 0, errors.Is(e.Kind, ErrJournal):
 		return CodeRecoveryRequired
 	case errors.Is(e.Kind, ErrStale):
 		return CodeConflictRecoveryRequired

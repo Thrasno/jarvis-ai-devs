@@ -169,9 +169,11 @@ The system {MUST/SHALL/SHOULD} {do something specific}.
 (Old name: {Existing Requirement Name})
 (New name: {New Requirement Name})
 (Reason: {why the requirement is being renamed})
-
-{Requirement text, if wording must be clarified with the new name. If behavior changes too, use MODIFIED instead or include a separate MODIFIED block.}
 ```
+
+A RENAMED block carries only Old name, New name, and an optional Reason; archive rejects any other content. To change the body of a renamed requirement, add a MODIFIED block under the new name.
+
+Archive merges only the four `## ADDED|MODIFIED|REMOVED|RENAMED Requirements` sections. Any other `##` section in a delta (for example notes) is ignored and never reaches the main spec; it must not contain `### Requirement:` blocks.
 
 #### For NEW Specs (No Existing Spec)
 
@@ -245,7 +247,7 @@ Ready for design (sdd-design). If design already exists, ready for tasks (sdd-ta
 - If adding new behavior without changing existing behavior → use ADDED, not MODIFIED
 - REMOVED requirements MUST include non-empty, non-placeholder Reason and Migration evidence so archive can validate destructive changes before deletion.
 - `Migration: None` is valid only when justified explicitly in the Migration text.
-- RENAMED requirements MUST include explicit old and new requirement names so archive can match and rename the existing requirement safely.
+- RENAMED requirements MUST include explicit old and new requirement names so archive can match and rename the existing requirement safely. RENAMED blocks carry no body; body changes go in MODIFIED under the new name.
 - Apply any `rules.specs` from `openspec/config.yaml`
 - **Size budget**: Spec artifact MUST be under 650 words. Prefer requirement tables over narrative descriptions. Each scenario: 3-5 lines max.
 - Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.

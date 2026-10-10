@@ -22,12 +22,19 @@ import (
 // OpenSpec exposes the Go-only atomic publication seam used by a later adapter.
 type OpenSpec struct {
 	Root                    string
-	BeforeRename            func() error       // Test-only interruption point after durable staging.
-	BeforeImmutablePublish  func() error       // Test-only interruption point before immutable publication.
-	BeforeArchiveValidate   func() error       // Test-only hook after archive lock acquisition.
-	BeforeSuccessorFileSync func(string) error // Test-only hook before syncing an existing successor file.
-	SyncDir                 func(string) error // Test-only durability observer.
+	BeforeRename            func() error               // Test-only interruption point after durable staging.
+	BeforeImmutablePublish  func() error               // Test-only interruption point before immutable publication.
+	BeforeArchiveValidate   func() error               // Test-only hook after archive lock acquisition.
+	BeforeSuccessorFileSync func(string) error         // Test-only hook before syncing an existing successor file.
+	SyncDir                 func(string) error         // Test-only durability observer.
+	ArchiveRename           func(string, string) error // Test-only archive move seam; os.Rename when nil.
 }
+
+// ArchivePreMoveStep runs under the archive lock after every lifecycle check,
+// immediately before the topology rename. A non-nil error stops the archive
+// without moving anything. If the rename then fails, the returned revert (when
+// non-nil) is called and its error is joined to the rename error.
+type ArchivePreMoveStep func() (revert func() error, err error)
 
 type receipt struct {
 	Payload string `json:"payload"`
@@ -1344,15 +1351,21 @@ func isV2(data []byte) bool {
 // Archive validates the authoritative snapshot before atomically moving the
 // complete change topology, including immutable evidence and request receipts.
 func (s OpenSpec) Archive(destination string) error {
-	return s.archive(destination, nil)
+	return s.archive(destination, nil, nil)
 }
 
 // ArchiveWithLifecycleValidation rechecks lifecycle readiness under lock before moving the topology.
 func (s OpenSpec) ArchiveWithLifecycleValidation(destination string, validate func() error) error {
-	return s.archive(destination, validate)
+	return s.archive(destination, validate, nil)
 }
 
-func (s OpenSpec) archive(destination string, validate func() error) error {
+// ArchiveWithPreMoveStep is ArchiveWithLifecycleValidation plus a step that
+// shares the archive lock with the rename, e.g. main-spec synchronization.
+func (s OpenSpec) ArchiveWithPreMoveStep(destination string, validate func() error, step ArchivePreMoveStep) error {
+	return s.archive(destination, validate, step)
+}
+
+func (s OpenSpec) archive(destination string, validate func() error, step ArchivePreMoveStep) error {
 	root, err := filepath.Abs(filepath.Clean(s.Root))
 	if err != nil {
 		return err
@@ -1434,7 +1447,22 @@ func (s OpenSpec) archive(destination string, validate func() error) error {
 			return err
 		}
 	}
-	if err := os.Rename(s.Root, destination); err != nil {
+	var revert func() error
+	if step != nil {
+		if revert, err = step(); err != nil {
+			return err
+		}
+	}
+	rename := os.Rename
+	if s.ArchiveRename != nil {
+		rename = s.ArchiveRename
+	}
+	if err := rename(s.Root, destination); err != nil {
+		if revert != nil {
+			if revertErr := revert(); revertErr != nil {
+				return errors.Join(err, revertErr)
+			}
+		}
 		return err
 	}
 	return s.syncDir(filepath.Dir(destination))

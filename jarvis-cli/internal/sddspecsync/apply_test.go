@@ -290,6 +290,70 @@ func TestApplyRejectsTamperedPlan(t *testing.T) {
 	}
 }
 
+func TestRevertRestoresAppliedPlan(t *testing.T) {
+	plan, files := applyFixture(t)
+	store := newMemStore(files)
+	before := store.snapshot()
+	if _, err := Apply(plan, store); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	if err := Revert(plan, store); err != nil {
+		t.Fatalf("Revert() error = %v", err)
+	}
+	if !equalMaps(store.snapshot(), before) {
+		t.Fatalf("store not reverted\n got  %v\n want %v", store.snapshot(), before)
+	}
+	writes := len(store.writes)
+	if err := Revert(plan, store); err != nil || len(store.writes) != writes {
+		t.Fatalf("second Revert() error = %v, writes %d -> %d; want an idempotent no-op", err, writes, len(store.writes))
+	}
+}
+
+func TestRevertNeverOverwritesConcurrentEdit(t *testing.T) {
+	plan, files := applyFixture(t)
+	store := newMemStore(files)
+	if _, err := Apply(plan, store); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	store.files[billingPath] = []byte("# Someone else\n")
+
+	err := Revert(plan, store)
+	var applyErr *ApplyError
+	if !errors.As(err, &applyErr) || applyErr.Code() != CodeRecoveryRequired || !errors.Is(err, ErrRecoveryRequired) {
+		t.Fatalf("Revert() error = %#v, want %s", err, CodeRecoveryRequired)
+	}
+	if len(applyErr.Recovery) != 1 || applyErr.Recovery[0].Path != billingPath || applyErr.Recovery[0].ExpectedDigest != AbsentDigest {
+		t.Fatalf("Recovery = %+v", applyErr.Recovery)
+	}
+	if got := string(store.files[billingPath]); got != "# Someone else\n" {
+		t.Fatalf("Revert() overwrote a concurrent edit: %q", got)
+	}
+	if got := string(store.files[authPath]); got != authMain() {
+		t.Fatalf("other targets not reverted: %q", got)
+	}
+	if _, ok := store.files[zetaPath]; ok {
+		t.Fatal("created zeta spec was not removed")
+	}
+}
+
+func TestRevertRejectsTamperedPlan(t *testing.T) {
+	plan, files := applyFixture(t)
+	plan.Targets[0].Before = []byte("# Forged\n")
+	store := newMemStore(files)
+	if err := Revert(plan, store); !errors.Is(err, ErrInvalidPlan) || len(store.writes) != 0 || len(store.removes) != 0 {
+		t.Fatalf("Revert() error = %v writes = %v removes = %v", err, store.writes, store.removes)
+	}
+}
+
+func TestMergeErrorCode(t *testing.T) {
+	_, err := MergeSpec([]byte(authMain()), []byte(delta("## MODIFIED Requirements\n\n### Requirement: Ghost\n\nText.\n")))
+	var mergeErr *MergeError
+	if !errors.As(err, &mergeErr) || mergeErr.Code() != CodeMergeBlocked {
+		t.Fatalf("MergeSpec() error = %#v, want code %s", err, CodeMergeBlocked)
+	}
+}
+
 func TestOSStoreAppliesPlanOnDisk(t *testing.T) {
 	root := t.TempDir()
 	mainPath := filepath.Join(root, filepath.FromSlash(authPath))

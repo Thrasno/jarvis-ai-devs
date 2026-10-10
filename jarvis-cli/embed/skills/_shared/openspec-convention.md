@@ -38,7 +38,7 @@ openspec/
 | sdd-apply | Updates | `openspec/changes/{change-name}/tasks.md` (marks `[x]`) |
 | sdd-verify | Creates | `openspec/changes/{change-name}/verify-report.md` |
 | sdd-archive | Moves | `openspec/changes/{change-name}/` → `openspec/changes/archive/YYYY-MM-DD-{change-name}/` |
-| sdd-archive | Updates | `openspec/specs/{domain}/spec.md` (merges deltas into main specs) |
+| sdd-archive | Updates | `openspec/specs/{domain}/spec.md` (`jarvis sdd archive` merges deltas into main specs) |
 
 ## Reading Artifacts
 
@@ -63,6 +63,8 @@ Main specs: openspec/specs/{domain}/spec.md
 ## Delta Spec Sections
 
 Delta specs describe requirement-level changes with one or more of these sections:
+
+`jarvis sdd archive` merges only these four sections. Any other `##` section in a delta (for example notes) is ignored and never merged; it must not contain `### Requirement:` blocks, and a heading that resembles an operation section (such as `## Added Requirements`) blocks the sync.
 
 ## ADDED Requirements
 
@@ -94,6 +96,8 @@ Use this section when the requirement identity/name changes but the behavior is 
 (New name: {New Requirement Name})
 (Reason: {why the requirement is being renamed})
 ```
+
+A RENAMED block carries only Old name, New name, and an optional Reason; any other content blocks the sync. Renames apply first, so a MODIFIED block that changes a renamed requirement's body uses the new name.
 
 ## Config File Reference
 
