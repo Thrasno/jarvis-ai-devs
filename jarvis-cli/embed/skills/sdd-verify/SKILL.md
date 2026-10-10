@@ -61,9 +61,10 @@ The orchestrator should provide structured status from `jarvis sdd status <chang
 
 | Condition | Action |
 |---|---|
-| Orchestrator says `STRICT TDD MODE IS ACTIVE` | Treat as authoritative. |
-| Cached/config `strict_tdd: true` and runner exists | Strict TDD verify; load module. |
-| Strict TDD false | Standard verify; skip TDD-cycle checks, but still run available project test commands. |
+| Orchestrator says `STRICT TDD MODE IS ACTIVE` | Strict TDD verify; treat as authoritative and load `strict-tdd-verify.md`. |
+| Orchestrator says `TDD MODE: standard` | Standard verify; never load `strict-tdd-verify.md`, even if cached capabilities suggest strict. Still run available project test commands. |
+| Nothing forwarded, cached `strict_tdd_suggestion: strict`, and a runner exists | Legacy only: Strict TDD verify; load module. Use legacy `strict_tdd: true` only when the suggestion is absent. |
+| Nothing forwarded and cached suggestion is `standard` | Standard verify; skip TDD-cycle checks, but still run available project test commands. |
 | No executable test runner can be determined | Record runtime evidence as skipped and do not claim full behavioral PASS. |
 | `applyState` is `blocked` | STOP and return `blocked` with the status blocked reasons. |
 | `actionContext.mode: workspace-planning` | STOP; full workspace implementation verification is not supported in this mode. |
@@ -108,7 +109,7 @@ The orchestrator should provide structured status from `jarvis sdd status <chang
 1. Load relevant skills via shared SDD Section A.
 2. Read structured status first when provided. Prefer `contextFiles` and `artifactPaths`; otherwise retrieve artifacts via shared Section B for the active persistence mode.
 3. Confirm native status authority: `schema` is `jarvis.sdd-status`, `dependencies["sdd-verify"]` is `ready`, `blockedReasons` do not block verify, `actionContext.mode` is `workspace-edit`, and `allowedEditRoots` is non-empty. Do not use manual recovery to bypass any missing authority.
-4. Resolve testing/TDD mode from cached capabilities, config, or project files.
+4. Resolve TDD mode: the forwarded TDD mode first (`STRICT TDD MODE IS ACTIVE` → strict; `TDD MODE: standard` → standard); only when nothing was forwarded, use the cached `strict_tdd_suggestion` (legacy `strict_tdd` when the suggestion is absent). Resolve runnable test commands from cached capabilities, config, or project files either way.
 5. Count completed and incomplete tasks. Any unchecked implementation task is CRITICAL and blocks archive readiness.
 6. Read apply-progress when available. If it is missing, partial, or inconsistent with checked tasks, mark CRITICAL and recommend `sdd-apply` reconciliation.
 7. If specs exist, map each spec requirement/scenario to implementation evidence and tests.

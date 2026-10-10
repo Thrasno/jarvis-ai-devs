@@ -128,7 +128,7 @@ User-facing preflight question format:
 
 Use the harness's native structured question tool when it is available and can represent the complete envelope: all five decision groups in one call, every option and description, single-select behavior per group, custom answers, and the recommended options identified in their labels. Match the user's current language. Keep option codes (`A1`, `B1`, `C1`, `D1`, `E1`) and canonical values unchanged — translate only the user-facing labels and descriptions, not the codes. Do NOT ask the user to type raw keys like `execution mode`, `artifact store`, `tdd mode`, `size policy`, or `chain strategy`. Do NOT invent informal values; use only the canonical values after the user chooses.
 
-Before asking, read the cached testing capabilities from `sdd-init` (`strict_tdd` and the test command). Append `(suggested)` to the group C option that matches them (C1 when `strict_tdd: true` and a test runner exists, otherwise C2) and state in one line what was detected and why. When no capabilities are cached yet, suggest C2 and say that no test runner has been detected. The suggestion never decides; only the user's choice counts.
+Before asking, read the cached testing capabilities from `sdd-init`: `strict_tdd_suggestion`, `detection_reason`, and the test command. Append `(suggested)` to the group C option that matches them (C1 when `strict_tdd_suggestion: strict`, C2 when `strict_tdd_suggestion: standard`) and state in one line what was detected and why: the `Detected:` line shows `detection_reason` verbatim. Fall back to the legacy `strict_tdd` only when `strict_tdd_suggestion` is absent (C1 when `strict_tdd: true` and a test runner exists, otherwise C2). If the request or change clearly targets Deluge code, suggest C2 regardless of cached capabilities, because Deluge code cannot run under a local test runner. When no capabilities are cached yet, suggest C2 and say that no test runner has been detected. The suggestion never decides; only the user's choice counts.
 
 If the native structured question tool is unavailable, rejects questions because no interactive client is attached, or cannot represent that complete envelope, fall back to the complete numbered plain-text prompt below. Do not split or silently omit groups or options. Never emit both the native UI and the fallback prompt in the same attempt.
 
@@ -151,7 +151,7 @@ B. Artifacts
    B4 None: inline-only results; no persisted SDD artifacts.
 
 C. TDD
-   Detected: <one line: cached testing capabilities and why the suggestion matches them>
+   Detected: <cached detection_reason verbatim, or one line on why the suggestion matches>
    C1 Strict TDD: write a failing test before each change; apply and verify enforce RED -> GREEN.
    C2 Standard: no TDD; tests are written alongside or after the code.
 
@@ -298,7 +298,7 @@ After `SDD Session Preflight` is complete and before executing any mutating, pla
 This ensures:
 
 - Testing capabilities are always detected and cached
-- Strict TDD Mode is available when the project supports it and the preflight chose `TDD mode: strict`
+- The cached Strict TDD suggestion (`strict_tdd_suggestion` plus `detection_reason`) is available to seed preflight group C; only the preflight `TDD mode` activates Strict TDD
 - The project context (stack, conventions) is available for all phases
 
 Do NOT skip this check. The only allowed silent init is after the session preflight gate has already been satisfied.
@@ -452,14 +452,16 @@ For phases with required dependencies, sub-agent reads directly from the backend
 
 #### Strict TDD Forwarding (MANDATORY)
 
-When launching `sdd-apply` or `sdd-verify` sub-agents, the orchestrator MUST forward the `TDD mode` recorded in the `## SDD Decisions` block. The user's preflight choice overrides the cached `strict_tdd` capability for this feature.
+When launching `sdd-apply` or `sdd-verify` sub-agents, the orchestrator MUST forward the `TDD mode` recorded in the `## SDD Decisions` block, never the cached capability. Cached `strict_tdd_suggestion` and legacy `strict_tdd` only seed the preflight suggestion; they never activate or deactivate Strict TDD for a feature.
 
 1. If `TDD mode: strict`:
-   - Resolve the test runner from cached testing capabilities: `mem_search(query: "sdd-init/{project}", project: "{project}")`
+   - Resolve the test command from cached testing capabilities: `mem_search(query: "sdd-init/{project}", project: "{project}")`
    - Add to the sub-agent prompt: `"STRICT TDD MODE IS ACTIVE. Test runner: {test_command}. You MUST follow strict-tdd.md. Do NOT fall back to Standard Mode."`
+   - If no test command is cached, still forward strict mode with `Test runner: none detected`; do not downgrade to standard.
    - This is NON-NEGOTIABLE. Do not rely on the sub-agent discovering this independently.
-2. If `TDD mode: standard`, add to the sub-agent prompt: `"TDD MODE: standard (chosen in preflight). Do NOT activate Strict TDD, even if cached capabilities report strict_tdd: true."`
+2. If `TDD mode: standard`, add to the sub-agent prompt: `"TDD MODE: standard (chosen in preflight). Do NOT activate Strict TDD, even if cached capabilities report strict_tdd: true or strict_tdd_suggestion: strict."`
 3. If no TDD mode is recorded for the change, run the preflight before launching apply or verify; do not guess from cached capabilities.
+4. If `sdd-apply` returns `blocked` with reason `strict-tdd-unrunnable`, surface its one-sentence message to the user and wait. Relaunch apply only after the user chooses standard for this feature (update the `TDD mode` line of the proposal's `## SDD Decisions` block) or provides a test command; never relaunch strict apply unchanged.
 
 The orchestrator resolves the TDD mode ONCE per change from the recorded decisions and caches it.
 
