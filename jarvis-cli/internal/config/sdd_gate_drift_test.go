@@ -66,6 +66,40 @@ func TestGateDrift_OrchestratorRequiresNativeWorkspaceAuthorityForMutatingPhases
 	}
 }
 
+// TestGateDrift_OrchestratorRunsStatusOncePerTransitionAndForwardsReferences verifies
+// that the orchestrator runs native status once per mutating phase transition, applies
+// the shared Native Status Gate, and forwards the status JSON plus the artifact
+// references it already holds so executors do not cold-start.
+func TestGateDrift_OrchestratorRunsStatusOncePerTransitionAndForwardsReferences(t *testing.T) {
+	content := strings.ReplaceAll(readConfigTestFile(t, "embed/orchestrator/sdd-orchestrator.md"), "\r\n", "\n")
+
+	for _, required := range []string{
+		"run `jarvis sdd status <change> --json` exactly once for that phase transition and apply the Native Status Gate (Section G of `_shared/sdd-phase-common.md`)",
+		"Forward that status JSON verbatim to the executor together with the artifact references you already hold: Hive observation IDs or OpenSpec paths for proposal, spec, design, and tasks, plus the progress snapshot reference.",
+		"This one run also serves routing, the Review Workload Guard, and the Automatic Mode Gatekeeper for that transition; do not run status again before the launch.",
+		"orchestrator passes artifact references (Hive observation IDs when known, otherwise topic keys, or OpenSpec file paths), NOT content itself",
+		"When the launch prompt forwards an observation ID, the sub-agent calls `mem_get_observation(id)` directly and skips `mem_search`.",
+	} {
+		if !strings.Contains(content, required) {
+			t.Fatalf("sdd-orchestrator.md missing single-status-run contract %q", required)
+		}
+	}
+
+	if got := strings.Count(content, "actionContext.mode == `workspace-edit`"); got != 1 {
+		t.Fatalf("sdd-orchestrator.md must state the native authority checks exactly once, got %d", got)
+	}
+
+	for _, forbidden := range []string{
+		"the orchestrator MUST verify native authority from the current status",
+		"If `jarvis sdd status <change> --json` is available and reports",
+		"prefer native `jarvis sdd status <change> --json` `nextRecommended`",
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("sdd-orchestrator.md must not repeat status-run instructions %q", forbidden)
+		}
+	}
+}
+
 // TestGateDrift_OrchestratorDocNamesApplyDecisionKeyword verifies that the orchestrator
 // prose names the exact keyword that the native apply-decision gate enforces, so the two
 // cannot drift silently.

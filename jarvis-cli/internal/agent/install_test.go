@@ -196,9 +196,9 @@ func TestInstallSkillsFromEmbeddedSDDVerify_RendersModelSpecificSections(t *test
 		"A documented manual verification path is not evidence by itself.",
 		"Manual or runtime verification counts as `PASS` only when it was executed and the report records the command or manual action, result, timestamp or session, and operator/evidence source.",
 		"Unresolved CRITICAL verification finding exists",
-		"dependencies[\"sdd-verify\"]` is exactly `ready`",
-		"`actionContext.allowedEditRoots` must be non-empty.",
-		"manual recovery may inspect artifacts but cannot invent workspace-edit authority",
+		// The authority checks live in the shared Native Status Gate.
+		nativeStatusGateReference,
+		"Gate phase: `sdd-verify`; `dependencies[\"sdd-verify\"]` must be exactly `ready`.",
 	}
 	forbiddenVerifierDrift := []string{
 		"Do NOT run tests unless `strict_tdd` is active and the test runner is explicitly provided.",
@@ -313,23 +313,16 @@ func TestInstallSkillsFromEmbeddedSDDApply_PreservesJarvisStatusAndWorkspaceGuar
 		"jarvis sdd status <change> --json",
 		"schema: `jarvis.sdd-status`",
 		"actionContext",
-		"actionContext.allowedEditRoots",
 		"contextFiles",
 		"artifactPaths",
 		"allowedEditRoots",
-		"workspace-planning",
 		"blockedReasons",
 		"applyState",
 		"applyState.hasProgress",
 		"applyState.complete",
 		"phaseInstructions",
-		"If `jarvis sdd status <change> --json` is unavailable, STOP before editing.",
-		"Manual recovery may inspect artifacts, but cannot invent workspace-edit authority or authorize an edit",
-		"Confirm the status field `schema` is exactly `jarvis.sdd-status`.",
-		"Confirm `dependencies[\"sdd-apply\"]` is exactly `ready`",
-		"If `actionContext.allowedEditRoots` is missing or empty, STOP before editing.",
-		"If a needed edit is outside every `actionContext.allowedEditRoots` entry, STOP",
-		"Generated artifacts are output, never sources of truth",
+		nativeStatusGateReference,
+		"Gate phase: `sdd-apply`; `dependencies[\"sdd-apply\"]` must be exactly `ready`.",
 		"do not jump to `sdd-verify` until apply progress and task checkboxes agree.",
 		"`complete` means canonical apply-progress is complete and authoritative task checkboxes are all checked; verify-report remains a separate dependency",
 	}
@@ -347,6 +340,8 @@ func TestInstallSkillsFromEmbeddedSDDApply_PreservesJarvisStatusAndWorkspaceGuar
 		"If `applyState` says apply is blocked",
 		"If the command is unavailable, build the equivalent status from the artifacts before editing.",
 		"If status is unavailable and no explicit `actionContext.allowedEditRoots` is available, STOP before editing.",
+		"Confirm the status field `schema` is exactly `jarvis.sdd-status`.",
+		"If `actionContext.allowedEditRoots` is missing or empty, STOP before editing.",
 		"section:model",
 	}
 	for _, unwanted := range forbiddenSnippets {
@@ -354,7 +349,31 @@ func TestInstallSkillsFromEmbeddedSDDApply_PreservesJarvisStatusAndWorkspaceGuar
 			t.Fatalf("installed sdd-apply must not contain %q:\n%s", unwanted, content)
 		}
 	}
+
+	// The shared Native Status Gate installs alongside the phase skill that references it.
+	shared, err := os.ReadFile(filepath.Join(dest, "_shared", "sdd-phase-common.md"))
+	if err != nil {
+		t.Fatalf("read installed shared phase protocol: %v", err)
+	}
+	for _, want := range []string{
+		"## G. Native Status Gate",
+		"1. `schema` is exactly `jarvis.sdd-status`.",
+		"2. `dependencies[\"<phase>\"]` is exactly `ready`",
+		"3. `actionContext.mode` is exactly `workspace-edit`; `workspace-planning` is read-only planning context.",
+		"4. `actionContext.allowedEditRoots` is non-empty.",
+		"Write only inside `actionContext.allowedEditRoots`; if a needed path is outside every root, STOP and report the unsafe path.",
+		"Manual recovery may inspect artifacts but cannot invent workspace-edit authority",
+		"Generated artifacts are outputs, never sources of truth",
+	} {
+		if !strings.Contains(string(shared), want) {
+			t.Fatalf("installed shared phase protocol missing %q:\n%s", want, shared)
+		}
+	}
 }
+
+// nativeStatusGateReference mirrors the one sentence each mutating executor uses to
+// consume the shared Native Status Gate.
+const nativeStatusGateReference = "Apply the Native Status Gate from `_shared/sdd-phase-common.md` to the forwarded status; run `jarvis sdd status <change> --json` yourself only when no status was forwarded; STOP on any gate failure."
 
 func TestInstallSkillsFromEmbeddedSDDArchive_PreservesJarvisArchiveSafetyGuards(t *testing.T) {
 	skillsFS, err := fs.Sub(jarvis.SkillsFS, "embed/skills")
@@ -393,10 +412,10 @@ func TestInstallSkillsFromEmbeddedSDDArchive_PreservesJarvisArchiveSafetyGuards(
 		"When prior `apply-progress = partial` exists, STOP until current tasks, apply-progress, and verify-report have been reconciled and re-verified",
 		"Partial, missing, or stale artifacts block archive until they are reconciled and re-verified",
 		"For `none` mode, return a closure summary only; do not persist an archive report",
-		"Generated artifacts are output, never sources of truth",
-		"dependencies[\"sdd-archive\"]` is exactly `ready`",
-		"`actionContext.allowedEditRoots` must be non-empty.",
-		"manual recovery may inspect artifacts but cannot invent workspace-edit authority",
+		// The authority and generated-artifact checks live in the shared Native Status Gate.
+		nativeStatusGateReference,
+		"Gate phase: `sdd-archive`; `dependencies[\"sdd-archive\"]` must be exactly `ready`",
+		"NEVER fix archive readiness by editing generated artifacts",
 	}
 	for _, want := range requiredSnippets {
 		if !strings.Contains(content, want) {

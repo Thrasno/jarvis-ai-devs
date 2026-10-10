@@ -20,6 +20,8 @@ NOTE: the preferred path is (1) — exact skill paths selected by the orchestrat
 
 ## B. Artifact Retrieval (Hive Mode)
 
+When the launch prompt provides artifact observation IDs or OpenSpec paths, read those directly: one `mcp__hive__mem_get_observation(id)` per ID or one file read per path. Skip `mcp__hive__mem_search` for them; search only for artifacts the prompt did not provide.
+
 **CRITICAL**: `mcp__hive__mem_search` returns 300-char PREVIEWS, not full content. You MUST call `mcp__hive__mem_get_observation(id)` for EVERY artifact. **Skipping this produces wrong output.**
 
 Search results are previews, not source material. If Hive search returns multiple candidate artifacts for the same topic and no explicit artifact reference is available, treat the result as ambiguous. Ask the orchestrator/user for the intended observation ID or use a provided artifact reference before proceeding.
@@ -85,7 +87,7 @@ Every phase MUST return a structured envelope to the orchestrator:
 - `status`: `success`, `partial`, or `blocked`
 - `executive_summary`: 1-3 sentence summary of what was done
 - `detailed_report`: (optional) full phase output, or omit if already inline
-- `artifacts`: list of artifact keys/paths written
+- `artifacts`: list of artifact keys/paths written; in `hive` or `hybrid` mode include each saved observation ID so the orchestrator can forward it
 - `next_recommended`: the next SDD phase to run, or `none`
 - `risks`: risks discovered, or `None`
 - `skill_resolution`: how skills were loaded — `paths-injected` (received exact `SKILL.md` paths from orchestrator), `fallback-registry` (self-loaded paths from registry), `fallback-path` (loaded via `SKILL: Load` path), or `none` (no skills loaded)
@@ -130,3 +132,20 @@ Required Hive MCP tools: `mcp__hive__mem_search`, `mcp__hive__mem_get_observatio
 OpenCode permission entries use the corresponding `hive_mem_search`, `hive_mem_get_observation`, `hive_mem_save`, `hive_mem_context`, and `hive_mem_session_summary` tool names.
 
 The blocked response MUST name the missing Hive MCP capability and include remediation guidance. Remediation: run `jarvis init` or the supported reconfiguration flow to regenerate agent artifacts without clobbering user-owned configuration.
+
+## G. Native Status Gate
+
+Mutating phases (`sdd-apply`, `sdd-verify`, `sdd-archive`) apply this gate to the `jarvis.sdd-status` JSON before any edit, command, or report write. `<phase>` is the executor's own phase name.
+
+1. `schema` is exactly `jarvis.sdd-status`.
+2. `dependencies["<phase>"]` is exactly `ready` (the phase skill names any narrower exception).
+3. `actionContext.mode` is exactly `workspace-edit`; `workspace-planning` is read-only planning context.
+4. `actionContext.allowedEditRoots` is non-empty.
+
+- Write only inside `actionContext.allowedEditRoots`; if a needed path is outside every root, STOP and report the unsafe path.
+- Review `blockedReasons` first; a reason that blocks this phase is a gate failure.
+- Fail closed: blocked, missing, unavailable, or invalid status is a gate failure. STOP and return `blocked` with the failing check and the phase-specific `blockedReasons`.
+- Manual recovery may inspect artifacts but cannot invent workspace-edit authority; maintainer approval cannot substitute for it.
+- Generated artifacts are outputs, never sources of truth: never edit installed agent configuration, generated registries, or runtime copies to pass a phase; change the source assets/templates instead.
+
+The orchestrator runs `jarvis sdd status <change> --json` once per phase transition and forwards that JSON verbatim. Executors run it themselves only when no status was forwarded.
