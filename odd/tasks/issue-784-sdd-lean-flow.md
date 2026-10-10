@@ -17,7 +17,7 @@ Related: #781 operator handoff (approved), lands before the adaptive verify slic
 ## Tasks (slices)
 - [x] S1: Delivery decision gate — resolve only from whole single-valued lines (`Chain strategy: <value>` or `Decision needed before apply: No`); template uses non-matching `<one of: ...>` placeholders (fixes substring bypass).
 - [x] S2: Preflight as the single decision point (TDD mode, size policy, chain strategy); tasks and orchestrator stop re-asking; sticky size exception. Also close S1 advisory: an unfilled `Decision needed before apply: <one of: Yes, No>` placeholder leaves Required=false (gate fails open; pre-existing) and the verbatim-template test injects a literal Yes.
-- [ ] S3: TDD detection only suggests (real test command required; Deluge suggests standard; one-line reason); apply consumes forwarded mode.
+- [x] S3: TDD detection only suggests (real test command required; Deluge suggests standard; one-line reason); apply consumes forwarded mode.
 - [ ] S4: Question round single owner (orchestrator), offered in both modes, forced only for unusable scope.
 - [ ] S5a: Checkpoint CLI derives request id and stream digest; returns a `next` action.
 - [ ] S5b: Checkpoint CLI accepts a compact per-task strict-TDD record and expands it into evidence entries.
@@ -51,5 +51,14 @@ Related: #781 operator handoff (approved), lands before the adaptive verify slic
 - Carried to S3: sdd-verify still lets cached strict_tdd win over a Standard choice; legacy in-flight changes without `## SDD Decisions` get the preflight again.
 - Carried to later: chained-pr and work-unit-commits skills still describe the 400-line ask-on-risk flow.
 
+### S2 delivery
+- Windows CI exposed CRLF in multi-line contract snippets; fixed in edad8517 (review review-4f087f567290f6dd approved). PR #786 merged (squash 881412ea), 14/14 checks.
+
+### S3
+- Worker: RED on 4 new contract tests (catalog_contract_test.go, sdd_activation_policy_contract_test.go), GREEN; full suite, vet, gofmt, diff --check clean.
+- Commit `feat(sdd): make TDD detection a suggestion and obey the preflight TDD mode`; review review-39f0d7ffd77510bb approved + acknowledged.
+- Advisory addressed: cached TDD mode refreshed when the user switches after strict-tdd-unrunnable (docs commit).
+- Known limitation: a legacy `strict_tdd: true` in openspec/config.yaml still seeds a strict suggestion; harmless because the preflight decides.
+
 ## Next step
-S2 push + PR + merge, then S3.
+S3 push + PR + merge, then S4 (question round single owner).
