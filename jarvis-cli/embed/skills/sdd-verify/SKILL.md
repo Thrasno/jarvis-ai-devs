@@ -67,7 +67,7 @@ The orchestrator should provide structured status from `jarvis sdd status <chang
 | Orchestrator says `TDD MODE: standard` | Standard verify; never load `strict-tdd-verify.md`, even if cached capabilities suggest strict. Still run available project test commands. |
 | Nothing forwarded, cached `strict_tdd_suggestion: strict`, and a runner exists | Legacy only: Strict TDD verify; load module. Use legacy `strict_tdd: true` only when the suggestion is absent. |
 | Nothing forwarded and cached suggestion is `standard` | Standard verify; skip TDD-cycle checks, but still run available project test commands. |
-| No runnable test command can be determined | Static verify (`Verification mode: static`): no execution; scenarios are `static-reviewed`; the maximum verdict is `PASS WITH WARNINGS`, which stays archive-ready. Never load `strict-tdd-verify.md`. |
+| No runnable test command exists: cached testing capabilities and a direct check of project files (test script, `*_test.go`, `test_*.py`, Makefile `test` target, and similar) both find none | Static verify (`Verification mode: static`). Missing cache alone never selects static mode; check the project files first, and if a real test command exists, run it: no execution; scenarios are `static-reviewed`; the maximum verdict is `PASS WITH WARNINGS`, which stays archive-ready. Never load `strict-tdd-verify.md`. |
 | `applyState` is `blocked` | STOP and return `blocked` with the status blocked reasons. |
 | `actionContext.mode: workspace-planning` | STOP; full workspace implementation verification is not supported in this mode. |
 | Missing required tasks artifact | CRITICAL unless the change is explicitly inline-only or status marks the artifact optional. |

@@ -1107,7 +1107,7 @@ func TestCatalogContract_SDDVerifyAdaptsToRunnerAndStopsEarly(t *testing.T) {
 	}
 
 	rows := markdownTableRows(t, markdownSection(t, verify, "Status Handling and Blockers"))
-	requireAllTerms(t, requireMarkdownTableRow(t, rows, "No runnable test command can be determined"),
+	requireAllTerms(t, requireMarkdownTableRow(t, rows, "No runnable test command exists: cached testing capabilities and a direct check of project files (test script, `*_test.go`, `test_*.py`, Makefile `test` target, and similar) both find none"),
 		"Static verify", "`static-reviewed`", "`PASS WITH WARNINGS`", "archive-ready")
 	requireAllTerms(t, requireMarkdownTableRow(t, rows, "Unchecked implementation/core task"),
 		"`blocked` before running any command", "`sdd-apply`")

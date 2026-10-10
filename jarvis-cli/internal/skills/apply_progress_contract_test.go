@@ -181,3 +181,16 @@ func TestCatalogContract_VerifyKeepsTestsThatCannotFailCritical(t *testing.T) {
 		t.Fatal("assertion audit must not downgrade tests that cannot fail to WARNING")
 	}
 }
+
+// TestCatalogContract_VerifyStaticModeRequiresConfirmedAbsentRunner keeps static
+// verification from becoming a shortcut: a missing cache never selects it.
+func TestCatalogContract_VerifyStaticModeRequiresConfirmedAbsentRunner(t *testing.T) {
+	verify := readNormalizedAsset(t, "embed/skills/sdd-verify/SKILL.md")
+	requireAllTerms(t, verify,
+		"cached testing capabilities and a direct check of project files",
+		"Missing cache alone never selects static mode; check the project files first, and if a real test command exists, run it",
+	)
+	if strings.Contains(verify, "| No runnable test command can be determined |") {
+		t.Fatal("static verify must not trigger when the runner merely could not be determined")
+	}
+}
