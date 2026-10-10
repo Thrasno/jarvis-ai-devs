@@ -1156,7 +1156,7 @@ func TestCatalogContract_BoundedApplyProgressGuidanceUsesGuardedImmutableProtoco
 				// Outcome handling lives in the CLI's next action, not in orchestrator prose.
 				"`task_records`",
 				"`next.action`",
-				"Relaunch `sdd-apply` only for `continue_stream` or `continue_tasks`",
+				"Relaunch `sdd-apply` only for `continue_tasks`",
 				"On any `stop_*` action",
 				"`advance` is retained only for recovery/compatibility",
 				"They may validate a caller-proposed payload, including defensive capacity validation",

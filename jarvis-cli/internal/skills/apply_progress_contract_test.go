@@ -146,3 +146,20 @@ func TestCatalogContract_ApplyCheckpointsOncePerBatchWithTaskRecords(t *testing.
 	shared := readNormalizedAsset(t, "embed/skills/_shared/apply-progress.md")
 	requireAllTerms(t, shared, "`task_records`", "`next`", "once per apply batch")
 }
+
+// TestCatalogContract_ApplyNextHandlingFailsClosedAndIsBounded pins the safety rails
+// around `next`: one owner for continue_stream, fail-closed handling when `next` is
+// missing or unknown (older CLI), and a bounded retry_identical loop.
+func TestCatalogContract_ApplyNextHandlingFailsClosedAndIsBounded(t *testing.T) {
+	apply := readNormalizedAsset(t, "embed/skills/sdd-apply/SKILL.md")
+	requireAllTerms(t, apply,
+		"`continue_stream` is yours to rerun now with the returned cursor (the orchestrator does not relaunch for it)",
+		"Fail closed: if the response has no `next`, or its action is not one named here or in Recovery, STOP and return `blocked`",
+		"retry at most twice; if it still does not commit, STOP and report `code` and `recovery`",
+		"a `skip_reason` triangulation did not run",
+	)
+	orchestrator := readNormalizedAsset(t, "embed/orchestrator/sdd-orchestrator.md")
+	requireAllTerms(t, orchestrator,
+		"The executor reruns `continue_stream` itself within the same launch. Relaunch `sdd-apply` only for `continue_tasks`",
+	)
+}
