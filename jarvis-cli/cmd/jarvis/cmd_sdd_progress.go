@@ -118,6 +118,134 @@ type checkpointOutput struct {
 	Capacity       *capacityOutput            `json:"capacity,omitempty"`
 	Frequency      *checkpointFrequencyOutput `json:"frequency,omitempty"`
 	Warning        *capacityWarningOutput     `json:"warning,omitempty"`
+	Next           *checkpointNext            `json:"next,omitempty"`
+}
+
+// checkpointNext tells the calling agent exactly what to do after one
+// checkpoint invocation, so outcome handling lives here instead of in prompts.
+type checkpointNext struct {
+	Action      string `json:"action"`
+	Instruction string `json:"instruction"`
+}
+
+const (
+	checkpointNextDone                   = "done"
+	checkpointNextContinueStream         = "continue_stream"
+	checkpointNextContinueTasks          = "continue_tasks"
+	checkpointNextStopConsolidate        = "stop_consolidate"
+	checkpointNextStopNewChange          = "stop_new_change"
+	checkpointNextStopFixEntry           = "stop_fix_entry"
+	checkpointNextRefreshAndRetry        = "refresh_and_retry"
+	checkpointNextRetryNewRequestID      = "retry_new_request_id"
+	checkpointNextRetryIdentical         = "retry_identical"
+	checkpointNextRunUpgradeContinuation = "run_upgrade_continuation"
+	checkpointNextFixRequest             = "fix_request"
+	checkpointNextStopBlocked            = "stop_blocked"
+)
+
+// checkpointNextActions is the closed set of next actions a checkpoint emits.
+var checkpointNextActions = []string{
+	checkpointNextDone, checkpointNextContinueStream, checkpointNextContinueTasks, checkpointNextStopConsolidate,
+	checkpointNextStopNewChange, checkpointNextStopFixEntry, checkpointNextRefreshAndRetry, checkpointNextRetryNewRequestID,
+	checkpointNextRetryIdentical, checkpointNextRunUpgradeContinuation, checkpointNextFixRequest, checkpointNextStopBlocked,
+}
+
+var checkpointNextInstructions = map[string]string{
+	checkpointNextDone:                   "All tasks are covered; stop checkpointing this change.",
+	checkpointNextContinueStream:         "Rerun checkpoint now with the same project, change, tasks, and entries, base set to snapshot, expected_generation/revision/digest set to state, entry_index set to next_entry_index, entry_id set to next_entry_id, and request_id, batch_id, and stream_sha256 omitted.",
+	checkpointNextContinueTasks:          "The stream is recorded but tasks remain; after more work, checkpoint only the new entries as a new stream with base set to snapshot, expected_generation/revision/digest set to state, entry_index 0, and request_id, batch_id, and stream_sha256 omitted.",
+	checkpointNextStopConsolidate:        "Do not retry unchanged; combine pending evidence into fewer, larger entries, then rerun checkpoint from the same base.",
+	checkpointNextStopNewChange:          "The progress snapshot is full; stop applying this change and carry the uncovered task IDs into a new SDD change.",
+	checkpointNextStopFixEntry:           "The entry at entry_index is larger than one batch; shorten or split that entry, then rerun checkpoint from the same base.",
+	checkpointNextRefreshAndRetry:        "Progress moved; read the current progress head, set base and expected_generation/revision/digest from it, then rerun checkpoint.",
+	checkpointNextRetryNewRequestID:      "Rerun the same checkpoint with a new unique explicit request_id and batch_id omitted.",
+	checkpointNextRetryIdentical:         "Rerun the identical checkpoint request once the interruption or busy lock clears.",
+	checkpointNextRunUpgradeContinuation: "Run `" + continuationUpgradeCommand + "` with the same request, then rerun checkpoint from the upgraded snapshot.",
+	checkpointNextFixRequest:             "Repair the request field named by code and detail as recovery says, then rerun checkpoint.",
+	checkpointNextStopBlocked:            "Stop and report code and recovery to the user; do not retry until the blocker is resolved.",
+}
+
+// checkpointNextFor maps every checkpoint outcome to exactly one next action.
+// ok is false only for an outcome outside the known contract, such as a new
+// remote outcome; callers then receive the conservative stop_blocked action.
+func checkpointNextFor(output checkpointOutput) (checkpointNext, bool) {
+	action, ok := checkpointNextAction(output)
+	if !ok {
+		action = checkpointNextStopBlocked
+	}
+	return checkpointNext{Action: action, Instruction: checkpointNextInstructions[action]}, ok
+}
+
+func checkpointNextAction(output checkpointOutput) (string, bool) {
+	switch output.Outcome {
+	case string(applyprogress.PlanCommitted):
+		switch {
+		case output.Snapshot != nil && output.Snapshot.Status == applyprogress.StatusComplete:
+			return checkpointNextDone, true
+		case output.NextEntryID != "":
+			return checkpointNextContinueStream, true
+		default:
+			return checkpointNextContinueTasks, true
+		}
+	case string(applyprogress.PlanContinuationRequired):
+		return checkpointNextContinueStream, true
+	case string(applyprogress.PlanEvidenceItemTooLarge):
+		return checkpointNextStopFixEntry, true
+	case string(applyprogress.PlanSnapshotCapacityExhausted):
+		return checkpointNextStopNewChange, true
+	case string(applyprogress.PlanStreamPreflightRequired), string(applyprogress.PlanCheckpointConsolidationRequired):
+		return checkpointNextStopConsolidate, true
+	case "conflict":
+		if output.Code == "request_id_conflict" || output.Code == "batch_collision" {
+			return checkpointNextRetryNewRequestID, true
+		}
+		return checkpointNextRefreshAndRetry, true
+	case "invalid":
+		return checkpointNextFixRequest, true
+	case "blocked":
+		switch {
+		case output.Code == "legacy_upgrade_required" && output.Recovery == continuationUpgradeRecovery:
+			return checkpointNextRunUpgradeContinuation, true
+		case output.Code == "lock_busy":
+			return checkpointNextRetryIdentical, true
+		default:
+			return checkpointNextStopBlocked, true
+		}
+	case "recovery":
+		return checkpointNextRetryIdentical, true
+	default:
+		return "", false
+	}
+}
+
+func withCheckpointNext(output checkpointOutput, err error) (checkpointOutput, error) {
+	next, _ := checkpointNextFor(output)
+	output.Next = &next
+	return output, err
+}
+
+// deriveCheckpointIdentity fills only omitted request and batch IDs. The
+// request ID hashes the canonical request without its own identity fields, so
+// an exact retry replays its receipt while a continuation (new base, expected
+// coordinates, or cursor) or any changed payload receives a new ID. Hive keys
+// receipts globally by request ID, so project and change are part of the hash.
+// The stream digest is excluded because it is a function of the entries.
+func deriveCheckpointIdentity(request checkpointInput) (checkpointInput, error) {
+	if request.RequestID == "" {
+		payload := request
+		payload.RequestID, payload.BatchID, payload.StreamSHA256 = "", "", ""
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return request, fmt.Errorf("%w: request_id derivation", applyprogress.ErrInvalidValue)
+		}
+		sum := sha256.Sum256(append([]byte("jarvis.sdd-checkpoint-request/v1\n"), data...))
+		request.RequestID = "ckpt-" + hex.EncodeToString(sum[:16])
+	}
+	if request.BatchID == "" {
+		sum := sha256.Sum256([]byte("jarvis.sdd-checkpoint-batch/v1\n" + request.RequestID))
+		request.BatchID = "apb-" + hex.EncodeToString(sum[:16])
+	}
+	return request, nil
 }
 
 // MarshalJSON treats the next-entry ID as cursor presence. Its index may validly
@@ -616,6 +744,21 @@ func checkpointFrequencyOutputFor(guard *applyprogress.CheckpointFrequencyError)
 // historical explicit-zero continuation snapshots. It preserves every existing
 // immutable batch and coverage record while binding the new ordered stream.
 func runSddProgressUpgradeContinuation(store progressAdvancer, request checkpointInput) (checkpointOutput, error) {
+	return withCheckpointNext(upgradeSddProgressContinuation(store, request))
+}
+
+func upgradeSddProgressContinuation(store progressAdvancer, request checkpointInput) (checkpointOutput, error) {
+	// Omitted identity derives exactly as in the blocked checkpoint, so the same
+	// request inputs reuse its request ID.
+	request, err := deriveCheckpointIdentity(request)
+	if err != nil {
+		return checkpointValidationOutput(err), err
+	}
+	if request.StreamSHA256 == "" {
+		if stream, streamErr := applyprogress.StreamSHA256(request.Entries); streamErr == nil && len(request.Entries) > 0 {
+			request.StreamSHA256 = stream
+		}
+	}
 	if !applyprogress.ValidID(request.RequestID) {
 		err := fmt.Errorf("%w: request_id", applyprogress.ErrInvalidID)
 		return checkpointValidationOutput(err), err
@@ -654,6 +797,14 @@ func runSddProgressUpgradeContinuation(store progressAdvancer, request checkpoin
 }
 
 func runSddProgressCheckpoint(store progressAdvancer, request checkpointInput) (checkpointOutput, error) {
+	return withCheckpointNext(runSddProgressCheckpointStep(store, request))
+}
+
+func runSddProgressCheckpointStep(store progressAdvancer, request checkpointInput) (checkpointOutput, error) {
+	request, err := deriveCheckpointIdentity(request)
+	if err != nil {
+		return checkpointValidationOutput(err), err
+	}
 	if !applyprogress.ValidID(request.RequestID) {
 		err := fmt.Errorf("%w: request_id", applyprogress.ErrInvalidID)
 		return checkpointValidationOutput(err), err
@@ -786,7 +937,15 @@ func runSddProgressCheckpoint(store progressAdvancer, request checkpointInput) (
 			planTasks = legacyTasks
 		}
 	}
-	plan, err := applyprogress.PlanCheckpoint(applyprogress.PlanInput{Project: request.Project, Change: request.Change, Base: request.Base, Tasks: planTasks, Entries: planEntries, EntryIndex: request.EntryIndex, EntryID: request.EntryID, BatchID: request.BatchID, StreamSHA256: request.StreamSHA256})
+	// An omitted stream digest is derived from the planned entries; the planner
+	// still binds it to the base continuation exactly as a supplied digest.
+	streamSHA256 := request.StreamSHA256
+	if streamSHA256 == "" {
+		if derived, streamErr := applyprogress.StreamSHA256(planEntries); streamErr == nil {
+			streamSHA256 = derived
+		}
+	}
+	plan, err := applyprogress.PlanCheckpoint(applyprogress.PlanInput{Project: request.Project, Change: request.Change, Base: request.Base, Tasks: planTasks, Entries: planEntries, EntryIndex: request.EntryIndex, EntryID: request.EntryID, BatchID: request.BatchID, StreamSHA256: streamSHA256})
 	if err != nil {
 		return checkpointValidationOutput(err), err
 	}

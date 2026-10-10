@@ -12,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -1508,7 +1510,9 @@ func TestSddProgressCheckpointRejectsStaleAndChangedRequestID(t *testing.T) {
 	}
 	changed := checkpointRequest(t, first.RequestID, "apb-00000000000000000000000000000006", base, 0, "entry-2", []applyprogress.EvidenceEntry{{EntryID: "entry-2", TaskIDs: []string{"1"}, CompletesTaskIDs: []string{}, Kind: applyprogress.EvidenceGreen, Summary: "changed", Command: "go test", Outcome: applyprogress.OutcomePass, Files: []string{}}})
 	output, err = executeSddProgressCheckpoint(t, newSddProgressCommand(defaultOpenSpec), root, changed)
-	if !errors.Is(err, applyprogress.ErrInvalidValue) || output.Code != string(applyprogress.CodeInvalidPlan) || output.Detail != "stream_sha256" {
+	// The omitted stream digest is derived, so the changed request reaches the
+	// base check and is rejected there: a complete snapshot cannot advance.
+	if !errors.Is(err, applyprogress.ErrInvalidValue) || output.Code != string(applyprogress.CodeInvalidBase) || output.Receipt != nil {
 		t.Fatalf("changed stream = %#v, %v", output, err)
 	}
 }
@@ -2056,4 +2060,262 @@ func progressRequest(t *testing.T, requestID, batchID string, generation uint64,
 		t.Fatal(err)
 	}
 	return sddprogress.AdvanceRequest{RequestID: requestID, ExpectedGeneration: expectedGeneration, ExpectedRevision: generation - 1, ExpectedDigest: previous, Batches: []applyprogress.Batch{batch}, Snapshot: snapshot}
+}
+
+func TestSddProgressCheckpointDerivesOmittedIdentityAndStreamThroughContinuation(t *testing.T) {
+	root := newProgressTestRoot(t)
+	tasks := []applyprogress.Task{{ID: "1", Text: "one"}, {ID: "2", Text: "two"}, {ID: "3", Text: "three"}}
+	entries := []applyprogress.EvidenceEntry{
+		checkpointEntry("e1", "1", strings.Repeat("é", 21000)),
+		checkpointEntry("e2", "2", strings.Repeat("é", 21000)),
+		checkpointEntry("e3", "3", "last"),
+	}
+	var base *applyprogress.Snapshot
+	var state sddprogress.AdvanceResult
+	cursor, requestIDs, batchIDs := 0, map[string]bool{}, map[string]bool{}
+	for step := 0; ; step++ {
+		if step > len(entries) {
+			t.Fatal("checkpoint stream did not reach a terminal commit")
+		}
+		// Request, batch, and stream identities are omitted: the agent only carries
+		// the returned snapshot, state, and cursor between invocations.
+		request := checkpointInput{Project: "jarvis-dev", Change: "issue-653", Tasks: tasks, Base: base, ExpectedGeneration: state.Generation, ExpectedRevision: state.Revision, ExpectedDigest: state.Digest, Entries: entries, EntryIndex: cursor, EntryID: entries[cursor].EntryID}
+		output, err := executeSddProgressCheckpoint(t, newSddProgressCommand(defaultOpenSpec), root, request)
+		if err != nil || output.Receipt == nil || output.Snapshot == nil || !applyprogress.ValidID(output.Receipt.RequestID) || requestIDs[output.Receipt.RequestID] {
+			t.Fatalf("checkpoint %d = %#v, %v; want a fresh valid derived request ID", step, output, err)
+		}
+		requestIDs[output.Receipt.RequestID] = true
+		batchID := output.Snapshot.Batches[len(output.Snapshot.Batches)-1].BatchID
+		if !regexp.MustCompile(`^apb-[0-9a-f]{32}$`).MatchString(batchID) || batchIDs[batchID] {
+			t.Fatalf("checkpoint %d batch ID = %q; want a fresh derived apb- ID", step, batchID)
+		}
+		batchIDs[batchID] = true
+		if step == 0 {
+			replay, err := executeSddProgressCheckpoint(t, newSddProgressCommand(defaultOpenSpec), root, request)
+			if err != nil || replay.Code == "request_id_conflict" || replay.Receipt == nil || replay.Receipt.RequestID != output.Receipt.RequestID || replay.State != output.State {
+				t.Fatalf("exact retry = %#v, %v; want idempotent replay of %#v", replay, err, output)
+			}
+		}
+		if output.Outcome == string(applyprogress.PlanContinuationRequired) {
+			if output.Next == nil || output.Next.Action != checkpointNextContinueStream || output.Next.Instruction == "" {
+				t.Fatalf("continuation next = %#v", output.Next)
+			}
+			base, state, cursor = output.Snapshot, output.State, output.NextEntryIndex
+			continue
+		}
+		if output.Outcome != string(applyprogress.PlanCommitted) || output.Snapshot.Status != applyprogress.StatusComplete || output.Next == nil || output.Next.Action != checkpointNextDone {
+			t.Fatalf("terminal checkpoint = %#v; next = %#v", output, output.Next)
+		}
+		break
+	}
+	if len(requestIDs) < 2 {
+		t.Fatalf("request IDs = %v; want at least one continuation", requestIDs)
+	}
+}
+
+func TestSddProgressCheckpointDerivedIdentityIsDeterministicAndExplicitWins(t *testing.T) {
+	entries := []applyprogress.EvidenceEntry{checkpointEntry("entry-1", "1", "evidence")}
+	advanced := func(request checkpointInput) sddprogress.AdvanceRequest {
+		t.Helper()
+		backend := &configuredCheckpointBackend{}
+		if output, err := runSddProgressCheckpoint(backend, request); err != nil || len(backend.calls) != 1 {
+			t.Fatalf("checkpoint = %#v, %v; advances=%d", output, err, len(backend.calls))
+		}
+		return backend.calls[0]
+	}
+	batchPattern := regexp.MustCompile(`^apb-[0-9a-f]{32}$`)
+
+	derived := checkpointRequest(t, "", "", nil, 0, "entry-1", entries)
+	first, retry := advanced(derived), advanced(derived)
+	if !applyprogress.ValidID(first.RequestID) || !batchPattern.MatchString(first.Batches[0].BatchID) {
+		t.Fatalf("derived identity = %q/%q; want valid request and batch IDs", first.RequestID, first.Batches[0].BatchID)
+	}
+	if first.RequestID != retry.RequestID || first.Batches[0].BatchID != retry.Batches[0].BatchID {
+		t.Fatalf("identical payloads derived %q/%q and %q/%q", first.RequestID, first.Batches[0].BatchID, retry.RequestID, retry.Batches[0].BatchID)
+	}
+	withStream := derived
+	withStream.StreamSHA256 = mustStreamSHA256(t, entries)
+	if same := advanced(withStream); same.RequestID != first.RequestID {
+		t.Fatalf("explicit matching stream digest changed derived request ID: %q != %q", same.RequestID, first.RequestID)
+	}
+	changed := checkpointRequest(t, "", "", nil, 0, "entry-1", []applyprogress.EvidenceEntry{checkpointEntry("entry-1", "1", "different evidence")})
+	if other := advanced(changed); other.RequestID == first.RequestID || other.Batches[0].BatchID == first.Batches[0].BatchID {
+		t.Fatalf("changed payload reused derived identity %q/%q", other.RequestID, other.Batches[0].BatchID)
+	}
+
+	explicit := advanced(checkpointRequest(t, "explicit-request", "apb-000000000000000000000000000000e1", nil, 0, "entry-1", entries))
+	if explicit.RequestID != "explicit-request" || explicit.Batches[0].BatchID != "apb-000000000000000000000000000000e1" {
+		t.Fatalf("explicit identity = %q/%q; want caller values unchanged", explicit.RequestID, explicit.Batches[0].BatchID)
+	}
+	explicitRequestOnly := advanced(checkpointRequest(t, "explicit-request", "", nil, 0, "entry-1", entries))
+	if explicitRequestOnly.RequestID != "explicit-request" || !batchPattern.MatchString(explicitRequestOnly.Batches[0].BatchID) || explicitRequestOnly.Batches[0].BatchID == first.Batches[0].BatchID {
+		t.Fatalf("explicit request ID batch = %q; want a batch derived from the explicit request ID", explicitRequestOnly.Batches[0].BatchID)
+	}
+	explicitBatchOnly := advanced(checkpointRequest(t, "", "apb-000000000000000000000000000000e2", nil, 0, "entry-1", entries))
+	if explicitBatchOnly.RequestID != first.RequestID || explicitBatchOnly.Batches[0].BatchID != "apb-000000000000000000000000000000e2" {
+		t.Fatalf("explicit batch identity = %q/%q", explicitBatchOnly.RequestID, explicitBatchOnly.Batches[0].BatchID)
+	}
+}
+
+func TestSddProgressCheckpointRejectsMismatchingExplicitStreamDigest(t *testing.T) {
+	request := checkpointRequest(t, "", "", nil, 0, "entry-1", []applyprogress.EvidenceEntry{checkpointEntry("entry-1", "1", "evidence")})
+	request.StreamSHA256 = strings.Repeat("0", 64)
+	backend := &checkpointBackend{}
+	output, err := runSddProgressCheckpoint(backend, request)
+	if !errors.Is(err, applyprogress.ErrInvalidValue) || output.Code != string(applyprogress.CodeInvalidPlan) || output.Detail != "stream_sha256" || backend.calls != 0 {
+		t.Fatalf("mismatching stream = %#v, %v; writes=%d", output, err, backend.calls)
+	}
+	if output.Next == nil || output.Next.Action != checkpointNextFixRequest {
+		t.Fatalf("mismatching stream next = %#v", output.Next)
+	}
+}
+
+func TestSddProgressCheckpointReportsNextActionForHandledOutcomes(t *testing.T) {
+	staleRequest := checkpointSnapshotCapacityRequest(t)
+	advancedHead := *staleRequest.Base
+	advancedHead.Revision++
+	for name, test := range map[string]struct {
+		backend progressAdvancer
+		request checkpointInput
+		action  string
+	}{
+		"committed with remaining tasks": {
+			backend: &checkpointBackend{},
+			request: func() checkpointInput {
+				request := checkpointRequest(t, "", "", nil, 0, "entry-1", []applyprogress.EvidenceEntry{checkpointEntry("entry-1", "1", "evidence")})
+				request.Tasks = []applyprogress.Task{{ID: "1", Text: "task"}, {ID: "2", Text: "later"}}
+				return request
+			}(),
+			action: checkpointNextContinueTasks,
+		},
+		"evidence item too large": {
+			backend: &checkpointBackend{},
+			request: checkpointRequest(t, "", "", nil, 0, "entry-1", []applyprogress.EvidenceEntry{checkpointEntry("entry-1", "1", strings.Repeat("x", applyprogress.MaxDocumentRunes))}),
+			action:  checkpointNextStopFixEntry,
+		},
+		"snapshot capacity exhausted": {backend: &checkpointBackend{current: staleRequest.Base}, request: staleRequest, action: checkpointNextStopNewChange},
+		"stale":                       {backend: &checkpointBackend{current: &advancedHead}, request: staleRequest, action: checkpointNextRefreshAndRetry},
+		"request ID conflict":         {backend: &checkpointBackend{current: staleRequest.Base, requestIDUsed: true}, request: staleRequest, action: checkpointNextRetryNewRequestID},
+	} {
+		t.Run(name, func(t *testing.T) {
+			output, err := runSddProgressCheckpoint(test.backend, test.request)
+			if err != nil || output.Next == nil || output.Next.Action != test.action || output.Next.Instruction == "" {
+				t.Fatalf("checkpoint = %#v, %v; next = %#v, want %s", output, err, output.Next, test.action)
+			}
+		})
+	}
+}
+
+// TestCheckpointNextMapsEveryOutcome fails when a checkpoint outcome has no
+// explicit next action, including planner outcomes added to applyprogress.
+func TestCheckpointNextMapsEveryOutcome(t *testing.T) {
+	complete := &applyprogress.Snapshot{Status: applyprogress.StatusComplete}
+	partial := &applyprogress.Snapshot{Status: applyprogress.StatusPartial}
+	cases := []struct {
+		output checkpointOutput
+		action string
+	}{
+		{checkpointOutput{Outcome: "committed", Code: "committed", Snapshot: complete}, checkpointNextDone},
+		{checkpointOutput{Outcome: "committed", Code: "legacy_imported", Snapshot: complete}, checkpointNextDone},
+		{checkpointOutput{Outcome: "committed", Code: "committed", Snapshot: partial}, checkpointNextContinueTasks},
+		{checkpointOutput{Outcome: "committed", Code: "committed", Snapshot: partial, NextEntryID: "entry-1"}, checkpointNextContinueStream},
+		{checkpointOutput{Outcome: "continuation_required", Code: "continuation_required", Snapshot: partial, NextEntryID: "e2"}, checkpointNextContinueStream},
+		{checkpointOutput{Outcome: "continuation_required", Code: "legacy_imported", Snapshot: partial, NextEntryID: "e1"}, checkpointNextContinueStream},
+		{checkpointOutput{Outcome: "evidence_item_too_large", Code: "evidence_item_too_large"}, checkpointNextStopFixEntry},
+		{checkpointOutput{Outcome: "snapshot_capacity_exhausted", Code: "snapshot_capacity_exhausted"}, checkpointNextStopNewChange},
+		{checkpointOutput{Outcome: "stream_preflight_required", Code: "stream_preflight_required"}, checkpointNextStopConsolidate},
+		{checkpointOutput{Outcome: "checkpoint_consolidation_required", Code: "checkpoint_consolidation_required"}, checkpointNextStopConsolidate},
+		{checkpointOutput{Outcome: "conflict", Code: "stale"}, checkpointNextRefreshAndRetry},
+		{checkpointOutput{Outcome: "conflict", Code: "request_id_conflict"}, checkpointNextRetryNewRequestID},
+		{checkpointOutput{Outcome: "conflict", Code: "batch_collision"}, checkpointNextRetryNewRequestID},
+		{checkpointOutput{Outcome: "invalid", Code: "validation"}, checkpointNextFixRequest},
+		{checkpointOutput{Outcome: "invalid", Code: "base_mismatch"}, checkpointNextFixRequest},
+		{checkpointOutput{Outcome: "invalid", Code: "capacity"}, checkpointNextFixRequest},
+		{checkpointOutput{Outcome: "blocked", Code: "legacy_upgrade_required", Recovery: continuationUpgradeRecovery}, checkpointNextRunUpgradeContinuation},
+		{checkpointOutput{Outcome: "blocked", Code: "legacy_upgrade_required"}, checkpointNextStopBlocked},
+		{checkpointOutput{Outcome: "blocked", Code: "backend_diverged"}, checkpointNextStopBlocked},
+		{checkpointOutput{Outcome: "blocked", Code: "missing_batch"}, checkpointNextStopBlocked},
+		{checkpointOutput{Outcome: "blocked", Code: "lock_busy"}, checkpointNextRetryIdentical},
+		{checkpointOutput{Outcome: "recovery", Code: "publication_interrupted"}, checkpointNextRetryIdentical},
+		{checkpointOutput{Outcome: "recovery", Code: "read_current_failed"}, checkpointNextRetryIdentical},
+		{checkpointOutput{Outcome: "recovery", Code: "receipt_identity_failed"}, checkpointNextRetryIdentical},
+	}
+	covered := map[string]bool{}
+	for _, test := range cases {
+		next, ok := checkpointNextFor(test.output)
+		if !ok || next.Action != test.action || next.Instruction == "" {
+			t.Fatalf("checkpointNextFor(%s/%s) = %#v, %v; want %s", test.output.Outcome, test.output.Code, next, ok, test.action)
+		}
+		covered[test.output.Outcome] = true
+		covered["action:"+next.Action] = true
+	}
+	for _, outcome := range applyprogress.PlanOutcomes() {
+		if !covered[string(outcome)] {
+			t.Fatalf("planner outcome %q has no next-action mapping case", outcome)
+		}
+		output := checkpointOutput{Outcome: string(outcome), Code: string(outcome), Snapshot: partial}
+		if next, ok := checkpointNextFor(output); !ok || !slices.Contains(checkpointNextActions, next.Action) {
+			t.Fatalf("planner outcome %q maps to %#v, %v; want a closed-set action", outcome, next, ok)
+		}
+	}
+	for _, action := range checkpointNextActions {
+		if !covered["action:"+action] {
+			t.Fatalf("next action %q is never produced by the mapping table", action)
+		}
+	}
+	if next, ok := checkpointNextFor(checkpointOutput{Outcome: "unexpected", Code: "unexpected"}); ok || next.Action != checkpointNextStopBlocked {
+		t.Fatalf("unknown outcome = %#v, %v; want an unmapped stop_blocked fallback", next, ok)
+	}
+}
+
+func mustStreamSHA256(t *testing.T, entries []applyprogress.EvidenceEntry) string {
+	t.Helper()
+	stream, err := applyprogress.StreamSHA256(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return stream
+}
+
+func TestSddProgressUpgradeContinuationDerivesBlockedCheckpointIdentity(t *testing.T) {
+	root := newProgressTestRoot(t)
+	if err := os.WriteFile(filepath.Join(root, "tasks.md"), []byte("- [ ] 1 task\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tasks := []applyprogress.Task{{ID: "1", Text: "task"}}
+	_, manifest, err := applyprogress.TaskManifest(tasks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, _, err := applyprogress.SealSnapshot(applyprogress.Snapshot{Schema: applyprogress.SnapshotSchema, Project: "jarvis-dev", Change: "issue-653", Generation: 1, Revision: 1, TaskManifestSHA256: manifest, Status: applyprogress.StatusPartial, Coverage: []applyprogress.Coverage{}, Batches: []applyprogress.BatchRef{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base = historicalCheckpointSnapshot(t, base)
+	data, err := json.Marshal(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "apply-progress.md"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entries := []applyprogress.EvidenceEntry{checkpointEntry("entry-1", "1", "evidence")}
+	request := checkpointRequest(t, "", "", &base, 0, "entry-1", entries)
+	store := sddprogress.OpenSpec{Root: root}
+
+	blocked, err := runSddProgressCheckpoint(store, request)
+	if !errors.Is(err, sddprogress.ErrLegacyMigration) || blocked.Code != "legacy_upgrade_required" || blocked.Next == nil || blocked.Next.Action != checkpointNextRunUpgradeContinuation {
+		t.Fatalf("blocked checkpoint = %#v, %v; next = %#v", blocked, err, blocked.Next)
+	}
+	upgraded, err := runSddProgressUpgradeContinuation(store, request)
+	if err != nil || upgraded.Outcome != "committed" || upgraded.Receipt == nil || upgraded.Snapshot == nil || upgraded.Snapshot.StreamSHA256 != mustStreamSHA256(t, entries) {
+		t.Fatalf("upgrade = %#v, %v; want derived identity and stream", upgraded, err)
+	}
+	derived, err := deriveCheckpointIdentity(request)
+	if err != nil || upgraded.Receipt.RequestID != derived.RequestID {
+		t.Fatalf("upgrade request ID = %q, want blocked checkpoint's derived ID %q (%v)", upgraded.Receipt.RequestID, derived.RequestID, err)
+	}
+	if upgraded.Next == nil || upgraded.Next.Action != checkpointNextContinueStream {
+		t.Fatalf("upgrade next = %#v, want continue_stream", upgraded.Next)
+	}
 }
