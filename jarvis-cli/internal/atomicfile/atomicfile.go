@@ -67,6 +67,24 @@ func Write(path string, data []byte, mode os.FileMode) error {
 		return fmt.Errorf("rename temp file: %w", err)
 	}
 
+	if err := syncDir(dir); err != nil {
+		return err
+	}
+
+	cleanup = false
+	return nil
+}
+
+// Remove deletes path and fsyncs the parent directory so the removal is
+// durable. A missing path returns an error matching fs.ErrNotExist.
+func Remove(path string) error {
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(path))
+}
+
+func syncDir(dir string) error {
 	d, err := os.Open(dir)
 	if err != nil {
 		return fmt.Errorf("open parent dir: %w", err)
@@ -79,7 +97,5 @@ func Write(path string, data []byte, mode os.FileMode) error {
 			return fmt.Errorf("fsync parent dir: %w", err)
 		}
 	}
-
-	cleanup = false
 	return nil
 }
