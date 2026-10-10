@@ -82,4 +82,15 @@ func TestGateDrift_OrchestratorDocNamesApplyDecisionKeyword(t *testing.T) {
 	if !strings.Contains(lower, "sdd-apply") {
 		t.Errorf("sdd-orchestrator.md missing 'sdd-apply' term (required for apply-decision gate section)")
 	}
+	// The fallback must describe the same whole-line resolution rule as the native gate.
+	for _, required := range []string{
+		"resolved only by a whole line with exactly one value",
+		"`chain strategy: size:exception`",
+		"`chain strategy: pending`",
+		"bare `size:exception` token do not resolve",
+	} {
+		if !strings.Contains(lower, required) {
+			t.Errorf("sdd-orchestrator.md missing whole-line apply-decision fallback rule %q", required)
+		}
+	}
 }

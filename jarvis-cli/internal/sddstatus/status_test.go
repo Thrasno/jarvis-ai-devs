@@ -966,36 +966,79 @@ func TestApplyDecisionGate_ReadyWhenDecisionYesAndNoPresent(t *testing.T) {
 	}
 }
 
-// TestApplyDecisionGate_ReadyWhenChainStrategyStackedToMain covers B3.
-func TestApplyDecisionGate_ReadyWhenChainStrategyStackedToMain(t *testing.T) {
-	content := "Decision needed before apply: Yes\nChain strategy: stacked-to-main\n"
-	s := sddstatus.ComputeStatus("my-feature", "hive",
-		allPlanningDoneWithTasksContent(content))
-
-	if s.Dependencies[sddstatus.PhaseApply] != sddstatus.DepReady {
-		t.Errorf("apply dep = %q, want ready when 'Chain strategy: stacked-to-main' present", s.Dependencies[sddstatus.PhaseApply])
+// TestApplyDecisionGate_ResolutionRequiresWholeSingleValuedLine covers B3–B5.
+// A delivery decision resolves the gate only through a whole line carrying exactly
+// one chosen value. Template option lists, pending values, table cells, prose
+// mentions, and bare size:exception tokens must keep apply blocked.
+func TestApplyDecisionGate_ResolutionRequiresWholeSingleValuedLine(t *testing.T) {
+	const yes = "Decision needed before apply: Yes\n"
+	cases := []struct {
+		name     string
+		content  string
+		resolved bool
+	}{
+		{name: "explicit No line", content: yes + "Decision needed before apply: No\n", resolved: true},
+		{name: "stacked-to-main", content: yes + "Chain strategy: stacked-to-main\n", resolved: true},
+		{name: "feature-branch-chain", content: yes + "Chain strategy: feature-branch-chain\n", resolved: true},
+		{name: "size:exception", content: yes + "Chain strategy: size:exception\n", resolved: true},
+		{name: "CRLF line endings", content: "Decision needed before apply: Yes\r\nChain strategy: stacked-to-main\r\n", resolved: true},
+		{name: "surrounding whitespace", content: yes + "  Chain strategy:   feature-branch-chain \t\n", resolved: true},
+		{name: "case-insensitive", content: yes + "chain strategy: Size:Exception\n", resolved: true},
+		{name: "No line at end of content", content: yes + "Decision needed before apply: No", resolved: true},
+		{name: "verbatim template option line", content: yes + "Chain strategy: <stacked-to-main|feature-branch-chain|size:exception|pending>\n"},
+		{name: "unbracketed option list", content: yes + "Chain strategy: stacked-to-main|feature-branch-chain|size:exception|pending\n"},
+		{name: "decision option list", content: "Decision needed before apply: Yes|No\n"},
+		{name: "pending chain strategy", content: yes + "Chain strategy: pending\n"},
+		{name: "table row with size:exception", content: yes + "| Chain strategy | size:exception |\n"},
+		{name: "template table row", content: yes + "| Chain strategy | <stacked-to-main / feature-branch-chain / size:exception / pending> |\n"},
+		{name: "bare size:exception", content: yes + "size:exception\n"},
+		{name: "prose mention", content: yes + "We may later pick Chain strategy: stacked-to-main if review allows.\n"},
+		{name: "two values on one line", content: yes + "Chain strategy: stacked-to-main or feature-branch-chain\n"},
+		{name: "No with trailing qualifier", content: yes + "Decision needed before apply: No, pending maintainer review\n"},
+		{name: "list-item size exception bullet", content: yes + "- **size:exception** — keep it as a single PR\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := sddstatus.ComputeStatus("my-feature", "hive", allPlanningDoneWithTasksContent(tc.content))
+			if s.ApplyDecision == nil {
+				t.Fatal("ApplyDecision must not be nil when tasks content is non-empty")
+			}
+			if !s.ApplyDecision.Required {
+				t.Fatalf("ApplyDecision.Required = false, want true for %q", tc.content)
+			}
+			if s.ApplyDecision.Resolved != tc.resolved {
+				t.Errorf("ApplyDecision.Resolved = %v, want %v for %q", s.ApplyDecision.Resolved, tc.resolved, tc.content)
+			}
+			want := sddstatus.DepBlocked
+			if tc.resolved {
+				want = sddstatus.DepReady
+			}
+			if got := s.Dependencies[sddstatus.PhaseApply]; got != want {
+				t.Errorf("apply dep = %q, want %q for %q", got, want, tc.content)
+			}
+		})
 	}
 }
 
-// TestApplyDecisionGate_ReadyWhenChainStrategyFeatureBranchChain covers B4.
-func TestApplyDecisionGate_ReadyWhenChainStrategyFeatureBranchChain(t *testing.T) {
-	content := "Decision needed before apply: Yes\nChain strategy: feature-branch-chain\n"
-	s := sddstatus.ComputeStatus("my-feature", "hive",
-		allPlanningDoneWithTasksContent(content))
+// TestApplyDecisionGate_VerbatimTemplateCopyStaysBlocked pins that copying the
+// sdd-tasks forecast template without choosing a value never opens the gate.
+func TestApplyDecisionGate_VerbatimTemplateCopyStaysBlocked(t *testing.T) {
+	content := "## Review Workload Forecast\n\n" +
+		"| Field | Value |\n|-------|-------|\n" +
+		"| Delivery strategy | <ask-on-risk / auto-chain / single-pr / exception-ok> |\n" +
+		"| Chain strategy | <stacked-to-main / feature-branch-chain / size:exception / pending> |\n\n" +
+		"Decision needed before apply: Yes\n" +
+		"Chained PRs recommended: <Yes|No>\n" +
+		"Chain strategy: <one of: stacked-to-main, feature-branch-chain, size:exception, pending>\n" +
+		"Chain strategy: stacked-to-main|feature-branch-chain|size:exception|pending\n" +
+		"400-line budget risk: <Low|Medium|High>\n"
+	s := sddstatus.ComputeStatus("my-feature", "hive", allPlanningDoneWithTasksContent(content))
 
-	if s.Dependencies[sddstatus.PhaseApply] != sddstatus.DepReady {
-		t.Errorf("apply dep = %q, want ready when 'Chain strategy: feature-branch-chain' present", s.Dependencies[sddstatus.PhaseApply])
+	if s.Dependencies[sddstatus.PhaseApply] != sddstatus.DepBlocked {
+		t.Errorf("apply dep = %q, want blocked for a verbatim template copy", s.Dependencies[sddstatus.PhaseApply])
 	}
-}
-
-// TestApplyDecisionGate_ReadyWhenSizeException covers B5.
-func TestApplyDecisionGate_ReadyWhenSizeException(t *testing.T) {
-	content := "Decision needed before apply: Yes\nsize:exception\n"
-	s := sddstatus.ComputeStatus("my-feature", "hive",
-		allPlanningDoneWithTasksContent(content))
-
-	if s.Dependencies[sddstatus.PhaseApply] != sddstatus.DepReady {
-		t.Errorf("apply dep = %q, want ready when 'size:exception' present", s.Dependencies[sddstatus.PhaseApply])
+	if s.ApplyDecision == nil || !s.ApplyDecision.Required || s.ApplyDecision.Resolved {
+		t.Errorf("ApplyDecision = %+v, want required and unresolved", s.ApplyDecision)
 	}
 }
 

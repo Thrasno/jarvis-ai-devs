@@ -616,34 +616,42 @@ func TestRunSddContinue_BlockedWhenProposalMissing(t *testing.T) {
 // sdd-apply is blocked and the continue routing surfaces a descriptive reason.
 // This tests the CLI-level enforcement of spec scenario "apply blocked when tasks declare
 // unresolved decision".
+// A verbatim copy of the sdd-tasks option-list line must not count as a decision.
 func TestRunSddContinue_BlockedWhenApplyDecisionUnresolved(t *testing.T) {
-	status, err := buildStatus("my-feature", fakeSddArtifactSource{
-		artifacts: map[string]sddstatus.ArtifactState{
-			sddstatus.ArtifactProposal: sddstatus.ArtifactDone,
-			sddstatus.ArtifactSpec:     sddstatus.ArtifactDone,
-			sddstatus.ArtifactDesign:   sddstatus.ArtifactDone,
-			sddstatus.ArtifactTasks:    sddstatus.ArtifactDone,
-		},
-		contents: map[string]string{
-			sddstatus.ArtifactTasks: "Decision needed before apply: Yes\n",
-		},
-	}, "hive", nil)
-	if err != nil {
-		t.Fatalf("buildStatus: %v", err)
-	}
+	for name, tasks := range map[string]string{
+		"decision flag only":   "Decision needed before apply: Yes\n",
+		"template option list": "Decision needed before apply: Yes\nChain strategy: stacked-to-main|feature-branch-chain|size:exception|pending\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			status, err := buildStatus("my-feature", fakeSddArtifactSource{
+				artifacts: map[string]sddstatus.ArtifactState{
+					sddstatus.ArtifactProposal: sddstatus.ArtifactDone,
+					sddstatus.ArtifactSpec:     sddstatus.ArtifactDone,
+					sddstatus.ArtifactDesign:   sddstatus.ArtifactDone,
+					sddstatus.ArtifactTasks:    sddstatus.ArtifactDone,
+				},
+				contents: map[string]string{
+					sddstatus.ArtifactTasks: tasks,
+				},
+			}, "hive", nil)
+			if err != nil {
+				t.Fatalf("buildStatus: %v", err)
+			}
 
-	if status.Dependencies[sddstatus.PhaseApply] != sddstatus.DepBlocked {
-		t.Errorf("sdd-apply dep = %q, want blocked when apply-decision is unresolved", status.Dependencies[sddstatus.PhaseApply])
-	}
+			if status.Dependencies[sddstatus.PhaseApply] != sddstatus.DepBlocked {
+				t.Errorf("sdd-apply dep = %q, want blocked when apply-decision is unresolved", status.Dependencies[sddstatus.PhaseApply])
+			}
 
-	hasReason := false
-	for _, r := range status.BlockedReasons {
-		if strings.Contains(r, "Decision needed before apply") {
-			hasReason = true
-		}
-	}
-	if !hasReason {
-		t.Errorf("BlockedReasons must mention 'Decision needed before apply'; got: %v", status.BlockedReasons)
+			hasReason := false
+			for _, r := range status.BlockedReasons {
+				if strings.Contains(r, "Decision needed before apply") {
+					hasReason = true
+				}
+			}
+			if !hasReason {
+				t.Errorf("BlockedReasons must mention 'Decision needed before apply'; got: %v", status.BlockedReasons)
+			}
+		})
 	}
 }
 

@@ -108,15 +108,18 @@ var (
 	// rxApplyDecisionRequired matches "Decision needed before apply: Yes" with word boundary
 	// to avoid prefix collisions like "Yesterday". Case-insensitive for robustness.
 	rxApplyDecisionRequired = regexp.MustCompile(`(?i)Decision needed before apply:\s*Yes\b`)
-	// rxApplyDecisionNo matches the explicit "No" resolution token. Word boundary prevents
-	// matching "None" or other words that start with "No".
-	rxApplyDecisionNo = regexp.MustCompile(`(?i)Decision needed before apply:\s*No\b`)
+	// rxApplyDecisionNo matches a whole "Decision needed before apply: No" line. Anchoring
+	// to the full line rejects option lists ("Yes|No"), "None", and trailing qualifiers.
+	rxApplyDecisionNo = regexp.MustCompile(`(?im)^[ \t]*Decision needed before apply:[ \t]*No[ \t]*\r?$`)
+	// rxChainStrategyResolved matches a whole "Chain strategy: <value>" line carrying exactly
+	// one chosen value. Template option lists, "pending", table cells, and prose do not match.
+	rxChainStrategyResolved = regexp.MustCompile(`(?im)^[ \t]*Chain strategy:[ \t]*(?:stacked-to-main|feature-branch-chain|size:exception)[ \t]*\r?$`)
 )
 
 // ApplyDecision reports whether an unresolved delivery decision blocks apply.
 // Required is true when the tasks artifact declares "Decision needed before apply: Yes".
-// Resolved is true when a resolution token is present (explicit No, a non-pending chain
-// strategy, or an accepted size exception). Apply is blocked only when Required && !Resolved.
+// Resolved is true when a whole resolution line is present (explicit No or a single chosen
+// chain strategy, including size:exception). Apply is blocked only when Required && !Resolved.
 type ApplyDecision struct {
 	Required bool `json:"required"`
 	Resolved bool `json:"resolved"`
@@ -416,11 +419,16 @@ func parseTaskProgress(content string, observed bool) *TaskProgress {
 // Required is set when the content contains the literal phrase
 // "Decision needed before apply: Yes".
 //
-// Resolved is set when any of the following resolution tokens are present:
+// Resolved is set only when one of the following appears as a whole line (case-insensitive,
+// surrounding whitespace and CRLF tolerated):
 //   - "Decision needed before apply: No"
 //   - "Chain strategy: stacked-to-main"
 //   - "Chain strategy: feature-branch-chain"
-//   - "size:exception"
+//   - "Chain strategy: size:exception"
+//
+// Option-list lines such as "Chain strategy: stacked-to-main|...|pending", "pending"
+// values, table cells, prose mentions, and bare "size:exception" tokens do not resolve,
+// so a verbatim copy of the sdd-tasks template keeps apply blocked.
 //
 // Returns nil when tasksContent is empty (gate inactive).
 func parseApplyDecision(tasksContent string) *ApplyDecision {
@@ -433,9 +441,7 @@ func parseApplyDecision(tasksContent string) *ApplyDecision {
 		return &ApplyDecision{Required: false, Resolved: true}
 	}
 	resolved := rxApplyDecisionNo.MatchString(tasksContent) ||
-		strings.Contains(tasksContent, "Chain strategy: stacked-to-main") ||
-		strings.Contains(tasksContent, "Chain strategy: feature-branch-chain") ||
-		strings.Contains(tasksContent, "size:exception")
+		rxChainStrategyResolved.MatchString(tasksContent)
 	return &ApplyDecision{Required: true, Resolved: resolved}
 }
 

@@ -541,8 +541,15 @@ func TestCatalogContract_SDDCoreSkillsMatchJarvisAdaptedUpstreamContract(t *test
 				"disable-model-invocation: true",
 				"user-invocable: false",
 				"## Review Workload Forecast",
-				"Chain strategy: <stacked-to-main|feature-branch-chain|size:exception|pending>",
+				"Chain strategy: <one of: stacked-to-main, feature-branch-chain, size:exception, pending>",
+				"Write exactly one chosen value per line, for example `Chain strategy: stacked-to-main`.",
+				"Write `Chain strategy: pending` until the user has decided.",
 				"Return envelope per **Section D** from `skills/_shared/sdd-phase-common.md`.",
+			},
+			// Literal option lists would satisfy a careless guard if copied verbatim.
+			forbidden: []string{
+				"Chain strategy: stacked-to-main|feature-branch-chain|size:exception|pending",
+				"Chain strategy: <stacked-to-main|feature-branch-chain|size:exception|pending>",
 			},
 		},
 		{
