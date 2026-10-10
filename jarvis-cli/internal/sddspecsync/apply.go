@@ -67,11 +67,9 @@ func Apply(p Plan, s Store) (Result, error) {
 		if err := s.WriteFile(t.MainPath, t.After); err != nil {
 			return Result{}, rollback(s, done, &ApplyError{Kind: ErrWriteFailed, Path: t.MainPath, Cause: err})
 		}
-		observed, err := checkAfter(s, t)
-		if observed != nil {
-			done[len(done)-1].written = observed
-		}
-		if err != nil {
+		// Writes are atomic, so bytes other than t.After after the write belong to
+		// another writer; rollback must treat them as a concurrent edit.
+		if _, err := checkAfter(s, t); err != nil {
 			return Result{}, rollback(s, done, err)
 		}
 		result.Written = append(result.Written, Written{Path: t.MainPath, BeforeDigest: t.BeforeDigest, Digest: t.AfterDigest, Created: !t.Existed})

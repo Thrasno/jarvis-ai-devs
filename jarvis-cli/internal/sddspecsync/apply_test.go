@@ -148,7 +148,6 @@ func TestApplyRollsBackOnFailure(t *testing.T) {
 		inject func(*memStore)
 	}{
 		{name: "write failure", inject: func(s *memStore) { s.failWrite[zetaPath] = true }},
-		{name: "post-write digest mismatch", inject: func(s *memStore) { s.corrupt[zetaPath] = true }},
 		{name: "concurrent edit before a later write", inject: func(s *memStore) {
 			s.afterRead = func(name string) {
 				if name == billingPath && len(s.writes) == 1 {
@@ -216,6 +215,62 @@ func TestApplyRollbackRefusesToOverwriteConcurrentPostWriteEdit(t *testing.T) {
 	}
 	if _, ok := store.files[billingPath]; ok {
 		t.Fatal("created billing spec was not removed")
+	}
+}
+
+// racingStore lets another writer replace a target right after Apply writes it,
+// before the post-write digest check reads it back.
+type racingStore struct {
+	*memStore
+	path, replacement string
+}
+
+func (s *racingStore) WriteFile(name string, data []byte) error {
+	if err := s.memStore.WriteFile(name, data); err != nil {
+		return err
+	}
+	if name == s.path && s.replacement != "" {
+		s.files[name] = []byte(s.replacement)
+		s.replacement = "" // the other writer races exactly once
+	}
+	return nil
+}
+
+// TestApplyPostWriteMismatchIsReportedNotOverwritten treats unexpected bytes after
+// an atomic write as someone else's: earlier targets roll back, the mismatched
+// target is reported for recovery instead of being overwritten.
+func TestApplyPostWriteMismatchIsReportedNotOverwritten(t *testing.T) {
+	plan, files := applyFixture(t)
+	store := newMemStore(files)
+	store.corrupt[zetaPath] = true
+
+	_, err := Apply(plan, store)
+	var applyErr *ApplyError
+	if !errors.As(err, &applyErr) || applyErr.Code() != CodeRecoveryRequired || !errors.Is(err, ErrWriteFailed) {
+		t.Fatalf("Apply() error = %#v, want %s with ErrWriteFailed", err, CodeRecoveryRequired)
+	}
+	if len(applyErr.Recovery) != 1 || applyErr.Recovery[0].Path != zetaPath {
+		t.Fatalf("Recovery = %+v, want %s", applyErr.Recovery, zetaPath)
+	}
+	if got := string(store.files[authPath]); got != authMain() {
+		t.Fatalf("earlier target not rolled back: %q", got)
+	}
+}
+
+func TestApplyRollbackNeverOverwritesEditRacingThePostWriteCheck(t *testing.T) {
+	plan, files := applyFixture(t)
+	store := &racingStore{memStore: newMemStore(files), path: authPath, replacement: "# Someone else\n"}
+
+	_, err := Apply(plan, store)
+	var applyErr *ApplyError
+	if !errors.As(err, &applyErr) || applyErr.Code() != CodeRecoveryRequired {
+		t.Fatalf("Apply() error = %#v, want %s", err, CodeRecoveryRequired)
+	}
+	if got := string(store.files[authPath]); got != "# Someone else\n" {
+		t.Fatalf("rollback overwrote an edit that raced the post-write check: %q", got)
+	}
+	if len(applyErr.Recovery) != 1 || applyErr.Recovery[0].Path != authPath {
+		t.Fatalf("Recovery = %+v, want %s", applyErr.Recovery, authPath)
 	}
 }
 
