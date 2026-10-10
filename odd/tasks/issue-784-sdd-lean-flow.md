@@ -20,7 +20,7 @@ Related: #781 operator handoff (approved), lands before the adaptive verify slic
 - [x] S3: TDD detection only suggests (real test command required; Deluge suggests standard; one-line reason); apply consumes forwarded mode.
 - [x] S4: Question round single owner (orchestrator), offered in both modes, forced only for unusable scope.
 - [x] S5a: Checkpoint CLI derives request id and stream digest; returns a `next` action.
-- [ ] S5b: Checkpoint CLI accepts a compact per-task strict-TDD record and expands it into evidence entries.
+- [x] S5b: Checkpoint CLI accepts a compact per-task strict-TDD record and expands it into evidence entries.
 - [ ] S6: Trim apply prompts (one checkpoint per batch, follow `next`, compact TDD).
 - [ ] S7: #781 operator handoff (EvidenceOperator kind + tasks/apply/verify skills).
 - [ ] S8: Adaptive verify (stop early on pending tasks; run detected commands once; static review without runner; operator-attested).
@@ -77,5 +77,14 @@ Related: #781 operator handoff (approved), lands before the adaptive verify slic
 - Commits `feat(sdd): derive checkpoint identities and return a next action` (review review-6810382206a126a2 approved) and coverage restore 'test(sdd): keep coverage for stale explicit digests on reused request IDs' (review review-79b0cbefdf4a97a9 approved).
 - Prompt slice S6 must stop demanding stream_sha256/request_id/batch_id and follow `next`.
 
+### S5a delivery
+- PR #789 merged (squash 45197bf1), 14/14 checks.
+
+### S5b
+- Worker: `task_records` input (one record per task: red/green/triangulate/refactor/verification, skip_reason only on triangulate) expanded by `applyprogress.ExpandTaskRecords` into canonical entries before identity derivation; mutually exclusive with `entries`; entry ids `<task>-<step>` with bounded digest stems. RED (stub + CLI tests), GREEN; hivederive, jarvis-cli, hive-daemon, hive-api suites ok.
+- Commit `feat(sdd): accept compact per-task records in apply checkpoints`; review review-fd225f30221b2423 approved.
+- Advisory fixed test-first: completion attaches to the last step that ran and it must pass (no completing on RED/failure) — commit `fix(sdd): require a passing last run step before a task record completes`; review review-c3476a1908530cd5 approved.
+- Note: existing validators enforce structure only (no RED-must-fail rule); unchanged by design.
+
 ## Next step
-S5a push + PR + merge, then S5b (compact strict-TDD record).
+S5b push + PR + merge, then S6 (trim apply prompts: task_records, follow `next`).
