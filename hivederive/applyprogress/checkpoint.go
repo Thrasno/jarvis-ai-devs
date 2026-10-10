@@ -82,7 +82,7 @@ func planCheckpoint(input PlanInput, preflightNewStream bool) (PlanResult, error
 	for _, task := range tasks {
 		known[task.ID] = true
 	}
-	if err := validateStream(input.Entries, known, false); err != nil {
+	if err := validateStream(input.Entries, known, operatorTaskIDs(tasks), false); err != nil {
 		return PlanResult{}, err
 	}
 
@@ -574,7 +574,19 @@ func hasBatchID(batches []BatchRef, batchID string) bool {
 	return false
 }
 
-func validateStream(entries []EvidenceEntry, known map[string]bool, allowImported bool) error {
+// operatorTaskIDs returns the tasks tagged [operator]: steps only the developer can
+// perform, which are the only tasks operator evidence may attribute.
+func operatorTaskIDs(tasks []Task) map[string]bool {
+	ids := map[string]bool{}
+	for _, task := range tasks {
+		if strings.HasPrefix(strings.TrimSpace(task.Text), operatorTaskTag) {
+			ids[task.ID] = true
+		}
+	}
+	return ids
+}
+
+func validateStream(entries []EvidenceEntry, known, operatorTasks map[string]bool, allowImported bool) error {
 	seenEntries, completed := map[string]bool{}, map[string]bool{}
 	for _, entry := range entries {
 		if validateEvidenceEntry(entry) != nil || (!allowImported && entry.Kind == EvidenceImported) || seenEntries[entry.EntryID] {
@@ -583,7 +595,7 @@ func validateStream(entries []EvidenceEntry, known map[string]bool, allowImporte
 		seenEntries[entry.EntryID] = true
 		attributed := map[string]bool{}
 		for _, id := range entry.TaskIDs {
-			if !known[id] || attributed[id] {
+			if !known[id] || attributed[id] || (entry.Kind == EvidenceOperator && !operatorTasks[id]) {
 				return invalid(CodeInvalidEvidence, entry.EntryID)
 			}
 			attributed[id] = true
@@ -611,7 +623,7 @@ func ValidateFutureStream(tasks []Task, entries []EvidenceEntry, existing []Cove
 	for _, task := range normalized {
 		known[task.ID] = true
 	}
-	if err := validateStream(entries, known, false); err != nil {
+	if err := validateStream(entries, known, operatorTaskIDs(normalized), false); err != nil {
 		return err
 	}
 	return validateFutureStream(entries, normalized, existing)

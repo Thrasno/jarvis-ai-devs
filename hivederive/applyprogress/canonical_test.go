@@ -34,7 +34,7 @@ func TestSealBatchCanonicalAndBounded(t *testing.T) {
 			batch: func() Batch {
 				batch := validBatch("uploaded and ran cases A and B")
 				batch.Entries[0].Kind = EvidenceOperator
-				batch.Entries[0].Command = ""
+				batch.Entries[0].Command, batch.Entries[0].ExitCode = "", 0
 				batch.Entries[0].Outcome = OutcomePass
 				return batch
 			}(),

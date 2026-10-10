@@ -73,6 +73,9 @@ const (
 	EvidenceOperator EvidenceKind = "operator"
 )
 
+// operatorTaskTag marks a task in tasks.md that only the developer can perform.
+const operatorTaskTag = "[operator]"
+
 type Outcome string
 
 const (

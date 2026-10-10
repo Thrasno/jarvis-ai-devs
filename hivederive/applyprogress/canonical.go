@@ -456,6 +456,10 @@ func validateEvidenceEntry(entry EvidenceEntry) error {
 	if !validKind(entry.Kind) || !validOutcome(entry.Outcome) {
 		return ErrInvalidValue
 	}
+	// Operator evidence is the developer's chat attestation: it never claims a run.
+	if entry.Kind == EvidenceOperator && (entry.Command != "" || entry.ExitCode != 0 || entry.Outcome != OutcomePass) {
+		return ErrInvalidValue
+	}
 	return nil
 }
 
