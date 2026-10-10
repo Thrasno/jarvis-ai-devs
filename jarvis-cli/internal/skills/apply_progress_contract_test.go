@@ -161,5 +161,10 @@ func TestCatalogContract_ApplyNextHandlingFailsClosedAndIsBounded(t *testing.T) 
 	orchestrator := readNormalizedAsset(t, "embed/orchestrator/sdd-orchestrator.md")
 	requireAllTerms(t, orchestrator,
 		"The executor reruns `continue_stream` itself within the same launch. Relaunch `sdd-apply` only for `continue_tasks`",
+		"An executor that stopped a stalled stream returns `blocked`; surface it like a `stop_*` action.",
 	)
+	requireAllTerms(t, apply, "each rerun must advance the cursor, and if it does not, STOP and return `blocked`")
+	if strings.Contains(orchestrator, "unfinished `continue_stream`") {
+		t.Fatal("orchestrator must not relaunch apply for continue_stream; the executor owns it")
+	}
 }
