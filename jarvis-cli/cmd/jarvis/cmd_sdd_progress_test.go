@@ -1515,6 +1515,17 @@ func TestSddProgressCheckpointRejectsStaleAndChangedRequestID(t *testing.T) {
 	if !errors.Is(err, applyprogress.ErrInvalidValue) || output.Code != string(applyprogress.CodeInvalidBase) || output.Receipt != nil {
 		t.Fatalf("changed stream = %#v, %v", output, err)
 	}
+	// An explicit digest that does not match the changed entries is still rejected
+	// before any write when the request ID is reused.
+	staleDigest, err := applyprogress.StreamSHA256(first.Entries)
+	if err != nil {
+		t.Fatalf("stale digest: %v", err)
+	}
+	changed.StreamSHA256 = staleDigest
+	output, err = executeSddProgressCheckpoint(t, newSddProgressCommand(defaultOpenSpec), root, changed)
+	if !errors.Is(err, applyprogress.ErrInvalidValue) || output.Code != string(applyprogress.CodeInvalidPlan) || output.Detail != "stream_sha256" || output.Receipt != nil {
+		t.Fatalf("changed stream with stale explicit digest = %#v, %v", output, err)
+	}
 }
 
 func TestSddProgressCheckpointRejectsDifferentIDCandidateReplay(t *testing.T) {
