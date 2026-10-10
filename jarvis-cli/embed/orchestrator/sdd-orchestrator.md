@@ -477,12 +477,21 @@ When launching `sdd-apply` or `sdd-verify` sub-agents, the orchestrator MUST for
 
 The orchestrator resolves the TDD mode ONCE per change from the recorded decisions and caches it. The only change after preflight is the user's explicit choice in rule 4: update the `## SDD Decisions` block and replace the cached TDD mode in the same step, so later launches and sessions forward the new value.
 
+#### Operator Handoff Pause (MANDATORY)
+
+Some tasks are `[operator]` rows: steps only the developer can execute (for example uploading a Deluge function to a client tenant and running test cases). SDD controls the agent, not the developer; the developer's word in chat is enough.
+
+1. When `sdd-apply` returns `partial` with reason `operator-handoff`, relay its handoff text to the developer verbatim and wait. This pause happens in both `interactive` and `auto` execution mode; automatic mode never skips it, and the Automatic Mode Gatekeeper treats it as a pause, not a failure.
+2. When the developer says it is done (any clear affirmative), relaunch `sdd-apply` with `OPERATOR_ACK: <task-id> — <developer message>` on its own line, plus the usual snapshot reference and coordinates. Apply persists the acknowledgement as guarded evidence and checks the task, so the orchestrator never asks again, including in a fresh session.
+3. If the developer reports a problem instead, do not send an ack; route the feedback like any other apply finding.
+4. Never ask for screenshots, IDs, or logs, and never verify the step yourself. Never use Zoho MCP servers to check an operator step: they point at our own account, never the client tenant.
+
 ## Bounded Apply-Progress Continuation (MANDATORY)
 
 When launching `sdd-apply`, forward the canonical progress snapshot reference, its expected generation/revision/digest, and the recorded SDD decisions. The executor MUST use the mode-specific canonical progress reader before writing: OpenSpec reads `apply-progress.md` plus exactly referenced `apply-evidence/<batch-id>.json`; Hive calls `sdd_apply_progress_get`; Hybrid independently validates both. Low-level `advance` is not a reader.
 
 1. The executor implements its batch, builds one `task_records` item per task, and runs `jarvis sdd progress checkpoint` once per batch from that stable base snapshot and cursor. The command commits immutable evidence batches of at most 40,000 Unicode runes, derives request and stream identities, and returns `next: {action, instruction}`; the executor follows `next.action` instead of interpreting outcomes itself.
-2. The executor reruns `continue_stream` itself within the same launch. Relaunch `sdd-apply` only for `continue_tasks` (tasks remain for a later batch), forwarding the returned snapshot and coordinates. An executor that stopped a stalled stream returns `blocked`; surface it like a `stop_*` action. After `done`, route to `sdd-verify` once apply progress and task checkboxes agree.
+2. The executor reruns `continue_stream` itself within the same launch. Relaunch `sdd-apply` only for `continue_tasks` (tasks remain for a later batch) or an operator acknowledgement (see Operator Handoff Pause), forwarding the returned snapshot and coordinates. An executor that stopped a stalled stream returns `blocked`; surface it like a `stop_*` action. After `done`, route to `sdd-verify` once apply progress and task checkboxes agree.
 3. On any `stop_*` action, or a retry action the executor could not resolve, surface the executor's `next.instruction`, `code`, and `recovery` to the user verbatim, then wait. Do not relaunch unchanged, route downstream, pick a backend winner, or synthesize a replacement snapshot.
 4. `advance` is retained only for recovery/compatibility of an already planned batch and snapshot. They may validate a caller-proposed payload, including defensive capacity validation, but never plan or split evidence.
 

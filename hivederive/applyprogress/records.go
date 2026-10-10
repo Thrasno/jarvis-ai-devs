@@ -15,6 +15,9 @@ type TaskRecord struct {
 	Triangulate  *TaskStep `json:"triangulate,omitempty"`
 	Refactor     *TaskStep `json:"refactor,omitempty"`
 	Verification *TaskStep `json:"verification,omitempty"`
+	// Operator records the developer's acknowledgement of an operator handoff
+	// task. It carries only a summary and excludes every agent-executed step.
+	Operator *TaskStep `json:"operator,omitempty"`
 }
 
 // TaskStep is one observed step of a TaskRecord. The outcome derives from the
@@ -32,7 +35,8 @@ const taskRecordStemLimit = 64 - len("-verification")
 
 // ExpandTaskRecords deterministically expands compact records, in order, into
 // canonical evidence entries with steps ordered red, green, triangulate,
-// refactor, verification. Entry IDs derive from the task ID and step name.
+// refactor, verification, or a single operator acknowledgement. Entry IDs
+// derive from the task ID and step name.
 // Semantic stream rules stay with the existing stream validators.
 func ExpandTaskRecords(records []TaskRecord) ([]EvidenceEntry, error) {
 	if len(records) == 0 {
@@ -46,11 +50,7 @@ func ExpandTaskRecords(records []TaskRecord) ([]EvidenceEntry, error) {
 			return nil, invalid(CodeInvalidPlan, field+".task_id")
 		}
 		seenTasks[record.TaskID] = true
-		steps := []struct {
-			name string
-			kind EvidenceKind
-			step *TaskStep
-		}{
+		steps := []taskRecordStep{
 			{"red", EvidenceRed, record.Red},
 			{"green", EvidenceGreen, record.Green},
 			{"triangulate", EvidenceTriangulate, record.Triangulate},
@@ -59,6 +59,14 @@ func ExpandTaskRecords(records []TaskRecord) ([]EvidenceEntry, error) {
 		}
 		stem := taskRecordStem(record.TaskID)
 		first := len(entries)
+		if record.Operator != nil {
+			// Operator tasks are executed by the developer, never by the agent, so
+			// an acknowledgement cannot share a record with agent-executed steps.
+			if record.Red != nil || record.Green != nil || record.Triangulate != nil || record.Refactor != nil || record.Verification != nil {
+				return nil, invalid(CodeInvalidPlan, field+".operator")
+			}
+			steps = []taskRecordStep{{"operator", EvidenceOperator, record.Operator}}
+		}
 		for _, step := range steps {
 			if step.step == nil {
 				continue
@@ -94,7 +102,20 @@ func ExpandTaskRecords(records []TaskRecord) ([]EvidenceEntry, error) {
 	return entries, nil
 }
 
+type taskRecordStep struct {
+	name string
+	kind EvidenceKind
+	step *TaskStep
+}
+
 func expandTaskStep(kind EvidenceKind, step TaskStep) (EvidenceEntry, bool) {
+	if kind == EvidenceOperator {
+		// The developer's acknowledgement message is the whole step: nothing ran.
+		if step.Summary == "" || step.Command != "" || step.ExitCode != 0 || step.SkipReason != "" {
+			return EvidenceEntry{}, false
+		}
+		return EvidenceEntry{Kind: kind, Summary: step.Summary, Outcome: OutcomePass}, true
+	}
 	if step.SkipReason != "" {
 		if kind != EvidenceTriangulate || step.Command != "" || step.ExitCode != 0 || step.Summary != "" {
 			return EvidenceEntry{}, false

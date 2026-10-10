@@ -30,6 +30,16 @@ func TestSealBatchCanonicalAndBounded(t *testing.T) {
 			}(),
 		},
 		{
+			name: "accepts operator acknowledgement evidence",
+			batch: func() Batch {
+				batch := validBatch("uploaded and ran cases A and B")
+				batch.Entries[0].Kind = EvidenceOperator
+				batch.Entries[0].Command = ""
+				batch.Entries[0].Outcome = OutcomePass
+				return batch
+			}(),
+		},
+		{
 			name: "rejects empty evidence batch",
 			batch: Batch{
 				Schema:  EvidenceSchema,

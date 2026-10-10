@@ -3,6 +3,7 @@
 > **This module is loaded ONLY when Strict TDD Mode is enabled AND a test runner is available.**
 > If you are reading this, the orchestrator already verified both conditions. Follow every instruction.
 > If the assigned files cannot run under any test runner, the `strict-tdd-unrunnable` gate in `SKILL.md` applies: stop before the first task. There is no silent fallback to Standard Mode.
+> Strict TDD never applies to `[operator]` tasks: the developer executes them, so they get no RED/GREEN cycle, no safety net, and no `strict-tdd-unrunnable` block. Follow "Operator Handoff Tasks" in `SKILL.md` for them.
 
 ## TDD Philosophy
 

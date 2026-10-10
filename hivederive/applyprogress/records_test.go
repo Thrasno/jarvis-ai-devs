@@ -77,6 +77,10 @@ func TestExpandTaskRecordsProducesCanonicalEntries(t *testing.T) {
 				recordEntry("a-verification", "a", true, EvidenceVerification, "make check", 0, OutcomePass, "ok", []string{}),
 			},
 		},
+		"operator acknowledgement": {
+			records: []TaskRecord{{TaskID: "2.3", Operator: &TaskStep{Summary: "done, both cases passed"}}},
+			want:    []EvidenceEntry{recordEntry("2.3-operator", "2.3", true, EvidenceOperator, "", 0, OutcomePass, "done, both cases passed", []string{})},
+		},
 		"long task IDs derive bounded entry IDs": {
 			records: []TaskRecord{{TaskID: longID, Red: recordStep("go test", 1, "fails"), Verification: recordStep("go test", 0, "passes")}},
 			want: []EvidenceEntry{
@@ -107,10 +111,11 @@ func TestExpandTaskRecordsProducesCanonicalEntries(t *testing.T) {
 }
 
 func TestExpandTaskRecordsStreamValidatesAgainstTasks(t *testing.T) {
-	tasks := []Task{{ID: "1", Text: "one"}, {ID: "2", Text: "two"}}
+	tasks := []Task{{ID: "1", Text: "one"}, {ID: "2", Text: "two"}, {ID: "3", Text: "[operator] upload and run case A"}}
 	entries, err := ExpandTaskRecords([]TaskRecord{
 		{TaskID: "1", Red: recordStep("go test", 1, "fails"), Green: recordStep("go test", 0, "passes")},
 		{TaskID: "2", Verification: recordStep("go vet ./...", 0, "clean")},
+		{TaskID: "3", Operator: &TaskStep{Summary: "done, case A passed"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -157,6 +162,12 @@ func TestExpandTaskRecordsRejectsInvalidRecords(t *testing.T) {
 		"derived entry ID collision":      {records: []TaskRecord{{TaskID: longID, Verification: ok}, {TaskID: collidingID, Verification: ok}}, detail: "task_records[1].entry_id"},
 		"completion ending in RED":        {records: []TaskRecord{{TaskID: "1", Red: recordStep("go test", 1, "fails")}}, detail: "task_records[0].completes"},
 		"completion ending in failure":    {records: []TaskRecord{{TaskID: "1", Red: recordStep("go test", 1, "fails"), Green: recordStep("go test", 2, "still fails")}}, detail: "task_records[0].completes"},
+		"operator mixed with agent steps": {records: []TaskRecord{{TaskID: "1", Verification: ok, Operator: &TaskStep{Summary: "done"}}}, detail: "task_records[0].operator"},
+		"operator mixed with RED":         {records: []TaskRecord{{TaskID: "1", Red: recordStep("go test", 1, "fails"), Operator: &TaskStep{Summary: "done"}}}, detail: "task_records[0].operator"},
+		"empty operator summary":          {records: []TaskRecord{{TaskID: "1", Operator: &TaskStep{}}}, detail: "task_records[0].operator"},
+		"operator with a command":         {records: []TaskRecord{{TaskID: "1", Operator: &TaskStep{Summary: "done", Command: "deluge upload"}}}, detail: "task_records[0].operator"},
+		"operator with an exit code":      {records: []TaskRecord{{TaskID: "1", Operator: &TaskStep{Summary: "done", ExitCode: 1}}}, detail: "task_records[0].operator"},
+		"operator with a skip reason":     {records: []TaskRecord{{TaskID: "1", Operator: &TaskStep{Summary: "done", SkipReason: "skipped"}}}, detail: "task_records[0].operator"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			entries, err := ExpandTaskRecords(test.records)

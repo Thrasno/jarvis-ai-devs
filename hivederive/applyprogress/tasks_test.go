@@ -87,6 +87,16 @@ func TestParseTasksMarkdownAcceptsLowercaseNamespaceAndHonorsParentHeadingDepth(
 	}
 }
 
+func TestParseTasksMarkdownCountsOperatorHandoffTasks(t *testing.T) {
+	parsed, err := ParseTasksMarkdown("# Tasks\n\n## 2. Implementation\n- [x] 2.1 write the Deluge function\n- [x] 2.2 add the unit tests\n\n## Operator Handoff\n- [ ] 2.3 [operator] Upload `enrichConpasLead` to the tenant and run test cases A and B\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Tasks) != 3 || parsed.Tasks[2].ID != "2.3" || parsed.Tasks[2].Text != "[operator] Upload `enrichConpasLead` to the tenant and run test cases A and B" || parsed.Completed != 2 || parsed.AllDone {
+		t.Fatalf("parsed = %#v, want the operator task counted as pending", parsed)
+	}
+}
+
 func TestParseLegacyTasksMarkdownAcceptsHistoricalPhaseCheckboxesAndExcludesParentActions(t *testing.T) {
 	parsed, err := ParseLegacyTasksMarkdown(`# Historical Tasks
 ## 1. Compatibility

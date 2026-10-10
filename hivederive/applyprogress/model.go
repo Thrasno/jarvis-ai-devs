@@ -68,6 +68,9 @@ const (
 	EvidenceDelivery     EvidenceKind = "delivery"
 	// EvidenceImported records a completion imported from a legacy artifact. It makes no RED/GREEN/REFACTOR claim.
 	EvidenceImported EvidenceKind = "imported"
+	// EvidenceOperator records the developer's acknowledgement that an operator
+	// handoff step the agent cannot execute is done. It makes no RED/GREEN/REFACTOR claim.
+	EvidenceOperator EvidenceKind = "operator"
 )
 
 type Outcome string

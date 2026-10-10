@@ -1072,6 +1072,73 @@ func TestCatalogContract_SDDVerifyResolvesForwardedTDDModeFirst(t *testing.T) {
 	}
 }
 
+// TestCatalogContract_OperatorHandoffPausesApplyAndCompletesOnChatAck pins the
+// operator handoff flow: tasks the agent cannot execute are ID-first operator
+// rows, apply pauses on them, and the developer's chat acknowledgement completes
+// them through the guarded checkpoint without any evidence artifact.
+func TestCatalogContract_OperatorHandoffPausesApplyAndCompletesOnChatAck(t *testing.T) {
+	tasks := readNormalizedAsset(t, "embed/skills/sdd-tasks/SKILL.md")
+	requireAllTerms(t, tasks,
+		"## Operator Handoff\n\n- [ ] 5.1 [operator]",
+		"\n- [ ] 2.3 [operator] Upload `enrichConpasLead` to the tenant and run test cases A and B\n",
+		"task ID first, then the `[operator]` marker",
+		"Never ask the developer for screenshots, IDs, or logs",
+		"Never put operator rows under a heading containing \"parent action\"",
+	)
+
+	apply := readNormalizedAsset(t, "embed/skills/sdd-apply/SKILL.md")
+	requireAllTerms(t, apply,
+		"### Operator Handoff Tasks",
+		"return `partial` with reason `operator-handoff`, and STOP",
+		"Do not continue with later agent tasks",
+		"Checkpoint any agent work done before the handoff first",
+		"`OPERATOR_ACK: <task-id> — <developer message>`",
+		`{"task_id": "2.3", "operator": {"summary": "<developer message>"}}`,
+		"restate the pending handoff in one line",
+		"That is the only question.",
+		"Strict TDD never applies to `[operator]` tasks",
+		"Never use Zoho MCP servers to check an operator step",
+		"or a lone `operator` step `{summary}`",
+	)
+	if strings.Contains(apply, "`kind` (`red`, `green`, `triangulate`, `refactor`, `verification`, `delivery`, or `imported`)") {
+		t.Fatal("sdd-apply must not present imported evidence as a normal caller-supplied kind")
+	}
+	for _, forbidden := range []string{"screenshot of", "attach a screenshot", "paste the log"} {
+		if strings.Contains(strings.ToLower(apply+tasks), forbidden) {
+			t.Fatalf("operator handoff must never ask the developer for evidence: %q", forbidden)
+		}
+	}
+
+	strict := readNormalizedAsset(t, "embed/skills/sdd-apply/strict-tdd.md")
+	requireAllTerms(t, strict, "Strict TDD never applies to `[operator]` tasks", "no `strict-tdd-unrunnable`")
+
+	verify := readNormalizedAsset(t, "embed/skills/sdd-verify/SKILL.md")
+	requireAllTerms(t, verify,
+		"Any unchecked implementation task is CRITICAL and blocks archive readiness. An unchecked `[operator]` task is reported `pending-operator` instead, not CRITICAL",
+		"`operator-attested`, never `PASS` backed by a test",
+		"unchecked-task|pending-operator|missing-artifact",
+	)
+	rows := markdownTableRows(t, markdownSection(t, verify, "Status Handling and Blockers"))
+	requireAllTerms(t, requireMarkdownTableRow(t, rows, "Unchecked `[operator]` task"), "`pending-operator`", "not CRITICAL", "`sdd-apply`")
+
+	strictVerify := readNormalizedAsset(t, "embed/skills/sdd-verify/strict-tdd-verify.md")
+	requireAllTerms(t, strictVerify,
+		"OPERATOR (`kind=operator`): developer attestation only; it NEVER satisfies RED, GREEN, TRIANGULATE, or REFACTOR",
+	)
+
+	orchestrator := readNormalizedAsset(t, "embed/orchestrator/sdd-orchestrator.md")
+	requireAllTerms(t, orchestrator,
+		"#### Operator Handoff Pause (MANDATORY)",
+		"`partial` with reason `operator-handoff`",
+		"relay its handoff text to the developer verbatim and wait",
+		"in both `interactive` and `auto` execution mode",
+		"`OPERATOR_ACK: <task-id> — <developer message>`",
+		"any clear affirmative",
+		"never asks again, including in a fresh session",
+		"Never use Zoho MCP servers to check an operator step",
+	)
+}
+
 func TestCatalogContract_SDDApplyCommitsProgressBeforeMarkingTasksComplete(t *testing.T) {
 	content := readEmbeddedSkillAsset(t, "embed/skills/sdd-apply/SKILL.md")
 
