@@ -52,8 +52,8 @@ func TestExpandTaskRecordsProducesCanonicalEntries(t *testing.T) {
 			}},
 			want: []EvidenceEntry{
 				recordEntry("2-red", "2", false, EvidenceRed, "go test ./y", 2, OutcomeFail, "fails", files),
-				recordEntry("2-green", "2", false, EvidenceGreen, "go test ./y", 0, OutcomePass, "passes", files),
-				recordEntry("2-triangulate", "2", true, EvidenceTriangulate, "", 0, OutcomeNotRun, "structural: single branch", files),
+				recordEntry("2-green", "2", true, EvidenceGreen, "go test ./y", 0, OutcomePass, "passes", files),
+				recordEntry("2-triangulate", "2", false, EvidenceTriangulate, "", 0, OutcomeNotRun, "structural: single branch", files),
 			},
 		},
 		"standard verification only without files": {
@@ -120,6 +120,23 @@ func TestExpandTaskRecordsStreamValidatesAgainstTasks(t *testing.T) {
 	}
 }
 
+// TestExpandTaskRecordsCompletesOnLastRunPass attaches completion to the last run
+// step, so a skipped triangulation after GREEN does not hide a passing completion.
+func TestExpandTaskRecordsCompletesOnLastRunPass(t *testing.T) {
+	entries, err := ExpandTaskRecords([]TaskRecord{{
+		TaskID:      "1",
+		Red:         recordStep("go test", 1, "fails"),
+		Green:       recordStep("go test", 0, "passes"),
+		Triangulate: &TaskStep{SkipReason: "single branch"},
+	}})
+	if err != nil || len(entries) != 3 {
+		t.Fatalf("ExpandTaskRecords() = %#v, %v", entries, err)
+	}
+	if len(entries[1].CompletesTaskIDs) != 1 || len(entries[2].CompletesTaskIDs) != 0 {
+		t.Fatalf("completion = green %v, triangulate %v; want it on green", entries[1].CompletesTaskIDs, entries[2].CompletesTaskIDs)
+	}
+}
+
 func TestExpandTaskRecordsRejectsInvalidRecords(t *testing.T) {
 	longID := strings.Repeat("t", 60)
 	collidingID := longID[:42] + "-" + digest([]byte(longID))[:8]
@@ -138,6 +155,8 @@ func TestExpandTaskRecordsRejectsInvalidRecords(t *testing.T) {
 		"skip reason with a command":      {records: []TaskRecord{{TaskID: "1", Triangulate: &TaskStep{SkipReason: "single branch", Command: "go test"}}}, detail: "task_records[0].triangulate"},
 		"skip reason with an exit code":   {records: []TaskRecord{{TaskID: "1", Triangulate: &TaskStep{SkipReason: "single branch", ExitCode: 1}}}, detail: "task_records[0].triangulate"},
 		"derived entry ID collision":      {records: []TaskRecord{{TaskID: longID, Verification: ok}, {TaskID: collidingID, Verification: ok}}, detail: "task_records[1].entry_id"},
+		"completion ending in RED":        {records: []TaskRecord{{TaskID: "1", Red: recordStep("go test", 1, "fails")}}, detail: "task_records[0].completes"},
+		"completion ending in failure":    {records: []TaskRecord{{TaskID: "1", Red: recordStep("go test", 1, "fails"), Green: recordStep("go test", 2, "still fails")}}, detail: "task_records[0].completes"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			entries, err := ExpandTaskRecords(test.records)

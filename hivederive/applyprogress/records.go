@@ -79,7 +79,16 @@ func ExpandTaskRecords(records []TaskRecord) ([]EvidenceEntry, error) {
 			return nil, invalid(CodeInvalidPlan, field)
 		}
 		if record.Completes == nil || *record.Completes {
-			entries[len(entries)-1].CompletesTaskIDs = []string{record.TaskID}
+			// Completion rides on the last step that actually ran, and that step must
+			// pass: a record cannot complete a task on RED or failing evidence.
+			last := len(entries) - 1
+			for last > first && entries[last].Outcome == OutcomeNotRun {
+				last--
+			}
+			if entries[last].Outcome != OutcomePass {
+				return nil, invalid(CodeInvalidPlan, field+".completes")
+			}
+			entries[last].CompletesTaskIDs = []string{record.TaskID}
 		}
 	}
 	return entries, nil
