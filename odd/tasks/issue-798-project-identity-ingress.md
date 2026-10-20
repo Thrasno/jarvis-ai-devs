@@ -79,8 +79,8 @@ S9 (maintainer decision on issue #797, verbatim):
 
 - [x] T1 -> S2-S5, S7: daemon PR. RED tests, alias resolution at ingress for apply-progress and store-binding (HTTP, governance, db, MCP SDD tools), effective key in responses (additive field), store-binding project gate, AddAlias guard, specific pull rejection reason. Route: background gentle-ai-worker in `../jarvis-dev-798`. Check: worker RED then GREEN; parent reran `hive-daemon` gofmt + vet + `go test -count=1 ./...` and `jarvis-cli` `go test -count=1 ./...` (both exit 0). Commit: see git log of fix/798-daemon-identity-ingress.
 - [x] T2 -> S2-S5: independent verification + native review (high risk: data, contract). Verify round 1: S4, S5, S7 PASS; blockers B1 (released CLI store-binding decoders reject `project_key`) and B2 (legacy case-only alias resolved differently in and out of a tx) fixed per L7 with tests. Commit `5414e027`. Native review: assess medium, not due (under budget).
-- [ ] T3 -> S1, S6, S7: CLI PR stacked on T1. Commit: pending.
-- [ ] T4 -> #797 maintainer decision: `jarvis sdd bind`, stacked on T3. Commit: pending.
+- [x] T3 -> S1, S6, S7: CLI PR stacked on T1. Daemon follow-up for change-list and artifact routes (L11): `d725cdf0`. Verify: S1 PASS, S7 PASS, S6 blocker (advance adopted a binding before reporting project_mismatch) fixed with an unbound no-write test. Checks: `jarvis-cli` gofmt + vet + test and `hive-daemon` test exit 0. Commits: `5adcfdbf`, `c99b5c88`. Native review: assess medium, not due.
+- [x] T4 -> S8, S9: `jarvis sdd bind`, stacked on T3. Verify: S8 PASS, S9 PASS; finding F1 (failed hybrid bind left empty `openspec/` dirs), N3 (orchestrator status-before-bind warning) and N5 (lost adoption race) fixed test-first (L19-L21). Commits: `b0504f97`, `12cdf486`.
 
 ## Log
 
