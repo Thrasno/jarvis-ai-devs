@@ -541,7 +541,7 @@ func TestClaudeAgent_MergeGeneratedConfig_DeepMergesPermissionsAndPreservesHooks
 		t.Fatalf("permissions.allow not deep-merged idempotently: %#v", allow)
 	}
 	deny := permissions["deny"].([]any)
-	for _, expected := range []string{"Read(**/.env*)", "Read(*.env)", "Read(**/*.env)", "Read(*.env.*)", "Read(**/*.env.*)", "Read(secrets/**)", "Read(**/*secret*)", "Bash(rm -rf /*)", "Bash(git clean -fdx:*)", "Bash(git push --force*)"} {
+	for _, expected := range []string{"Read(**/.env*)", "Read(*.env)", "Read(**/*.env)", "Read(*.env.*)", "Read(**/*.env.*)", "Read(secrets/**)", "Edit(**/.env*)", "Read(**/.npmrc)", "Bash(rm -rf /*)", "Bash(git clean -fdx:*)", "Bash(git push --force*)"} {
 		if countScalar(deny, expected) != 1 {
 			t.Fatalf("permissions.deny missing or duplicated %q: %#v", expected, deny)
 		}
@@ -607,12 +607,6 @@ func TestClaudeAgent_MergeGeneratedConfig_SetsBypassDefaultModeWhenMissing(t *te
 		"Read(**/credential)",
 		"Read(credential/**)",
 		"Read(**/credential/**)",
-		"Read(*secret*)",
-		"Read(**/*secret*)",
-		"Read(*token*)",
-		"Read(**/*token*)",
-		"Read(*credential*)",
-		"Read(**/*credential*)",
 		"Read(.ssh)",
 		"Read(**/.ssh)",
 		"Read(.ssh/**)",
@@ -625,6 +619,21 @@ func TestClaudeAgent_MergeGeneratedConfig_SetsBypassDefaultModeWhenMissing(t *te
 		"Read(**/*.pem)",
 		"Read(*.key)",
 		"Read(**/*.key)",
+		"Read(.npmrc)",
+		"Read(**/.netrc)",
+		"Read(**/.pypirc)",
+		"Read(**/credentials.json)",
+		"Read(**/.aws/credentials)",
+		"Read(**/.config/gh/hosts.yml)",
+		"Read(**/*.p12)",
+		"Read(**/*.pfx)",
+		"Read(**/*.token)",
+		"Edit(.env*)",
+		"Edit(**/secrets/**)",
+		"Edit(**/.ssh/**)",
+		"Edit(**/id_rsa*)",
+		"Edit(**/*.key)",
+		"Edit(**/.npmrc)",
 		"Bash(git push --force*)",
 		"Bash(git push --force-with-lease*)",
 		"Bash(git push * --force*)",

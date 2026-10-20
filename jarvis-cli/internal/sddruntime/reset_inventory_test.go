@@ -117,9 +117,21 @@ func TestClaudePermissionLiterals_ContainsCurrentAndObsoleteVariantsNotNearMisse
 		"Read(.env*)",
 		"Bash(rm -rf /*)",
 		"Bash(git push --force*)",
+		// #800: secret guardrails also deny writes and cover secret-shaped names
+		"Edit(.env*)",
+		"Read(**/.npmrc)",
+		"Edit(**/.npmrc)",
+		"Read(**/.config/gh/hosts.yml)",
+		"Edit(**/*.token)",
 		// obsolete variants an older install may still carry
 		"Bash(git push --force*:*)",
 		"Bash(git push * --force-with-lease*:*)",
+		"Read(*secret*)",
+		"Read(**/*secret*)",
+		"Read(*token*)",
+		"Read(**/*token*)",
+		"Read(*credential*)",
+		"Read(**/*credential*)",
 	}
 	for _, l := range mustContain {
 		if !set[l] {

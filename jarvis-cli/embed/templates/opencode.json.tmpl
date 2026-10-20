@@ -7,7 +7,8 @@
   "permission": {
     "external_directory": "allow",
     "bash": {{.BashPermission}},
-    "read": {"*": "allow", ".env": "deny", ".env.*": "deny", "*.env": "deny", "**/*.env": "deny", "*.env.*": "deny", "**/*.env.*": "deny", "**/.env*": "deny", "secrets": "deny", "*/secrets": "deny", "**/secrets": "deny", "secrets/**": "deny", "**/secrets/**": "deny", "secret": "deny", "*/secret": "deny", "**/secret": "deny", "secret/**": "deny", "**/secret/**": "deny", "tokens": "deny", "*/tokens": "deny", "**/tokens": "deny", "tokens/**": "deny", "**/tokens/**": "deny", "token": "deny", "*/token": "deny", "**/token": "deny", "token/**": "deny", "**/token/**": "deny", "credentials": "deny", "*/credentials": "deny", "**/credentials": "deny", "credentials/**": "deny", "**/credentials/**": "deny", "credential": "deny", "*/credential": "deny", "**/credential": "deny", "credential/**": "deny", "**/credential/**": "deny", "*secret*": "deny", "**/*secret*": "deny", "*token*": "deny", "**/*token*": "deny", "*credential*": "deny", "**/*credential*": "deny", ".ssh": "deny", "*/.ssh": "deny", "**/.ssh": "deny", ".ssh/*": "deny", "*/.ssh/*": "deny", "**/.ssh/**": "deny", "id_rsa": "deny", "*/id_rsa": "deny", "**/id_rsa*": "deny", "id_ed25519": "deny", "*/id_ed25519": "deny", "**/id_ed25519*": "deny", "*.pem": "deny", "*/*.pem": "deny", "**/*.pem": "deny", "*.key": "deny", "*/*.key": "deny", "**/*.key": "deny"}
+    "read": {{.SecretPathPermission}},
+    "edit": {{.SecretPathPermission}}
   },
   "agent": {
     "sdd-orchestrator": {

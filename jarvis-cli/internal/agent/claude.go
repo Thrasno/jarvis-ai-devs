@@ -119,7 +119,7 @@ func (a *ClaudeAgent) MergeGeneratedConfig(_ state.PhaseModels) error {
 	if err != nil {
 		return fmt.Errorf("inspect settings.json permissions: %w", err)
 	}
-	existing, err = removeObsoleteClaudeForcePushDenies(existing)
+	existing, err = removeObsoleteClaudeDenies(existing)
 	if err != nil {
 		return fmt.Errorf("migrate settings.json permissions: %w", err)
 	}
@@ -130,55 +130,7 @@ func (a *ClaudeAgent) MergeGeneratedConfig(_ state.PhaseModels) error {
 			"Bash(git diff:*)",
 			"Bash(go test:*)",
 		},
-		"deny": []any{
-			"Read(.env*)",
-			"Read(**/.env*)",
-			"Read(*.env)",
-			"Read(**/*.env)",
-			"Read(*.env.*)",
-			"Read(**/*.env.*)",
-			"Read(secrets)",
-			"Read(**/secrets)",
-			"Read(secrets/**)",
-			"Read(**/secrets/**)",
-			"Read(secret)",
-			"Read(**/secret)",
-			"Read(secret/**)",
-			"Read(**/secret/**)",
-			"Read(tokens)",
-			"Read(**/tokens)",
-			"Read(tokens/**)",
-			"Read(**/tokens/**)",
-			"Read(token)",
-			"Read(**/token)",
-			"Read(token/**)",
-			"Read(**/token/**)",
-			"Read(credentials)",
-			"Read(**/credentials)",
-			"Read(credentials/**)",
-			"Read(**/credentials/**)",
-			"Read(credential)",
-			"Read(**/credential)",
-			"Read(credential/**)",
-			"Read(**/credential/**)",
-			"Read(*secret*)",
-			"Read(**/*secret*)",
-			"Read(*token*)",
-			"Read(**/*token*)",
-			"Read(*credential*)",
-			"Read(**/*credential*)",
-			"Read(.ssh)",
-			"Read(**/.ssh)",
-			"Read(.ssh/**)",
-			"Read(**/.ssh/**)",
-			"Read(id_rsa*)",
-			"Read(**/id_rsa*)",
-			"Read(id_ed25519*)",
-			"Read(**/id_ed25519*)",
-			"Read(*.pem)",
-			"Read(**/*.pem)",
-			"Read(*.key)",
-			"Read(**/*.key)",
+		"deny": append(claudeSecretPathDenies(),
 			"Bash(rm -rf /*)",
 			"Bash(git clean -fdx:*)",
 			"Bash(git reset --hard:*)",
@@ -186,7 +138,7 @@ func (a *ClaudeAgent) MergeGeneratedConfig(_ state.PhaseModels) error {
 			"Bash(git push --force-with-lease*)",
 			"Bash(git push * --force*)",
 			"Bash(git push * --force-with-lease*)",
-		},
+		),
 	}
 	if includeDefaultMode {
 		permissions["defaultMode"] = "bypassPermissions"
@@ -203,8 +155,103 @@ func (a *ClaudeAgent) MergeGeneratedConfig(_ state.PhaseModels) error {
 	return writeFileAtomic(a.settingsPath(), merged, 0644)
 }
 
-// removeObsoleteClaudeForcePushDenies touches only exact legacy deny strings.
-func removeObsoleteClaudeForcePushDenies(existing []byte) ([]byte, error) {
+// claudeSecretPathPatterns are the known secret locations protected by
+// Read(...) and Edit(...) denies (Edit covers Edit, Write, and MultiEdit).
+// They name locations, never substrings such as *token*: issue #800 showed
+// substring wildcards block ordinary source files like Tokenizer.php.
+// This is a convenience guardrail, not a security boundary: shell access and
+// deletion are not covered. Keep in parity with openCodeSecretPathPermission.
+var claudeSecretPathPatterns = []string{
+	".env*",
+	"**/.env*",
+	"*.env",
+	"**/*.env",
+	"*.env.*",
+	"**/*.env.*",
+	"secrets",
+	"**/secrets",
+	"secrets/**",
+	"**/secrets/**",
+	"secret",
+	"**/secret",
+	"secret/**",
+	"**/secret/**",
+	"tokens",
+	"**/tokens",
+	"tokens/**",
+	"**/tokens/**",
+	"token",
+	"**/token",
+	"token/**",
+	"**/token/**",
+	"credentials",
+	"**/credentials",
+	"credentials/**",
+	"**/credentials/**",
+	"credential",
+	"**/credential",
+	"credential/**",
+	"**/credential/**",
+	".ssh",
+	"**/.ssh",
+	".ssh/**",
+	"**/.ssh/**",
+	"id_rsa*",
+	"**/id_rsa*",
+	"id_ed25519*",
+	"**/id_ed25519*",
+	"*.pem",
+	"**/*.pem",
+	"*.key",
+	"**/*.key",
+	".npmrc",
+	"**/.npmrc",
+	".netrc",
+	"**/.netrc",
+	".pypirc",
+	"**/.pypirc",
+	"credentials.json",
+	"**/credentials.json",
+	".aws/credentials",
+	"**/.aws/credentials",
+	".config/gh/hosts.yml",
+	"**/.config/gh/hosts.yml",
+	"*.p12",
+	"**/*.p12",
+	"*.pfx",
+	"**/*.pfx",
+	"*.token",
+	"**/*.token",
+}
+
+func claudeSecretPathDenies() []any {
+	denies := make([]any, 0, 2*len(claudeSecretPathPatterns))
+	for _, tool := range []string{"Read", "Edit"} {
+		for _, pattern := range claudeSecretPathPatterns {
+			denies = append(denies, tool+"("+pattern+")")
+		}
+	}
+	return denies
+}
+
+// obsoleteClaudeDenies are exact deny strings older Jarvis releases emitted.
+// Deep-merge never removes them, so MergeGeneratedConfig strips them first.
+var obsoleteClaudeDenies = map[string]bool{
+	"Bash(git push --force*:*)":              true,
+	"Bash(git push --force-with-lease*:*)":   true,
+	"Bash(git push * --force*:*)":            true,
+	"Bash(git push * --force-with-lease*:*)": true,
+	// #800: substring wildcards that denied ordinary source files.
+	"Read(*secret*)":        true,
+	"Read(**/*secret*)":     true,
+	"Read(*token*)":         true,
+	"Read(**/*token*)":      true,
+	"Read(*credential*)":    true,
+	"Read(**/*credential*)": true,
+}
+
+// removeObsoleteClaudeDenies touches only exact legacy deny strings.
+func removeObsoleteClaudeDenies(existing []byte) ([]byte, error) {
 	if len(strings.TrimSpace(string(existing))) == 0 {
 		return existing, nil
 	}
@@ -223,16 +270,10 @@ func removeObsoleteClaudeForcePushDenies(existing []byte) ([]byte, error) {
 	if !ok || deny.array == nil {
 		return existing, nil
 	}
-	obsolete := map[string]bool{
-		"Bash(git push --force*:*)":              true,
-		"Bash(git push --force-with-lease*:*)":   true,
-		"Bash(git push * --force*:*)":            true,
-		"Bash(git push * --force-with-lease*:*)": true,
-	}
 	kept := make([]orderedValue, 0, len(deny.array))
 	for _, rule := range deny.array {
 		text, isString := rule.scalar.(string)
-		if !isString || !obsolete[text] {
+		if !isString || !obsoleteClaudeDenies[text] {
 			kept = append(kept, rule)
 		}
 	}

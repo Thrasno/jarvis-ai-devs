@@ -818,11 +818,15 @@ func assertOpenCodeReadDenyCoverage(t *testing.T, read map[string]any) {
 		"credentials", "*/credentials", "**/credentials",
 		"credentials/**", "**/credentials/**", "credential/**", "**/credential/**",
 		"credential", "*/credential", "**/credential",
-		"*secret*", "**/*secret*", "*token*", "**/*token*", "*credential*", "**/*credential*",
 		".ssh", "*/.ssh", "**/.ssh",
 		".ssh/*", "*/.ssh/*", "**/.ssh/**",
 		"id_rsa", "*/id_rsa", "**/id_rsa*", "id_ed25519", "*/id_ed25519", "**/id_ed25519*",
 		"*.pem", "*/*.pem", "**/*.pem", "*.key", "*/*.key", "**/*.key",
+		".npmrc", "*/.npmrc", "**/.npmrc", ".netrc", "*/.netrc", "**/.netrc", ".pypirc", "*/.pypirc", "**/.pypirc",
+		"credentials.json", "*/credentials.json", "**/credentials.json",
+		".aws/credentials", "*/.aws/credentials", "**/.aws/credentials",
+		".config/gh/hosts.yml", "*/.config/gh/hosts.yml", "**/.config/gh/hosts.yml",
+		"*.p12", "*/*.p12", "**/*.p12", "*.pfx", "*/*.pfx", "**/*.pfx", "*.token", "*/*.token", "**/*.token",
 	} {
 		if read[expected] != "deny" {
 			t.Fatalf("missing generated read guardrail %q: %#v", expected, read)
