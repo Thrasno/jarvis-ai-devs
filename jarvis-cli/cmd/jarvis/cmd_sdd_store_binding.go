@@ -55,10 +55,19 @@ func resolveBoundProgressStore(ctx context.Context, root string, project project
 // binding.project; the redirect is accepted only after the apply-progress
 // route confirms the same effective key, and is then resolved again under it.
 func resolveSddStoreBindingAt(ctx context.Context, hc *hiveclient.Client, project projectidentity.Key, change, workspace string) (sddbinding.Resolution, projectidentity.Key, error) {
+	return followSddStoreBindingRedirect(ctx, hc, project, change, func(key projectidentity.Key) (sddbinding.Resolution, error) {
+		return sddStoreBindingResolver(hc, key, change, workspace).ResolveAndAdopt(ctx, key, change, initialStoreSelection())
+	})
+}
+
+// followSddStoreBindingRedirect runs resolve under the requested key and, when
+// the daemon redirects the binding to another project, runs it again under the
+// effective key once the apply-progress route confirms that key.
+func followSddStoreBindingRedirect(ctx context.Context, hc *hiveclient.Client, project projectidentity.Key, change string, resolve func(projectidentity.Key) (sddbinding.Resolution, error)) (sddbinding.Resolution, projectidentity.Key, error) {
 	if hc == nil {
 		return sddbinding.Resolution{}, "", errors.New("Hive binding client is required")
 	}
-	resolution, err := resolveSddStoreBindingFor(ctx, hc, project, change, workspace)
+	resolution, err := resolve(project)
 	var redirect *hiveclient.SDDStoreBindingRedirectError
 	if !errors.As(err, &redirect) {
 		return resolution, project, err
@@ -67,21 +76,18 @@ func resolveSddStoreBindingAt(ctx context.Context, hc *hiveclient.Client, projec
 	if err != nil {
 		return sddbinding.Resolution{}, "", err
 	}
-	resolution, err = resolveSddStoreBindingFor(ctx, hc, effective, change, workspace)
+	resolution, err = resolve(effective)
 	return resolution, effective, err
 }
 
-func resolveSddStoreBindingFor(ctx context.Context, hc *hiveclient.Client, project projectidentity.Key, change, workspace string) (sddbinding.Resolution, error) {
-	hiveSource := sddstatus.NewHiveSource(hc, project)
-	openSpecSource := sddstatus.NewOpenSpecSourceForProject(workspace, project)
-	resolver := sddbinding.LegacyResolver{
+func sddStoreBindingResolver(hc *hiveclient.Client, project projectidentity.Key, change, workspace string) sddbinding.LegacyResolver {
+	return sddbinding.LegacyResolver{
 		HiveBindings:      hc,
-		HiveSource:        hiveSource,
-		OpenSpecSource:    openSpecSource,
+		HiveSource:        sddstatus.NewHiveSource(hc, project),
+		OpenSpecSource:    sddstatus.NewOpenSpecSourceForProject(workspace, project),
 		OpenSpecChangeDir: filepath.Join(workspace, "openspec", "changes", change),
 		ResolutionLockDir: workspace,
 	}
-	return resolver.ResolveAndAdopt(ctx, project, change, initialStoreSelection())
 }
 
 // confirmEffectiveSddProject accepts a store-binding redirect only when the

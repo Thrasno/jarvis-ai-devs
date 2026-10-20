@@ -79,7 +79,7 @@ func init() {
 	sddStatusCmd.Flags().String("project", "", sddProjectFlagUsage)
 	sddContinueCmd.Flags().Bool("json", false, "emit JSON output")
 	sddContinueCmd.Flags().String("project", "", sddProjectFlagUsage)
-	sddCmd.AddCommand(sddStatusCmd, sddContinueCmd, newBoundSddArchiveCommand(), newSddSupersedeCommand())
+	sddCmd.AddCommand(sddStatusCmd, sddContinueCmd, newSddBindCommand(), newBoundSddArchiveCommand(), newSddSupersedeCommand())
 }
 
 // requireSupersessionConsent is only a local interaction gate. Its caller must

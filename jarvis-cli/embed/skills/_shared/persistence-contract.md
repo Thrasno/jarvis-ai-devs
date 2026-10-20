@@ -8,7 +8,7 @@ This contract is about assistant/prompt SDD persistence only. Do not treat Jarvi
 
 ## Authoritative Store Binding
 
-There is one immutable authoritative binding per `project/change`: `hive`, `openspec`, or `hybrid`. `none` is never persisted. A persisted binding wins even when `JARVIS_SDD_STORE_MODE` changes or is invalid; that environment variable selects only an as-yet-unbound change.
+There is one immutable authoritative binding per `project/change`: `hive`, `openspec`, or `hybrid`. `none` is never persisted. A persisted binding wins even when `JARVIS_SDD_STORE_MODE` changes or is invalid; that environment variable is only a fallback for an as-yet-unbound change.
 
 Backend ownership is fixed: Hive stores its binding in SQLite; OpenSpec stores its binding in `openspec/changes/{change-name}/state.yaml`; hybrid requires matching copies in both places. Never invent a neutral registry. A malformed, unsupported, noncanonical, or divergent binding blocks fail closed. An outage or protocol failure is not absence, and hybrid never selects one copy as a winner.
 
@@ -16,7 +16,11 @@ Every status, continue, progress (`advance`, `checkpoint`, `upgrade-continuation
 
 ## Mode Resolution
 
-The orchestrator passes the resolved `artifact_store.mode` with one of: `hive | openspec | hybrid | none`. For an unbound change only, `JARVIS_SDD_STORE_MODE` or the explicit preflight choice selects the initial mode. Persist `hive`, `openspec`, or `hybrid` immediately through its owner; leave `none` inline-only and unpersisted.
+The orchestrator passes the resolved `artifact_store.mode` with one of: `hive | openspec | hybrid | none`.
+
+The preflight choice reaches the CLI through `jarvis sdd bind --change <change> --mode <hive|openspec|hybrid>`. Run it right after the preflight choice, before any `jarvis sdd status` call or artifact write for the change. `bind` persists the choice immediately through its owner with provenance `initial:preflight`, writes it under the canonical Hive project key, and creates `openspec/changes/{change-name}/` for `openspec` and `hybrid`. An identical existing binding is an idempotent replay (exit 0); a different one, or one that existing apply progress already selects, is a conflict that exits non-zero and leaves the stored binding unchanged. Without `bind`, an unbound change gets `initial:default:hive` from its first status call, or `legacy:hive-progress` when Hive progress is written before OpenSpec progress exists.
+
+Leave `none` inline-only and unpersisted: do not bind it, and prefix every `jarvis sdd` call for that change with `JARVIS_SDD_STORE_MODE=none` so status does not adopt the `hive` default. Do not export `JARVIS_SDD_STORE_MODE` to carry a `hive`, `openspec`, or `hybrid` choice; use `bind`.
 
 Never force `openspec/` creation unless the resolved binding is `openspec` or `hybrid`.
 

@@ -280,116 +280,148 @@ func validateExistingChangeCoordinate(path, change string) error {
 // OpenSpec directory lock serializes the read-decide-adopt transaction across
 // CLI processes that address the same physical change directory.
 func (r LegacyResolver) ResolveAndAdopt(ctx context.Context, project projectidentity.Key, change string, initial InitialSelection) (Resolution, error) {
-	if err := ctx.Err(); err != nil {
+	project, change, err := r.validateResolutionRequest(ctx, project, change)
+	if err != nil {
 		return Resolution{}, err
 	}
+	var resolution Resolution
+	err = r.withResolutionLock(ctx, func(localStore OpenSpecBindingStore) error {
+		var err error
+		resolution, err = r.resolveAndAdoptLocked(ctx, project, change, initial, localStore)
+		return err
+	})
+	return resolution, err
+}
+
+// validateResolutionRequest checks the coordinates shared by every
+// resolution transaction and returns them canonicalized.
+func (r LegacyResolver) validateResolutionRequest(ctx context.Context, project projectidentity.Key, change string) (projectidentity.Key, string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", "", err
+	}
 	if r.HiveBindings == nil {
-		return Resolution{}, errors.New("Hive binding store is required")
+		return "", "", errors.New("Hive binding store is required")
 	}
 	project = projectidentity.Canonical(project.String())
 	change = strings.TrimSpace(change)
 	if project == "" || change == "" {
-		return Resolution{}, fmt.Errorf("%w: project and change are required", ErrInvalidBinding)
+		return "", "", fmt.Errorf("%w: project and change are required", ErrInvalidBinding)
 	}
 	if strings.TrimSpace(r.OpenSpecChangeDir) == "" {
-		return Resolution{}, fmt.Errorf("%w: OpenSpec change directory is required", ErrInvalidBinding)
+		return "", "", fmt.Errorf("%w: OpenSpec change directory is required", ErrInvalidBinding)
 	}
+	return project, change, nil
+}
 
+// withResolutionLock runs locked while holding the lock that serializes the
+// read-decide-adopt transaction for one change.
+func (r LegacyResolver) withResolutionLock(ctx context.Context, locked func(OpenSpecBindingStore) error) error {
 	if r.OpenSpecBindings != nil {
 		locker, ok := r.OpenSpecBindings.(openSpecResolutionLocker)
 		if !ok {
-			return Resolution{}, errors.New("injected OpenSpec binding store must provide the legacy resolution lock")
+			return errors.New("injected OpenSpec binding store must provide the legacy resolution lock")
 		}
 		unlock, err := locker.LockOpenSpec(ctx, r.OpenSpecChangeDir)
 		if err != nil {
-			return Resolution{}, err
+			return err
 		}
 		defer unlock()
-		return r.resolveAndAdoptLocked(ctx, project, change, initial, r.OpenSpecBindings)
+		return locked(r.OpenSpecBindings)
 	}
 
 	if strings.TrimSpace(r.ResolutionLockDir) == "" {
-		return Resolution{}, fmt.Errorf("%w: resolution lock directory is required", ErrInvalidBinding)
+		return fmt.Errorf("%w: resolution lock directory is required", ErrInvalidBinding)
 	}
 	root, err := openChangeRoot(r.ResolutionLockDir)
 	if err != nil {
-		return Resolution{}, err
+		return err
 	}
 	defer func() { _ = root.Close() }()
 	localStore := fileOpenSpecBindingStore{resolutionRoot: root}
 	if err := localStore.validateChangeDirectory(r.OpenSpecChangeDir); err != nil {
-		return Resolution{}, err
+		return err
 	}
 	unlock, err := root.lockContext(ctx)
 	if err != nil {
-		return Resolution{}, err
+		return err
 	}
 	defer unlock()
-	return r.resolveAndAdoptLocked(ctx, project, change, initial, localStore)
+	return locked(localStore)
 }
 
 func (r LegacyResolver) resolveAndAdoptLocked(ctx context.Context, project projectidentity.Key, change string, initial InitialSelection, localStore OpenSpecBindingStore) (Resolution, error) {
+	resolution, pending, err := r.decideLocked(ctx, project, change, initial, localStore)
+	if err != nil || pending == nil {
+		return resolution, err
+	}
+	return r.adopt(ctx, project, change, *pending, localStore)
+}
+
+// decideLocked reads both persisted copies and protected progress while the
+// caller holds the resolution lock. It returns either a final resolution, or
+// the binding the caller must adopt; it never writes.
+func (r LegacyResolver) decideLocked(ctx context.Context, project projectidentity.Key, change string, initial InitialSelection, localStore OpenSpecBindingStore) (Resolution, *Binding, error) {
 	hive, hiveFound, err := r.HiveBindings.GetSDDStoreBinding(ctx, project.String(), change)
 	if err != nil {
-		return Resolution{}, err
+		return Resolution{}, nil, err
 	}
 	if hiveFound {
 		if err := validateStoredHiveBinding(hive, project, change); err != nil {
-			return Resolution{}, err
+			return Resolution{}, nil, err
 		}
 	}
 	local, err := localStore.ReadOpenSpec(r.OpenSpecChangeDir)
 	if err != nil {
-		return Resolution{}, err
+		return Resolution{}, nil, err
 	}
 	if local != nil && local.Mode() != sddruntime.StoreModeOpenSpec && local.Mode() != sddruntime.StoreModeHybrid {
-		return Resolution{}, fmt.Errorf("%w: OpenSpec copy has mode %q", ErrUnsupportedStoredBinding, local.Mode())
+		return Resolution{}, nil, fmt.Errorf("%w: OpenSpec copy has mode %q", ErrUnsupportedStoredBinding, local.Mode())
 	}
 
 	switch {
 	case hiveFound && local != nil:
 		if hive.Mode != hiveclient.SDDStoreModeHybrid || local.Mode() != sddruntime.StoreModeHybrid || hive.Provenance != local.Provenance() {
-			return Resolution{}, fmt.Errorf("%w: Hive %s/%q and OpenSpec %s/%q", ErrBindingCopiesDiverged, hive.Mode, hive.Provenance, local.Mode(), local.Provenance())
+			return Resolution{}, nil, fmt.Errorf("%w: Hive %s/%q and OpenSpec %s/%q", ErrBindingCopiesDiverged, hive.Mode, hive.Provenance, local.Mode(), local.Provenance())
 		}
-		return persistedResolution(sddruntime.StoreModeHybrid, hive.Provenance), nil
+		return persistedResolution(sddruntime.StoreModeHybrid, hive.Provenance), nil, nil
 	case hiveFound:
 		if hive.Mode == hiveclient.SDDStoreModeHive {
-			return persistedResolution(sddruntime.StoreModeHive, hive.Provenance), nil
+			return persistedResolution(sddruntime.StoreModeHive, hive.Provenance), nil, nil
 		}
 		if err := r.requireEquivalentProgress(ctx, change); err != nil {
-			return Resolution{}, err
+			return Resolution{}, nil, err
 		}
 		binding, err := New(sddruntime.StoreModeHybrid, hive.Provenance)
 		if err != nil {
-			return Resolution{}, err
+			return Resolution{}, nil, err
 		}
-		return r.adopt(ctx, project, change, binding, localStore)
+		return Resolution{}, &binding, nil
 	case local != nil:
 		if local.Mode() == sddruntime.StoreModeOpenSpec {
-			return persistedResolution(sddruntime.StoreModeOpenSpec, local.Provenance()), nil
+			return persistedResolution(sddruntime.StoreModeOpenSpec, local.Provenance()), nil, nil
 		}
 		if err := r.requireEquivalentProgress(ctx, change); err != nil {
-			return Resolution{}, err
+			return Resolution{}, nil, err
 		}
-		return r.adopt(ctx, project, change, *local, localStore)
+		return Resolution{}, local, nil
 	}
 
 	hiveProgress, openSpecProgress, err := r.observeProgress(ctx, change)
 	if err != nil {
-		return Resolution{}, err
+		return Resolution{}, nil, err
 	}
 	if !legacyProgressValid(hiveProgress) || !legacyProgressValid(openSpecProgress) {
-		return Resolution{}, ErrLegacyProgressDiverged
+		return Resolution{}, nil, ErrLegacyProgressDiverged
 	}
 	var selected InitialSelection
 	switch {
 	case !hiveProgress.Present && !openSpecProgress.Present:
 		selected, err = validateInitialSelection(initial)
 		if err != nil {
-			return Resolution{}, err
+			return Resolution{}, nil, err
 		}
 		if selected.Mode == sddruntime.StoreModeNone {
-			return Resolution{Mode: selected.Mode, Provenance: selected.Provenance, Persisted: false}, nil
+			return Resolution{Mode: selected.Mode, Provenance: selected.Provenance, Persisted: false}, nil, nil
 		}
 	case hiveProgress.Present && !openSpecProgress.Present:
 		selected = InitialSelection{Mode: sddruntime.StoreModeHive, Provenance: ProvenanceLegacyHiveProgress}
@@ -397,15 +429,15 @@ func (r LegacyResolver) resolveAndAdoptLocked(ctx context.Context, project proje
 		selected = InitialSelection{Mode: sddruntime.StoreModeOpenSpec, Provenance: ProvenanceLegacyOpenSpecProgress}
 	default:
 		if !sddstatus.LegacyProgressEquivalent(hiveProgress, openSpecProgress) {
-			return Resolution{}, ErrLegacyProgressDiverged
+			return Resolution{}, nil, ErrLegacyProgressDiverged
 		}
 		selected = InitialSelection{Mode: sddruntime.StoreModeHybrid, Provenance: ProvenanceLegacyEquivalentProgress}
 	}
 	binding, err := New(selected.Mode, selected.Provenance)
 	if err != nil {
-		return Resolution{}, err
+		return Resolution{}, nil, err
 	}
-	return r.adopt(ctx, project, change, binding, localStore)
+	return Resolution{}, &binding, nil
 }
 
 func (r LegacyResolver) observeProgress(ctx context.Context, change string) (sddstatus.LegacyProgressObservation, sddstatus.LegacyProgressObservation, error) {
