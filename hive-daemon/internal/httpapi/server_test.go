@@ -96,7 +96,7 @@ func TestApplyProgressHTTPSupersessionSealAfterAuthoritativeTasksChange(t *testi
 	request["snapshot"] = changed
 	conflictingReceipt := post(request)
 	require.Equal(t, http.StatusConflict, conflictingReceipt.Code, conflictingReceipt.Body.String())
-	require.JSONEq(t, `{"outcome":"invalid","code":"request_id_conflict","recovery":"use a new request ID for changed content"}`, conflictingReceipt.Body.String())
+	require.JSONEq(t, `{"outcome":"invalid","code":"request_id_conflict","project_key":"project","recovery":"use a new request ID for changed content"}`, conflictingReceipt.Body.String())
 	request["snapshot"] = seal
 	request["request_id"] = "seal-stale-http"
 	stale := post(request)

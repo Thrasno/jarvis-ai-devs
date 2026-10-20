@@ -41,6 +41,7 @@ type sddStore interface {
 	PublishApplyProgressSuccessor(project, predecessorChange string) (db.ApplyProgressAdvanceResult, error)
 	GetSDDStoreBinding(context.Context, string, string) (db.SDDStoreBinding, bool, error)
 	AdoptSDDStoreBinding(context.Context, string, string, db.SDDStoreBindingRequest) (db.SDDStoreBinding, bool, error)
+	ResolveProjectIngress(context.Context, string) (string, error)
 }
 
 type ApplyProgressAdvanceRequest = db.ApplyProgressAdvance
@@ -51,6 +52,58 @@ type ApplyProgressAdvanceResult = db.ApplyProgressAdvanceResult
 type SDDStoreBinding = db.SDDStoreBinding
 type SDDStoreBindingRequest = db.SDDStoreBindingRequest
 type SDDStoreBindingConflictError = db.SDDStoreBindingConflictError
+
+// ProjectIngressError attaches the effective project key resolved at ingress
+// (spelling fold plus alias) to a failure that happened after resolution, so
+// transports can report which project identity was consulted.
+type ProjectIngressError struct {
+	ProjectKey string
+	Err        error
+}
+
+func (e *ProjectIngressError) Error() string { return e.Err.Error() }
+
+func (e *ProjectIngressError) Unwrap() error { return e.Err }
+
+// ProjectKeyFromError returns the effective project key carried by err, if the
+// failure happened after ingress resolution.
+func ProjectKeyFromError(err error) (string, bool) {
+	var ingress *ProjectIngressError
+	if errors.As(err, &ingress) {
+		return ingress.ProjectKey, true
+	}
+	return "", false
+}
+
+// withProjectKey wraps a post-resolution failure with the effective key.
+func withProjectKey(key string, err error) error {
+	if err == nil || key == "" {
+		return err
+	}
+	return &ProjectIngressError{ProjectKey: key, Err: err}
+}
+
+// resolveApplyProgressProject resolves the effective project key once at the
+// governance boundary (spelling fold plus alias) and applies the
+// registered-project gate to that key, not to the spelling the caller sent: a
+// retired key has no rows of its own once promoted. The database re-resolves
+// inside its own transactions, so this key never authorizes a write by itself.
+func (s *Service) resolveApplyProgressProject(ctx context.Context, project string) (string, error) {
+	if s.sdd == nil {
+		if _, err := s.store.GetGovernanceProject(ctx, project); err != nil {
+			return "", mapProjectError(err)
+		}
+		return "", errors.New("SDD store is not configured")
+	}
+	key, err := s.sdd.ResolveProjectIngress(ctx, project)
+	if err != nil {
+		return "", err
+	}
+	if _, err := s.store.GetGovernanceProject(ctx, key); err != nil {
+		return "", withProjectKey(key, mapProjectError(err))
+	}
+	return key, nil
+}
 
 // SDDArtifact is the daemon response projection for one known artifact.
 type SDDArtifact struct {
@@ -74,9 +127,11 @@ type sddCursor struct {
 	After string `json:"after"`
 }
 
-// GetSDDStoreBinding reads an immutable binding without requiring an existing
-// governance project or Hive artifact row. The database remains authoritative for
-// project canonicalization.
+// GetSDDStoreBinding reads an immutable binding under the effective project key
+// (spelling fold plus alias) without requiring an existing governance project or
+// Hive artifact row. When found is false, the returned binding carries only the
+// effective Project and Change coordinates. The database remains authoritative
+// for project resolution.
 func (s *Service) GetSDDStoreBinding(ctx context.Context, project, change string) (SDDStoreBinding, bool, error) {
 	project = strings.TrimSpace(project)
 	if project == "" {
@@ -89,11 +144,23 @@ func (s *Service) GetSDDStoreBinding(ctx context.Context, project, change string
 	if s.sdd == nil {
 		return SDDStoreBinding{}, false, errors.New("SDD store is not configured")
 	}
-	return s.sdd.GetSDDStoreBinding(ctx, project, change)
+	key, err := s.sdd.ResolveProjectIngress(ctx, project)
+	if err != nil {
+		return SDDStoreBinding{}, false, err
+	}
+	binding, found, err := s.sdd.GetSDDStoreBinding(ctx, key, change)
+	if err != nil {
+		return SDDStoreBinding{}, false, withProjectKey(key, err)
+	}
+	if !found {
+		return SDDStoreBinding{Project: key, Change: change}, false, nil
+	}
+	return binding, true, nil
 }
 
-// AdoptSDDStoreBinding establishes the first immutable binding without requiring
-// a prior governance project or Hive artifact row.
+// AdoptSDDStoreBinding establishes the first immutable binding under the
+// effective project key without requiring a prior governance project or Hive
+// artifact row. A retired key binds its alias target, never itself.
 func (s *Service) AdoptSDDStoreBinding(ctx context.Context, project, change string, request SDDStoreBindingRequest) (SDDStoreBinding, bool, error) {
 	project = strings.TrimSpace(project)
 	if project == "" {
@@ -106,7 +173,12 @@ func (s *Service) AdoptSDDStoreBinding(ctx context.Context, project, change stri
 	if s.sdd == nil {
 		return SDDStoreBinding{}, false, errors.New("SDD store is not configured")
 	}
-	return s.sdd.AdoptSDDStoreBinding(ctx, project, change, request)
+	key, err := s.sdd.ResolveProjectIngress(ctx, project)
+	if err != nil {
+		return SDDStoreBinding{}, false, err
+	}
+	binding, created, err := s.sdd.AdoptSDDStoreBinding(ctx, key, change, request)
+	return binding, created, withProjectKey(key, err)
 }
 
 func (s *Service) FetchSDDArtifacts(ctx context.Context, project, change string) ([]SDDArtifact, error) {
@@ -157,13 +229,12 @@ func (s *Service) GetApplyProgress(ctx context.Context, project, change string) 
 	if err != nil {
 		return ApplyProgressState{}, err
 	}
-	if _, err := s.store.GetGovernanceProject(ctx, project); err != nil {
-		return ApplyProgressState{}, mapProjectError(err)
+	key, err := s.resolveApplyProgressProject(ctx, project)
+	if err != nil {
+		return ApplyProgressState{}, err
 	}
-	if s.sdd == nil {
-		return ApplyProgressState{}, errors.New("SDD store is not configured")
-	}
-	return s.sdd.GetApplyProgress(project, change)
+	result, err := s.sdd.GetApplyProgress(key, change)
+	return result, withProjectKey(key, err)
 }
 
 // GetApplyProgressSuccessorOccupancy is advisory, not a reservation. The
@@ -177,13 +248,12 @@ func (s *Service) GetApplyProgressSuccessorOccupancy(ctx context.Context, projec
 	if err != nil {
 		return ApplyProgressSuccessorOccupancy{}, err
 	}
-	if _, err := s.store.GetGovernanceProject(ctx, project); err != nil {
-		return ApplyProgressSuccessorOccupancy{}, mapProjectError(err)
+	key, err := s.resolveApplyProgressProject(ctx, project)
+	if err != nil {
+		return ApplyProgressSuccessorOccupancy{}, err
 	}
-	if s.sdd == nil {
-		return ApplyProgressSuccessorOccupancy{}, errors.New("SDD store is not configured")
-	}
-	return s.sdd.GetApplyProgressSuccessorOccupancy(project, change)
+	result, err := s.sdd.GetApplyProgressSuccessorOccupancy(key, change)
+	return result, withProjectKey(key, err)
 }
 
 // GetApplyProgressEvidence returns one bounded canonical evidence document only
@@ -197,13 +267,12 @@ func (s *Service) GetApplyProgressEvidence(ctx context.Context, project, change,
 	if err != nil {
 		return applyprogress.Batch{}, err
 	}
-	if _, err := s.store.GetGovernanceProject(ctx, project); err != nil {
-		return applyprogress.Batch{}, mapProjectError(err)
+	key, err := s.resolveApplyProgressProject(ctx, project)
+	if err != nil {
+		return applyprogress.Batch{}, err
 	}
-	if s.sdd == nil {
-		return applyprogress.Batch{}, errors.New("SDD store is not configured")
-	}
-	return s.sdd.GetApplyProgressEvidence(project, change, batchID, expectedHeadDigest)
+	batch, err := s.sdd.GetApplyProgressEvidence(key, change, batchID, expectedHeadDigest)
+	return batch, withProjectKey(key, err)
 }
 
 // GetApplyProgressReceipt returns only the identity of a committed request bound
@@ -217,13 +286,12 @@ func (s *Service) GetApplyProgressReceipt(ctx context.Context, project, change, 
 	if err != nil {
 		return ApplyProgressReceipt{}, err
 	}
-	if _, err := s.store.GetGovernanceProject(ctx, project); err != nil {
-		return ApplyProgressReceipt{}, mapProjectError(err)
+	key, err := s.resolveApplyProgressProject(ctx, project)
+	if err != nil {
+		return ApplyProgressReceipt{}, err
 	}
-	if s.sdd == nil {
-		return ApplyProgressReceipt{}, errors.New("SDD store is not configured")
-	}
-	return s.sdd.GetApplyProgressReceipt(project, change, requestID)
+	result, err := s.sdd.GetApplyProgressReceipt(key, change, requestID)
+	return result, withProjectKey(key, err)
 }
 
 // AdvanceApplyProgress performs the dedicated snapshot CAS operation.
@@ -236,13 +304,13 @@ func (s *Service) AdvanceApplyProgress(ctx context.Context, request ApplyProgres
 		return ApplyProgressAdvanceResult{}, err
 	}
 	request.Change = change
-	if _, err := s.store.GetGovernanceProject(ctx, request.Project); err != nil {
-		return ApplyProgressAdvanceResult{}, mapProjectError(err)
+	key, err := s.resolveApplyProgressProject(ctx, request.Project)
+	if err != nil {
+		return ApplyProgressAdvanceResult{}, err
 	}
-	if s.sdd == nil {
-		return ApplyProgressAdvanceResult{}, errors.New("SDD store is not configured")
-	}
-	return s.sdd.AdvanceApplyProgress(request)
+	request.Project = key
+	result, err := s.sdd.AdvanceApplyProgress(request)
+	return result, withProjectKey(key, err)
 }
 
 // PublishApplyProgressSuccessor delegates target derivation and replay authority to the database.
@@ -255,13 +323,12 @@ func (s *Service) PublishApplyProgressSuccessor(ctx context.Context, project, pr
 	if err != nil {
 		return ApplyProgressAdvanceResult{}, err
 	}
-	if _, err := s.store.GetGovernanceProject(ctx, project); err != nil {
-		return ApplyProgressAdvanceResult{}, mapProjectError(err)
+	key, err := s.resolveApplyProgressProject(ctx, project)
+	if err != nil {
+		return ApplyProgressAdvanceResult{}, err
 	}
-	if s.sdd == nil {
-		return ApplyProgressAdvanceResult{}, errors.New("SDD store is not configured")
-	}
-	return s.sdd.PublishApplyProgressSuccessor(project, change)
+	result, err := s.sdd.PublishApplyProgressSuccessor(key, change)
+	return result, withProjectKey(key, err)
 }
 
 func (s *Service) ListSDDChanges(ctx context.Context, request SDDChangePageRequest) (SDDChangePage, error) {

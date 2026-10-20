@@ -133,9 +133,15 @@ func TestWorkspacePromotionMovesSDDStoreBindingWithoutRewritingIt(t *testing.T) 
 	require.Equal(t, binding.SchemaVersion, moved.SchemaVersion)
 	require.Equal(t, binding.Mode, moved.Mode)
 	require.Equal(t, binding.Provenance, moved.Provenance)
-	_, found, err = d.GetSDDStoreBinding(ctx, "source", "change")
+	// The retired key resolves through its alias to the moved binding; no row
+	// remains under the retired key.
+	retired, found, err := d.GetSDDStoreBinding(ctx, "source", "change")
 	require.NoError(t, err)
-	require.False(t, found)
+	require.True(t, found)
+	require.Equal(t, moved, retired)
+	var sourceRows int
+	require.NoError(t, d.RawDB().QueryRow(`SELECT COUNT(*) FROM sdd_store_bindings WHERE project = 'source'`).Scan(&sourceRows))
+	require.Zero(t, sourceRows)
 }
 
 func TestIngressAliasResolutionCanonicalizesBeforeLookup(t *testing.T) {

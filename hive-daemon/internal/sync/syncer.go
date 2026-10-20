@@ -1282,8 +1282,8 @@ func (s *Syncer) syncBatchStepWithResponse(ctx context.Context, project, token s
 // database error deliberately excludes payload bytes, so this boundary can
 // continue a pull without exposing remote content in daemon logs.
 func logSkippedImmutableRemoteCreate(rejected *db.RemoteImmutableCreateRejectedError) {
-	logger.Log.Printf("warn: skipped immutable remote create event_id=%q sync_id=%q canonical_project=%q topic=%q operation=%q rejection_code=%q payload_digest=%q",
-		rejected.EventID, rejected.SyncID, rejected.CanonicalProject, rejected.Topic, rejected.Operation, rejected.RejectionCode, rejected.PayloadDigest)
+	logger.Log.Printf("warn: skipped immutable remote create event_id=%q sync_id=%q canonical_project=%q source_project=%q topic=%q operation=%q rejection_code=%q payload_digest=%q",
+		rejected.EventID, rejected.SyncID, rejected.CanonicalProject, rejected.SourceProject, rejected.Topic, rejected.Operation, rejected.RejectionCode, rejected.PayloadDigest)
 }
 
 const syncAttemptFlushLimit = 100

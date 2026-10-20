@@ -261,6 +261,9 @@ type sddStoreBindingProjection struct {
 	CreatedAt     string `json:"created_at"`
 }
 
+// sddStoreBindingResponse keeps the released closed shape: installed CLI
+// decoders reject unknown fields, so the effective project key travels only in
+// binding.project.
 type sddStoreBindingResponse struct {
 	Binding sddStoreBindingProjection `json:"binding"`
 	Created *bool                     `json:"created,omitempty"`
@@ -407,6 +410,8 @@ func decodeSDDStoreBindingAdoptRequest(reader io.Reader) (sddStoreBindingAdoptRe
 
 func writeSDDStoreBindingError(w http.ResponseWriter, source string, err error) {
 	var conflict *governance.SDDStoreBindingConflictError
+	// Error envelopes keep the released closed {"code"} shape; the effective key
+	// is reported only through binding projections.
 	switch {
 	case errors.As(err, &conflict):
 		if conflict.Existing.CreatedAt.IsZero() {
@@ -419,6 +424,8 @@ func writeSDDStoreBindingError(w http.ResponseWriter, source string, err error) 
 			"existing":  projectSDDStoreBinding(conflict.Existing),
 			"requested": projectSDDStoreBindingRequest(conflict.Requested),
 		})
+	case errors.Is(err, db.ErrProjectBlocked):
+		writeJSON(w, http.StatusLocked, map[string]string{"code": "project_blocked"})
 	case errors.Is(err, governance.ErrProjectRequired),
 		errors.Is(err, governance.ErrSDDChangeRequired),
 		errors.Is(err, governance.ErrSDDChangeInvalid),
@@ -456,7 +463,7 @@ func (s *Server) handleApplyProgressGet(w http.ResponseWriter, r *http.Request) 
 		writeApplyProgressError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"outcome": "committed", "code": "ok", "state": state})
+	writeJSON(w, http.StatusOK, map[string]any{"outcome": "committed", "code": "ok", "project_key": state.ProjectKey, "state": state})
 }
 
 func (s *Server) handleSuccessorOccupancyGet(w http.ResponseWriter, r *http.Request) {
@@ -470,9 +477,10 @@ func (s *Server) handleSuccessorOccupancyGet(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, struct {
-		Occupied bool   `json:"occupied"`
-		Category string `json:"category"`
-	}{occupancy.Occupied, occupancy.Category})
+		Occupied   bool   `json:"occupied"`
+		Category   string `json:"category"`
+		ProjectKey string `json:"project_key"`
+	}{occupancy.Occupied, occupancy.Category, occupancy.ProjectKey})
 }
 
 func (s *Server) handleApplyProgressEvidenceGet(w http.ResponseWriter, r *http.Request) {
@@ -485,7 +493,9 @@ func (s *Server) handleApplyProgressEvidenceGet(w http.ResponseWriter, r *http.R
 		writeApplyProgressError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"outcome": "committed", "code": "ok", "batch": batch})
+	// A served batch is validated against the resolved key, so its project is the
+	// effective key.
+	writeJSON(w, http.StatusOK, map[string]any{"outcome": "committed", "code": "ok", "project_key": batch.Project, "batch": batch})
 }
 
 func (s *Server) handleApplyProgressReceiptGet(w http.ResponseWriter, r *http.Request) {
@@ -498,7 +508,7 @@ func (s *Server) handleApplyProgressReceiptGet(w http.ResponseWriter, r *http.Re
 		writeApplyProgressError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"receipt": receipt})
+	writeJSON(w, http.StatusOK, map[string]any{"project_key": receipt.ProjectKey, "receipt": receipt})
 }
 
 func (s *Server) handleApplyProgressAdvance(w http.ResponseWriter, r *http.Request) {
@@ -524,10 +534,10 @@ func (s *Server) handleApplyProgressAdvance(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if result.Outcome == "conflict" {
-		writeJSON(w, http.StatusConflict, map[string]any{"outcome": result.Outcome, "code": "stale", "state": result.State, "recovery": "generation is a stable epoch; retry with the authoritative generation plus the current revision and digest to prepare the next revision"})
+		writeJSON(w, http.StatusConflict, map[string]any{"outcome": result.Outcome, "code": "stale", "project_key": result.State.ProjectKey, "state": result.State, "recovery": "generation is a stable epoch; retry with the authoritative generation plus the current revision and digest to prepare the next revision"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"outcome": result.Outcome, "code": "ok", "state": result.State, "receipt": result.Receipt})
+	writeJSON(w, http.StatusOK, map[string]any{"outcome": result.Outcome, "code": "ok", "project_key": result.State.ProjectKey, "state": result.State, "receipt": result.Receipt})
 }
 
 func (s *Server) handleApplyProgressPublishSuccessor(w http.ResponseWriter, r *http.Request) {
@@ -560,7 +570,7 @@ func (s *Server) handleApplyProgressPublishSuccessor(w http.ResponseWriter, r *h
 		writeApplyProgressError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"outcome": result.Outcome, "code": "ok", "state": result.State, "receipt": result.Receipt})
+	writeJSON(w, http.StatusOK, map[string]any{"outcome": result.Outcome, "code": "ok", "project_key": result.State.ProjectKey, "state": result.State, "receipt": result.Receipt})
 }
 
 func writeApplyProgressError(w http.ResponseWriter, err error) {
@@ -597,6 +607,9 @@ func writeApplyProgressError(w http.ResponseWriter, err error) {
 	}
 	if detail != "" {
 		response["detail"] = detail
+	}
+	if key, ok := governance.ProjectKeyFromError(err); ok {
+		response["project_key"] = key
 	}
 	writeJSON(w, status, response)
 }

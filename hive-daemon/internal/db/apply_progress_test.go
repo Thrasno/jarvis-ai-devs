@@ -76,7 +76,7 @@ func TestApplyProgressSuccessorOccupancy(t *testing.T) {
 			require.NoError(t, d.RawDB().QueryRow(`SELECT COUNT(*) FROM project_identities`).Scan(&before))
 			got, err := d.GetApplyProgressSuccessorOccupancy("project", "next")
 			require.NoError(t, err)
-			require.Equal(t, ApplyProgressSuccessorOccupancy{Occupied: tc.category != "", Category: tc.category}, got)
+			require.Equal(t, ApplyProgressSuccessorOccupancy{Occupied: tc.category != "", Category: tc.category, ProjectKey: "project"}, got)
 			require.NoError(t, d.RawDB().QueryRow(`SELECT COUNT(*) FROM project_identities`).Scan(&after))
 			require.Equal(t, before, after)
 		})

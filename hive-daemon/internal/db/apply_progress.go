@@ -39,11 +39,16 @@ type ApplyProgressState struct {
 	// never serialized: read clients retrieve one referenced immutable document at
 	// a time through GetApplyProgressEvidence.
 	Batches []applyprogress.Batch `json:"-"`
+	// ProjectKey is the effective project key resolved at ingress (spelling fold
+	// plus alias). Transports report it beside the state, never inside it.
+	ProjectKey string `json:"-"`
 }
 
 type ApplyProgressReceipt struct {
 	RequestID     string `json:"request_id"`
 	PayloadSHA256 string `json:"payload_sha256"`
+	// ProjectKey is the effective project key resolved at ingress.
+	ProjectKey string `json:"-"`
 }
 
 // ApplyProgressAdvance is intentionally distinct from models.Memory and SaveMemory.
@@ -86,7 +91,11 @@ func (d *DB) GetApplyProgress(project, change string) (ApplyProgressState, error
 		return ApplyProgressState{}, fmt.Errorf("begin apply progress read: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	state, err := d.deriveApplyProgressState(tx, canonicalProjectKey(project), change)
+	project, err = resolveProjectIngressTx(context.Background(), tx, project)
+	if err != nil {
+		return ApplyProgressState{}, err
+	}
+	state, err := d.deriveApplyProgressState(tx, project, change)
 	if err != nil {
 		return ApplyProgressState{}, err
 	}
@@ -109,6 +118,10 @@ func (d *DB) GetApplyProgressEvidence(project, change, batchID, expectedHeadDige
 		return applyprogress.Batch{}, fmt.Errorf("begin apply evidence read: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	project, err = resolveProjectIngressTx(context.Background(), tx, project)
+	if err != nil {
+		return applyprogress.Batch{}, err
+	}
 	state, err := d.deriveApplyProgressState(tx, project, change)
 	if err != nil {
 		return applyprogress.Batch{}, err
@@ -356,9 +369,13 @@ func (d *DB) GetApplyProgressReceipt(project, change, requestID string) (ApplyPr
 	if project == "" || change == "" || !applyprogress.ValidID(requestID) {
 		return ApplyProgressReceipt{}, ErrApplyProgressInvalid
 	}
+	project, err := d.resolveProjectIngress(context.Background(), project)
+	if err != nil {
+		return ApplyProgressReceipt{}, err
+	}
 
-	var receipt ApplyProgressReceipt
-	err := d.sqlDB.QueryRow(`SELECT request_id, payload_sha256 FROM sdd_apply_receipts WHERE request_id = ? AND project = ? AND change_name = ?`, requestID, project, change).Scan(&receipt.RequestID, &receipt.PayloadSHA256)
+	receipt := ApplyProgressReceipt{ProjectKey: project}
+	err = d.sqlDB.QueryRow(`SELECT request_id, payload_sha256 FROM sdd_apply_receipts WHERE request_id = ? AND project = ? AND change_name = ?`, requestID, project, change).Scan(&receipt.RequestID, &receipt.PayloadSHA256)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ApplyProgressReceipt{}, ErrApplyProgressReceiptNotFound
 	}
@@ -372,6 +389,8 @@ func (d *DB) GetApplyProgressReceipt(project, change, requestID string) (ApplyPr
 type ApplyProgressSuccessorOccupancy struct {
 	Occupied bool
 	Category string
+	// ProjectKey is the effective project key resolved at ingress.
+	ProjectKey string
 }
 
 // GetApplyProgressSuccessorOccupancy checks a successor name without writing.
@@ -385,7 +404,16 @@ func (d *DB) GetApplyProgressSuccessorOccupancy(project, change string) (ApplyPr
 		return ApplyProgressSuccessorOccupancy{}, fmt.Errorf("begin successor occupancy: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	return applyProgressSuccessorOccupancy(tx, project, change)
+	project, err = resolveProjectIngressTx(context.Background(), tx, project)
+	if err != nil {
+		return ApplyProgressSuccessorOccupancy{}, err
+	}
+	occupancy, err := applyProgressSuccessorOccupancy(tx, project, change)
+	if err != nil {
+		return ApplyProgressSuccessorOccupancy{}, err
+	}
+	occupancy.ProjectKey = project
+	return occupancy, nil
 }
 
 type successorOccupancyQuery interface {
@@ -455,6 +483,10 @@ func (d *DB) PublishApplyProgressSuccessor(project, predecessorChange string) (A
 		return ApplyProgressAdvanceResult{}, fmt.Errorf("begin successor publication: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	project, err = resolveProjectIngressTx(context.Background(), tx, project)
+	if err != nil {
+		return ApplyProgressAdvanceResult{}, err
+	}
 	// Resolve the signed terminal lineage without writing: exact receipt replay
 	// must remain read-only even if the local head is stale or absent.
 	predecessor, err := d.deriveApplyProgressState(tx, project, predecessorChange)
@@ -510,7 +542,7 @@ func (d *DB) PublishApplyProgressSuccessor(project, predecessorChange string) (A
 		if !present || !bytes.Equal(original.content, genesisBytes) || lineage.terminal.snapshot.Digest == "" {
 			return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
 		}
-		return ApplyProgressAdvanceResult{Outcome: "committed", State: applyProgressStateFromSnapshot(original.snapshot, original.batches), Receipt: ApplyProgressReceipt{RequestID: requestID, PayloadSHA256: payloadDigest}}, nil
+		return ApplyProgressAdvanceResult{Outcome: "committed", State: applyProgressStateFromSnapshot(original.snapshot, original.batches), Receipt: ApplyProgressReceipt{RequestID: requestID, PayloadSHA256: payloadDigest, ProjectKey: project}}, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return ApplyProgressAdvanceResult{}, fmt.Errorf("read successor receipt: %w", err)
@@ -556,13 +588,19 @@ func (d *DB) PublishApplyProgressSuccessor(project, predecessorChange string) (A
 	if err := tx.Commit(); err != nil {
 		return ApplyProgressAdvanceResult{}, fmt.Errorf("commit successor publication: %w", err)
 	}
-	return ApplyProgressAdvanceResult{Outcome: "committed", State: applyProgressStateFromSnapshot(genesis, map[string]applyprogress.Batch{}), Receipt: ApplyProgressReceipt{RequestID: requestID, PayloadSHA256: payloadDigest}}, nil
+	return ApplyProgressAdvanceResult{Outcome: "committed", State: applyProgressStateFromSnapshot(genesis, map[string]applyprogress.Batch{}), Receipt: ApplyProgressReceipt{RequestID: requestID, PayloadSHA256: payloadDigest, ProjectKey: project}}, nil
 }
 
 // AdvanceApplyProgress atomically enforces batch immutability, snapshot CAS, and
 // request-id idempotency. It never calls SaveMemory or changes general memory writes.
 func (d *DB) AdvanceApplyProgress(request ApplyProgressAdvance) (ApplyProgressAdvanceResult, error) {
-	request.Project = canonicalProjectKey(request.Project)
+	// Immutable documents are signed under the effective key, so validation and
+	// the receipt digest must use it. The transaction re-checks it below.
+	project, err := d.resolveProjectIngress(context.Background(), request.Project)
+	if err != nil {
+		return ApplyProgressAdvanceResult{}, err
+	}
+	request.Project = project
 	request.Change = strings.TrimSpace(request.Change)
 	if request.Project == "" || request.Change == "" || !applyprogress.ValidID(request.RequestID) || request.Snapshot.Project != request.Project || request.Snapshot.Change != request.Change || request.Batches == nil {
 		return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
@@ -608,6 +646,13 @@ func (d *DB) AdvanceApplyProgress(request ApplyProgressAdvance) (ApplyProgressAd
 		return ApplyProgressAdvanceResult{}, fmt.Errorf("begin apply progress advance: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	// An alias created after the pre-check would retire the validated key. Fail
+	// closed instead of writing rows under a key every ingress now redirects.
+	if resolved, err := resolveProjectIngressTx(context.Background(), tx, request.Project); err != nil {
+		return ApplyProgressAdvanceResult{}, err
+	} else if resolved != request.Project {
+		return ApplyProgressAdvanceResult{}, ErrApplyProgressInvalid
+	}
 
 	var storedDigest, storedResponse string
 	err = tx.QueryRow(`SELECT payload_sha256, response_json FROM sdd_apply_receipts WHERE request_id = ?`, request.RequestID).Scan(&storedDigest, &storedResponse)
@@ -632,7 +677,7 @@ func (d *DB) AdvanceApplyProgress(request ApplyProgressAdvance) (ApplyProgressAd
 		if err != nil {
 			return ApplyProgressAdvanceResult{}, err
 		}
-		return ApplyProgressAdvanceResult{Outcome: "committed", State: applyProgressStateFromSnapshot(snapshot, canonical), Receipt: ApplyProgressReceipt{RequestID: request.RequestID, PayloadSHA256: payloadDigest}}, nil
+		return ApplyProgressAdvanceResult{Outcome: "committed", State: applyProgressStateFromSnapshot(snapshot, canonical), Receipt: ApplyProgressReceipt{RequestID: request.RequestID, PayloadSHA256: payloadDigest, ProjectKey: request.Project}}, nil
 	case !errors.Is(err, sql.ErrNoRows):
 		return ApplyProgressAdvanceResult{}, fmt.Errorf("read apply progress receipt: %w", err)
 	}
@@ -648,7 +693,7 @@ func (d *DB) AdvanceApplyProgress(request ApplyProgressAdvance) (ApplyProgressAd
 	current, err := d.reconcileApplyProgressHeadTx(tx, request.Project, request.Change)
 	headPresent := err == nil
 	if errors.Is(err, ErrApplyProgressNotFound) {
-		current = ApplyProgressState{}
+		current = ApplyProgressState{ProjectKey: request.Project}
 	} else if err != nil {
 		return ApplyProgressAdvanceResult{}, err
 	}
@@ -736,7 +781,7 @@ func (d *DB) AdvanceApplyProgress(request ApplyProgressAdvance) (ApplyProgressAd
 	result := ApplyProgressAdvanceResult{
 		Outcome: "committed",
 		State:   applyProgressStateFromSnapshot(snapshot, referenced),
-		Receipt: ApplyProgressReceipt{RequestID: request.RequestID, PayloadSHA256: payloadDigest},
+		Receipt: ApplyProgressReceipt{RequestID: request.RequestID, PayloadSHA256: payloadDigest, ProjectKey: request.Project},
 	}
 	response, err := json.Marshal(applyProgressReceiptResult{Outcome: result.Outcome, Generation: result.State.Generation, Revision: result.State.Revision, Digest: result.State.Digest})
 	if err != nil {
@@ -894,7 +939,9 @@ func applyProgressStateFromSnapshot(snapshot applyprogress.Snapshot, batches map
 	for i, ref := range snapshot.Batches {
 		ordered[i] = batches[ref.BatchID]
 	}
-	return ApplyProgressState{Generation: snapshot.Generation, Revision: snapshot.Revision, Digest: snapshot.Digest, Snapshot: snapshot, Batches: ordered}
+	// Every stored snapshot is validated against the key it is stored under, so its
+	// project is the effective key the read or write resolved at ingress.
+	return ApplyProgressState{Generation: snapshot.Generation, Revision: snapshot.Revision, Digest: snapshot.Digest, Snapshot: snapshot, Batches: ordered, ProjectKey: snapshot.Project}
 }
 
 func resolveApplyProgressBatches(query applyProgressQuery, snapshot applyprogress.Snapshot) (map[string]applyprogress.Batch, error) {
