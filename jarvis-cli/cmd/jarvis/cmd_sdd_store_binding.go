@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/atomicfile"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddbinding"
@@ -23,33 +24,54 @@ import (
 
 // resolveBoundProgressStore selects a writer only after the immutable binding
 // for the request coordinates has been read or safely adopted. It never treats
-// a binding, protocol, listing, or lock error as an absent binding.
-func resolveBoundProgressStore(ctx context.Context, root, project, change string) (progressAdvancer, error) {
+// a binding, protocol, listing, or lock error as an absent binding. It returns
+// the effective project key every write must be signed under.
+func resolveBoundProgressStore(ctx context.Context, root string, project projectidentity.Key, change string) (progressAdvancer, projectidentity.Key, error) {
 	if err := validateProgressBindingCoordinates(project, change); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	workspace, openSpecRoot, err := progressBindingWorkspace(root, change)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	hc, err := hiveclient.NewFromEnv()
 	if err != nil {
-		return nil, fmt.Errorf("connect to hive-daemon: %w", err)
+		return nil, "", fmt.Errorf("connect to hive-daemon: %w", err)
 	}
-	binding, err := resolveSddStoreBindingAt(ctx, hc, project, change, workspace)
+	binding, effective, err := resolveSddStoreBindingAt(ctx, hc, project, change, workspace)
 	if err != nil {
-		return nil, fmt.Errorf("resolve SDD store binding: %w", err)
+		return nil, "", fmt.Errorf("resolve SDD store binding: %w", err)
 	}
-	return progressStoreForBindingWithContext(ctx, binding.Mode, openSpecRoot)
+	store, err := progressStoreForBindingWithContext(ctx, binding.Mode, openSpecRoot)
+	return store, effective, err
 }
 
 // resolveSddStoreBindingAt is the shared binding resolver for status, continue,
 // and progress mutations. The caller supplies an already selected workspace so
 // binding coordinates never select an unrelated local change directory.
-func resolveSddStoreBindingAt(ctx context.Context, hc *hiveclient.Client, project, change, workspace string) (sddbinding.Resolution, error) {
+//
+// It also returns the effective project key. A daemon that resolves the
+// requested key to another project (a retired alias) reports that key in
+// binding.project; the redirect is accepted only after the apply-progress
+// route confirms the same effective key, and is then resolved again under it.
+func resolveSddStoreBindingAt(ctx context.Context, hc *hiveclient.Client, project projectidentity.Key, change, workspace string) (sddbinding.Resolution, projectidentity.Key, error) {
 	if hc == nil {
-		return sddbinding.Resolution{}, errors.New("Hive binding client is required")
+		return sddbinding.Resolution{}, "", errors.New("Hive binding client is required")
 	}
+	resolution, err := resolveSddStoreBindingFor(ctx, hc, project, change, workspace)
+	var redirect *hiveclient.SDDStoreBindingRedirectError
+	if !errors.As(err, &redirect) {
+		return resolution, project, err
+	}
+	effective, err := confirmEffectiveSddProject(ctx, hc, project, change, redirect.Effective)
+	if err != nil {
+		return sddbinding.Resolution{}, "", err
+	}
+	resolution, err = resolveSddStoreBindingFor(ctx, hc, effective, change, workspace)
+	return resolution, effective, err
+}
+
+func resolveSddStoreBindingFor(ctx context.Context, hc *hiveclient.Client, project projectidentity.Key, change, workspace string) (sddbinding.Resolution, error) {
 	hiveSource := sddstatus.NewHiveSource(hc, project)
 	openSpecSource := sddstatus.NewOpenSpecSourceForProject(workspace, project)
 	resolver := sddbinding.LegacyResolver{
@@ -62,8 +84,24 @@ func resolveSddStoreBindingAt(ctx context.Context, hc *hiveclient.Client, projec
 	return resolver.ResolveAndAdopt(ctx, project, change, initialStoreSelection())
 }
 
-func validateProgressBindingCoordinates(project, change string) error {
-	if project != strings.TrimSpace(project) || project != hiveclient.CanonicalProjectKey(project) || change != strings.TrimSpace(change) || !applyprogress.ValidID(project) || !applyprogress.ValidID(change) {
+// confirmEffectiveSddProject accepts a store-binding redirect only when the
+// apply-progress route, which reports project_key on success and on every
+// post-resolution error, resolves the requested key to the same project. Older
+// daemons never redirect, so a redirect without a confirming key is a mismatch.
+func confirmEffectiveSddProject(ctx context.Context, hc *hiveclient.Client, requested projectidentity.Key, change string, redirected projectidentity.Key) (projectidentity.Key, error) {
+	result, err := hc.GetApplyProgress(ctx, requested.String(), change)
+	var typed *hiveclient.ApplyProgressError
+	if err != nil && !errors.As(err, &typed) {
+		return "", fmt.Errorf("confirm effective project for %q: %w", requested, err)
+	}
+	if result.ProjectKey == "" || projectidentity.Key(result.ProjectKey) != redirected {
+		return "", fmt.Errorf("%w: store binding resolved project %q to %q, apply progress resolved it to %q", sddstatus.ErrProjectMismatch, requested, redirected, result.ProjectKey)
+	}
+	return redirected, nil
+}
+
+func validateProgressBindingCoordinates(project projectidentity.Key, change string) error {
+	if project != projectidentity.Canonical(project.String()) || change != strings.TrimSpace(change) || !applyprogress.ValidID(project.String()) || !applyprogress.ValidID(change) {
 		return errors.New("SDD progress request project and change must be canonical non-empty identifiers")
 	}
 	if filepath.Base(change) != change || change == "." {
@@ -139,7 +177,7 @@ func progressStoreForBindingWithFactory(mode sddruntime.StoreMode, openSpecRoot 
 type boundSddArchiveCoordinates struct {
 	workspace string
 	root      string
-	project   string
+	project   projectidentity.Key
 	change    string
 }
 
@@ -156,10 +194,11 @@ func runBoundSddArchive(ctx context.Context, root, destination, projectFlag, cha
 	if err != nil {
 		return fmt.Errorf("connect to hive-daemon: %w", err)
 	}
-	binding, err := resolveSddStoreBindingAt(ctx, hc, coordinates.project, coordinates.change, coordinates.workspace)
+	binding, effective, err := resolveSddStoreBindingAt(ctx, hc, coordinates.project, coordinates.change, coordinates.workspace)
 	if err != nil {
 		return fmt.Errorf("resolve SDD store binding: %w", err)
 	}
+	coordinates.project = effective
 
 	hiveSource := sddstatus.NewHiveSource(hc, coordinates.project)
 	openSpecSource := sddstatus.NewOpenSpecSourceForProject(coordinates.workspace, coordinates.project)
@@ -259,19 +298,14 @@ func resolveBoundSddArchiveCoordinates(root, projectFlag, changeFlag string) (bo
 		coordinates.workspace, coordinates.change = workspace, changeFlag
 	}
 
-	if projectFlag != "" {
-		if err := validateSddArchiveCoordinate(projectFlag, "project"); err != nil {
-			return coordinates, err
-		}
-		coordinates.project = projectFlag
-	} else {
-		project, err := resolveSddProject("", coordinates.workspace)
-		if err != nil {
-			return coordinates, err
-		}
-		coordinates.project = project
+	// The project shares the status/continue/progress identity boundary: any
+	// spelling of a canonical key folds to that key exactly once.
+	project, err := resolveSddProject(projectFlag, coordinates.workspace)
+	if err != nil {
+		return coordinates, err
 	}
-	if err := validateSddArchiveCoordinate(coordinates.project, "project"); err != nil {
+	coordinates.project = project
+	if err := validateSddArchiveCoordinate(coordinates.project.String(), "project"); err != nil {
 		return boundSddArchiveCoordinates{}, err
 	}
 	return coordinates, nil

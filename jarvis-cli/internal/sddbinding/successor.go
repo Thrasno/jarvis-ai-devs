@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
@@ -35,12 +36,12 @@ func (successorFileStore) AdoptOpenSpec(path string, b Binding) (Binding, bool, 
 // AdoptSuccessorGenesis binds a published successor to the predecessor's persisted
 // store mode. Each selected source must authenticate its stored seal and
 // published successor; a caller-supplied signed pair alone is not authority.
-func (r LegacyResolver) AdoptSuccessorGenesis(ctx context.Context, project, predecessor string, seal, genesis applyprogress.Snapshot) (Resolution, error) {
+func (r LegacyResolver) AdoptSuccessorGenesis(ctx context.Context, project projectidentity.Key, predecessor string, seal, genesis applyprogress.Snapshot) (Resolution, error) {
 	if err := ctx.Err(); err != nil {
 		return Resolution{}, err
 	}
-	project = hiveclient.CanonicalProjectKey(project)
-	if project == "" || predecessor == "" || seal.Project != project || seal.Change != predecessor || genesis.Project != project || applyprogress.ValidateSuccessorGenesisPair(seal, genesis) != nil {
+	project = projectidentity.Canonical(project.String())
+	if project == "" || predecessor == "" || seal.Project != project.String() || seal.Change != predecessor || genesis.Project != project.String() || applyprogress.ValidateSuccessorGenesisPair(seal, genesis) != nil {
 		return Resolution{}, fmt.Errorf("%w: invalid successor genesis coordinates or pair", ErrInvalidBinding)
 	}
 	target := filepath.Join(filepath.Dir(r.OpenSpecChangeDir), genesis.Change)
@@ -121,7 +122,7 @@ func (r LegacyResolver) AdoptSuccessorGenesis(ctx context.Context, project, pred
 	if local == nil {
 		local = successorFileStore{}
 	}
-	hive, found, err := r.HiveBindings.GetSDDStoreBinding(ctx, project, genesis.Change)
+	hive, found, err := r.HiveBindings.GetSDDStoreBinding(ctx, project.String(), genesis.Change)
 	if err != nil {
 		return Resolution{}, err
 	}

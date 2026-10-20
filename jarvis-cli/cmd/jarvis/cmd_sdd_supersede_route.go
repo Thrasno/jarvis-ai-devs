@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddbinding"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress"
@@ -20,7 +21,7 @@ import (
 )
 
 func newSddSupersedeCommand() *cobra.Command {
-	var predecessor, successor, root, project, actor, reason string
+	var predecessor, successor, root, projectFlag, actor, reason string
 	command := &cobra.Command{
 		Use: "supersede", Short: "Supersede a bound SDD change", Args: cobra.NoArgs,
 		SilenceUsage: true, SilenceErrors: true,
@@ -35,7 +36,7 @@ func newSddSupersedeCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			project, err = resolveSddProject(project, workspace)
+			project, err := resolveSddProject(projectFlag, workspace)
 			if err != nil {
 				return err
 			}
@@ -99,7 +100,7 @@ func newSddSupersedeCommand() *cobra.Command {
 			var headErr error
 			if binding.Mode == sddruntime.StoreModeHive {
 				head, headErr = readSupersessionHiveHead(cmd.Context(), client, project, predecessor)
-				if headErr == nil && (head == nil || applyprogress.VerifySnapshot(*head) != nil || head.Project != project || head.Change != predecessor) {
+				if headErr == nil && (head == nil || applyprogress.VerifySnapshot(*head) != nil || head.Project != project.String() || head.Change != predecessor) {
 					return fmt.Errorf("Hive predecessor head missing or invalid")
 				}
 			} else if binding.Mode == sddruntime.StoreModeOpenSpec {
@@ -154,7 +155,7 @@ func newSddSupersedeCommand() *cobra.Command {
 			if binding.Mode == sddruntime.StoreModeOpenSpec && headErr != nil && headErr != sddprogress.ErrLegacyMigration {
 				// A revised task manifest makes InspectPublication reject an otherwise
 				// authentic PARTIAL head. The strict preflight validates that case.
-				if _, err = open.InspectSealablePredecessor(project, predecessor); err != nil {
+				if _, err = open.InspectSealablePredecessor(project.String(), predecessor); err != nil {
 					return fmt.Errorf("inspect predecessor: %w", headErr)
 				}
 			}
@@ -215,20 +216,20 @@ func newSddSupersedeCommand() *cobra.Command {
 	command.Flags().StringVar(&predecessor, "change", "", "predecessor change")
 	command.Flags().StringVar(&successor, "successor", "", "successor change")
 	command.Flags().StringVar(&root, "root", "", "canonical predecessor change directory")
-	command.Flags().StringVar(&project, "project", "", "project")
+	command.Flags().StringVar(&projectFlag, "project", "", "hive project name; any spelling of the same canonical key resolves to that key")
 	command.Flags().StringVar(&actor, "actor", "", "actor signing a new seal")
 	command.Flags().StringVar(&reason, "reason", "", "reason for a new seal")
 	return command
 }
 
 // readSupersessionHiveHead rejects noncanonical or inconsistent GET envelopes before writes.
-func readSupersessionHiveHead(ctx context.Context, client *hiveclient.Client, project, change string) (*applyprogress.Snapshot, error) {
-	result, err := client.GetApplyProgress(ctx, project, change)
+func readSupersessionHiveHead(ctx context.Context, client *hiveclient.Client, project projectidentity.Key, change string) (*applyprogress.Snapshot, error) {
+	result, err := client.GetApplyProgress(ctx, project.String(), change)
 	if err != nil {
 		return nil, err
 	}
 	head := result.State.Snapshot
-	if result.Outcome != "committed" || result.Code != "ok" || !result.State.CoordinatesPresent || head.Project != project || head.Change != change || result.State.Generation != head.Generation || result.State.Revision != head.Revision || result.State.Digest != head.Digest || applyprogress.VerifySnapshot(head) != nil {
+	if result.Outcome != "committed" || result.Code != "ok" || !result.State.CoordinatesPresent || head.Project != project.String() || head.Change != change || result.State.Generation != head.Generation || result.State.Revision != head.Revision || result.State.Digest != head.Digest || applyprogress.VerifySnapshot(head) != nil {
 		return nil, fmt.Errorf("Hive apply-progress GET is not a matching committed/ok signed head")
 	}
 	return &head, nil
@@ -236,7 +237,7 @@ func readSupersessionHiveHead(ctx context.Context, client *hiveclient.Client, pr
 
 // completedAdvancedRetry succeeds only for an already bound, independently
 // authenticated successor beyond its immutable 1/1 genesis.
-func completedAdvancedRetry(ctx context.Context, workspace, project, predecessor, successor string, client *hiveclient.Client, mode sddruntime.StoreMode, provenance string, seal applyprogress.Snapshot) (bool, error) {
+func completedAdvancedRetry(ctx context.Context, workspace string, project projectidentity.Key, predecessor, successor string, client *hiveclient.Client, mode sddruntime.StoreMode, provenance string, seal applyprogress.Snapshot) (bool, error) {
 	localSource := sddstatus.NewOpenSpecSourceForProject(workspace, project)
 	hiveSource := sddstatus.NewHiveSource(client, project)
 	projections := make([]sddstatus.SupersessionProjection, 0, 2)
@@ -299,16 +300,16 @@ func completedAdvancedRetry(ctx context.Context, workspace, project, predecessor
 }
 
 // hybridRetrySeal authenticates each concrete selected source before a replay can mutate either.
-func hybridRetrySeal(ctx context.Context, workspace, project, predecessor, successor string, client *hiveclient.Client, open sddprogress.OpenSpec) (*applyprogress.Snapshot, error) {
+func hybridRetrySeal(ctx context.Context, workspace string, project projectidentity.Key, predecessor, successor string, client *hiveclient.Client, open sddprogress.OpenSpec) (*applyprogress.Snapshot, error) {
 	local, localErr := open.InspectPublication()
 	if localErr != nil {
-		local, localErr = open.InspectSealablePredecessor(project, predecessor)
+		local, localErr = open.InspectSealablePredecessor(project.String(), predecessor)
 	}
-	if localErr != nil || local == nil || applyprogress.VerifySnapshot(*local) != nil || local.Project != project || local.Change != predecessor {
+	if localErr != nil || local == nil || applyprogress.VerifySnapshot(*local) != nil || local.Project != project.String() || local.Change != predecessor {
 		return nil, fmt.Errorf("hybrid OpenSpec predecessor invalid: %v", localErr)
 	}
 	remote, err := readSupersessionHiveHead(ctx, client, project, predecessor)
-	if err != nil || remote == nil || applyprogress.VerifySnapshot(*remote) != nil || remote.Project != project || remote.Change != predecessor {
+	if err != nil || remote == nil || applyprogress.VerifySnapshot(*remote) != nil || remote.Project != project.String() || remote.Change != predecessor {
 		return nil, fmt.Errorf("hybrid Hive predecessor invalid: %v", err)
 	}
 	localSealed := local.Status == applyprogress.StatusSuperseded
@@ -331,7 +332,7 @@ func hybridRetrySeal(ctx context.Context, workspace, project, predecessor, succe
 		return nil, fmt.Errorf("hybrid signed predecessor heads diverged")
 	}
 	if !localSealed {
-		partial, err := open.InspectSealablePredecessor(project, predecessor)
+		partial, err := open.InspectSealablePredecessor(project.String(), predecessor)
 		if err != nil || !applyprogress.IsSupersessionSeal(*partial, seal) {
 			return nil, fmt.Errorf("hybrid OpenSpec partial mirror differs from signed seal: %v", err)
 		}
@@ -344,7 +345,7 @@ func hybridRetrySeal(ctx context.Context, workspace, project, predecessor, succe
 		if err != nil || !applyprogress.IsSupersessionSeal(partial, seal) {
 			return nil, fmt.Errorf("hybrid Hive partial mirror differs from signed seal: %v", err)
 		}
-		occupancy, err := client.GetApplyProgressSuccessorOccupancy(ctx, project, successor)
+		occupancy, err := client.GetApplyProgressSuccessorOccupancy(ctx, project.String(), successor)
 		if err != nil {
 			return nil, err
 		}
@@ -367,7 +368,7 @@ func hybridRetrySeal(ctx context.Context, workspace, project, predecessor, succe
 	return &seal, nil
 }
 
-func publishAndBindHybridSuccessor(ctx context.Context, workspace, project, predecessor, successor string, client *hiveclient.Client, hybrid sddprogress.Hybrid, seal applyprogress.Snapshot, output io.Writer) error {
+func publishAndBindHybridSuccessor(ctx context.Context, workspace string, project projectidentity.Key, predecessor, successor string, client *hiveclient.Client, hybrid sddprogress.Hybrid, seal applyprogress.Snapshot, output io.Writer) error {
 	localSource := sddstatus.NewOpenSpecSourceForProject(workspace, project)
 	hiveSource := sddstatus.NewHiveSource(client, project)
 	left, leftErr := localSource.ResolveSupersession(ctx, predecessor, seal)
@@ -397,7 +398,7 @@ func publishAndBindHybridSuccessor(ctx context.Context, workspace, project, pred
 	return err
 }
 
-func publishAndBindHiveSuccessor(ctx context.Context, workspace, project, predecessor, successor string, client *hiveclient.Client, hive hiveProgressAdvancer, seal applyprogress.Snapshot, ready bool, output io.Writer) error {
+func publishAndBindHiveSuccessor(ctx context.Context, workspace string, project projectidentity.Key, predecessor, successor string, client *hiveclient.Client, hive hiveProgressAdvancer, seal applyprogress.Snapshot, ready bool, output io.Writer) error {
 	var genesis applyprogress.Snapshot
 	if ready {
 		stored, err := readSupersessionHiveHead(ctx, client, project, successor)
@@ -423,7 +424,7 @@ func publishAndBindHiveSuccessor(ctx context.Context, workspace, project, predec
 	return err
 }
 
-func publishAndBindOpenSpecSuccessor(ctx context.Context, workspace, project, predecessor, successor string, client *hiveclient.Client, open sddprogress.OpenSpec, seal applyprogress.Snapshot, ready bool, output io.Writer) error {
+func publishAndBindOpenSpecSuccessor(ctx context.Context, workspace string, project projectidentity.Key, predecessor, successor string, client *hiveclient.Client, open sddprogress.OpenSpec, seal applyprogress.Snapshot, ready bool, output io.Writer) error {
 	target := sddprogress.OpenSpec{Root: filepath.Join(workspace, "openspec", "changes", successor)}
 	if !ready {
 		if _, err := open.PublishSuccessorGenesis(target); err != nil {

@@ -16,10 +16,12 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress/filelock"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
 )
 
 type progressAdvancer interface {
@@ -520,7 +522,10 @@ func configuredProgressStore(root string) progressAdvancer {
 	return sddprogress.Hybrid{Root: root, OpenSpec: open, Hive: hive}
 }
 
-type progressStoreResolver func(context.Context, string, string, string) (progressAdvancer, error)
+// progressStoreResolver selects the bound writer for a canonical requested
+// project and change and returns the effective project key (spelling fold plus
+// alias) that every write must be signed under.
+type progressStoreResolver func(ctx context.Context, root string, project projectidentity.Key, change string) (progressAdvancer, projectidentity.Key, error)
 
 func init() { sddCmd.AddCommand(newBoundSddProgressCommand(resolveBoundProgressStore)) }
 
@@ -528,8 +533,8 @@ func init() { sddCmd.AddCommand(newBoundSddProgressCommand(resolveBoundProgressS
 // unit tests. Product wiring must use newBoundSddProgressCommand so every
 // mutation resolves the request's authoritative binding first.
 func newSddProgressCommand(open func(string) progressAdvancer) *cobra.Command {
-	return newSddProgressCommandWithResolver(func(_ context.Context, root, _, _ string) (progressAdvancer, error) {
-		return open(root), nil
+	return newSddProgressCommandWithResolver(func(_ context.Context, root string, project projectidentity.Key, _ string) (progressAdvancer, projectidentity.Key, error) {
+		return open(root), project, nil
 	})
 }
 
@@ -542,7 +547,7 @@ func newSddProgressCommandWithResolver(resolve progressStoreResolver) *cobra.Com
 	advance := &cobra.Command{
 		Use:           "advance",
 		Short:         "Atomically advance bounded apply progress",
-		Long:          "Atomically advance bounded apply progress. JSON conflict and capacity outcomes are handled responses and exit 0; inspect outcome, code, and recovery. Other outcomes exit non-zero.",
+		Long:          "Atomically advance bounded apply progress. JSON conflict and capacity outcomes are handled responses and exit 0; inspect outcome, code, and recovery. Other outcomes exit non-zero. The signed snapshot project must already be the effective project key (canonical spelling, or the target of a retired alias); otherwise the command returns code project_mismatch and writes nothing.",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -560,11 +565,19 @@ func newSddProgressCommandWithResolver(resolve progressStoreResolver) *cobra.Com
 			if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 				return errors.New("decode advance request: trailing JSON value")
 			}
-			store, err := resolve(cmd.Context(), root, request.Snapshot.Project, request.Snapshot.Change)
+			// The signed snapshot cannot be re-keyed: its project must already be
+			// the effective key the binding resolution returns.
+			store, effective, err := resolve(cmd.Context(), root, projectidentity.Canonical(request.Snapshot.Project), request.Snapshot.Change)
 			if err != nil {
 				return err
 			}
-			output, err := runSddProgressAdvance(store, root, request)
+			var output progressAdvanceOutput
+			if request.Snapshot.Project != effective.String() {
+				err = projectMismatchError(request.Snapshot.Project, effective.String())
+				output = progressAdvanceOutput{Outcome: "blocked", Code: projectMismatchCode, Detail: err.Error(), Recovery: projectMismatchRecovery}
+			} else {
+				output, err = runSddProgressAdvance(store, root, request)
+			}
 			if encodeErr := json.NewEncoder(cmd.OutOrStdout()).Encode(output); encodeErr != nil && err == nil {
 				return encodeErr
 			}
@@ -578,7 +591,7 @@ func newSddProgressCommandWithResolver(resolve progressStoreResolver) *cobra.Com
 	_ = advance.MarkFlagRequired("request")
 
 	checkpoint := &cobra.Command{
-		Use: "checkpoint", Short: "Commit one bounded evidence prefix", Long: "Commit one bounded evidence prefix through the configured OpenSpec, Hive, or hybrid store. Evidence is either explicit entries or compact task_records (one per task), never both; task_records expand deterministically into entries, and entry_index/entry_id address the expanded stream. An unambiguous legacy Markdown artifact imports automatically on its first checkpoint. JSON continuation, conflict, and capacity outcomes are handled responses and exit 0; inspect outcome, code, and recovery. Other outcomes exit non-zero. Only the historical explicit-zero v2 continuation wire shape requires `upgrade-continuation`; an absent group starts a new unbound stream normally.", Args: cobra.NoArgs, SilenceUsage: true, SilenceErrors: true,
+		Use: "checkpoint", Short: "Commit one bounded evidence prefix", Long: "Commit one bounded evidence prefix through the configured OpenSpec, Hive, or hybrid store. Evidence is either explicit entries or compact task_records (one per task), never both; task_records expand deterministically into entries, and entry_index/entry_id address the expanded stream. An unambiguous legacy Markdown artifact imports automatically on its first checkpoint. JSON continuation, conflict, and capacity outcomes are handled responses and exit 0; inspect outcome, code, and recovery. Other outcomes exit non-zero. Only the historical explicit-zero v2 continuation wire shape requires `upgrade-continuation`; an absent group starts a new unbound stream normally. The request project is canonicalized once and a retired alias resolves to its target, so progress is always written under the effective project key; a base or stored head from another project returns code project_mismatch and writes nothing.", Args: cobra.NoArgs, SilenceUsage: true, SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			data, err := os.ReadFile(requestPath)
 			if err != nil {
@@ -593,10 +606,11 @@ func newSddProgressCommandWithResolver(resolve progressStoreResolver) *cobra.Com
 			if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 				return errors.New("decode checkpoint request: trailing JSON value")
 			}
-			store, err := resolve(cmd.Context(), root, request.Project, request.Change)
+			store, effective, err := resolve(cmd.Context(), root, projectidentity.Canonical(request.Project), request.Change)
 			if err != nil {
 				return err
 			}
+			request.Project = effective.String()
 			output, err := runSddProgressCheckpoint(store, request)
 			if encodeErr := json.NewEncoder(cmd.OutOrStdout()).Encode(output); encodeErr != nil && err == nil {
 				return encodeErr
@@ -624,10 +638,11 @@ func newSddProgressCommandWithResolver(resolve progressStoreResolver) *cobra.Com
 			if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 				return errors.New("decode continuation upgrade request: trailing JSON value")
 			}
-			store, err := resolve(cmd.Context(), root, request.Project, request.Change)
+			store, effective, err := resolve(cmd.Context(), root, projectidentity.Canonical(request.Project), request.Change)
 			if err != nil {
 				return err
 			}
+			request.Project = effective.String()
 			output, err := runSddProgressUpgradeContinuation(store, request)
 			if encodeErr := json.NewEncoder(cmd.OutOrStdout()).Encode(output); encodeErr != nil && err == nil {
 				return encodeErr
@@ -841,6 +856,9 @@ func runSddProgressCheckpointStep(store progressAdvancer, request checkpointInpu
 		err := fmt.Errorf("%w: request_id", applyprogress.ErrInvalidID)
 		return checkpointValidationOutput(err), err
 	}
+	if request.Base != nil && request.Base.Project != request.Project {
+		return checkpointProjectMismatchOutput(request.Base, request.Project)
+	}
 	hiveTasksValidated := false
 	var current *applyprogress.Snapshot
 	var currentErr error
@@ -853,6 +871,9 @@ func runSddProgressCheckpointStep(store progressAdvancer, request checkpointInpu
 		currentResolved = true
 		if currentErr != nil {
 			return checkpointCurrentErrorOutput(currentErr), currentErr
+		}
+		if current != nil && current.Project != request.Project {
+			return checkpointProjectMismatchOutput(current, request.Project)
 		}
 		tasks, legacy, found, err := source.FetchAuthoritativeCheckpointArtifacts(request.Project, request.Change)
 		if err != nil {
@@ -916,6 +937,9 @@ func runSddProgressCheckpointStep(store progressAdvancer, request checkpointInpu
 	// planning, when the exact candidate payload is available.
 	if !currentResolved {
 		current, currentErr = checkpointCurrent(store, request)
+		if currentErr == nil && current != nil && current.Project != request.Project {
+			return checkpointProjectMismatchOutput(current, request.Project)
+		}
 	}
 	// A hybrid receipt can make a failed current read recoverable for this exact
 	// candidate. Other stores have no durable partial-publication path, so preserve
@@ -1271,6 +1295,24 @@ func automaticLegacyCheckpointFromArtifacts(legacy []byte, tasksData string, inp
 		}
 	}
 	return sddprogress.AdvanceRequest{RequestID: input.RequestID, LegacySourceSHA256: applyprogress.LegacySourceSHA256(legacy), Snapshot: snapshot, Batches: batches}, nil
+}
+
+const (
+	projectMismatchCode     = "project_mismatch"
+	projectMismatchRecovery = "stored progress belongs to another project; rerun with the effective project key and do not retry until the identity is reconciled"
+)
+
+// projectMismatchError reports progress signed under a project other than the
+// effective project key resolved for the request.
+func projectMismatchError(stored string, effective string) error {
+	return fmt.Errorf("%w: progress project %q differs from effective project %q", sddstatus.ErrProjectMismatch, stored, effective)
+}
+
+// checkpointProjectMismatchOutput blocks before planning or writing: a base or
+// current head from another project can never authorize this checkpoint.
+func checkpointProjectMismatchOutput(snapshot *applyprogress.Snapshot, effective string) (checkpointOutput, error) {
+	err := projectMismatchError(snapshot.Project, effective)
+	return checkpointOutput{Outcome: "blocked", Code: projectMismatchCode, State: checkpointState(snapshot), Detail: err.Error(), Recovery: projectMismatchRecovery}, err
 }
 
 // checkpointStoreErrorOutput is the single typed recovery mapping for every

@@ -168,6 +168,20 @@ func (e *SDDStoreBindingProtocolError) Error() string {
 	return fmt.Sprintf("invalid SDD store binding response (status %d): %s", e.StatusCode, e.Reason)
 }
 
+// SDDStoreBindingRedirectError reports an otherwise valid binding that the
+// daemon resolved under a different canonical project key, such as the target
+// of a retired alias. The client cannot verify aliases, so a redirect is never
+// accepted silently: callers confirm the effective key and retry under it.
+type SDDStoreBindingRedirectError struct {
+	Requested projectidentity.Key
+	Effective projectidentity.Key
+	Binding   SDDStoreBinding
+}
+
+func (e *SDDStoreBindingRedirectError) Error() string {
+	return fmt.Sprintf("SDD store binding for project %q resolved to effective project %q", e.Requested, e.Effective)
+}
+
 type SDDPageRequest struct {
 	Limit  int
 	Cursor string
@@ -222,13 +236,26 @@ type ApplyProgressCapacity struct {
 }
 
 type ApplyProgressResult struct {
-	Outcome  string                 `json:"outcome"`
-	Code     string                 `json:"code,omitempty"`
-	Detail   string                 `json:"detail,omitempty"`
-	State    ApplyProgressState     `json:"state"`
-	Receipt  ApplyProgressReceipt   `json:"receipt"`
-	Recovery string                 `json:"recovery,omitempty"`
-	Capacity *ApplyProgressCapacity `json:"capacity,omitempty"`
+	Outcome string `json:"outcome"`
+	Code    string `json:"code,omitempty"`
+	Detail  string `json:"detail,omitempty"`
+	// ProjectKey is the effective project key the daemon resolved at ingress
+	// (spelling fold plus alias). Older daemons omit it.
+	ProjectKey string                 `json:"project_key,omitempty"`
+	State      ApplyProgressState     `json:"state"`
+	Receipt    ApplyProgressReceipt   `json:"receipt"`
+	Recovery   string                 `json:"recovery,omitempty"`
+	Capacity   *ApplyProgressCapacity `json:"capacity,omitempty"`
+}
+
+// EffectiveProjectKey returns the key stored progress must belong to: the
+// daemon-reported key, or the canonical requested key for older daemons that
+// do not report one.
+func (r ApplyProgressResult) EffectiveProjectKey(requested projectidentity.Key) projectidentity.Key {
+	if r.ProjectKey != "" {
+		return projectidentity.Key(r.ProjectKey)
+	}
+	return requested
 }
 
 // ApplyProgressError preserves the daemon's typed recovery envelope on a
@@ -759,7 +786,7 @@ func (c *Client) GetSDDStoreBinding(ctx context.Context, project, change string)
 		return SDDStoreBinding{}, false, sddStoreBindingProtocolError(status, errors.New("GET response must omit created"))
 	}
 	if err := validateSDDStoreBinding(binding, project, change, true); err != nil {
-		return SDDStoreBinding{}, false, sddStoreBindingProtocolError(status, err)
+		return SDDStoreBinding{}, false, sddStoreBindingValidationError(status, err)
 	}
 	return binding, true, nil
 }
@@ -781,7 +808,7 @@ func (c *Client) AdoptSDDStoreBinding(ctx context.Context, project, change strin
 	if status == http.StatusConflict {
 		conflict, err := decodeSDDStoreBindingConflict(body, project, change, request)
 		if err != nil {
-			return SDDStoreBinding{}, false, sddStoreBindingProtocolError(status, err)
+			return SDDStoreBinding{}, false, sddStoreBindingValidationError(status, err)
 		}
 		return SDDStoreBinding{}, false, conflict
 	}
@@ -796,7 +823,7 @@ func (c *Client) AdoptSDDStoreBinding(ctx context.Context, project, change strin
 		return SDDStoreBinding{}, false, sddStoreBindingProtocolError(status, errors.New("adopt response created value does not match status"))
 	}
 	if err := validateSDDStoreBinding(binding, project, change, true); err != nil {
-		return SDDStoreBinding{}, false, sddStoreBindingProtocolError(status, err)
+		return SDDStoreBinding{}, false, sddStoreBindingValidationError(status, err)
 	}
 	if binding.SchemaVersion != "1" || binding.Mode != request.Mode || binding.Provenance != request.Provenance {
 		return SDDStoreBinding{}, false, sddStoreBindingProtocolError(status, errors.New("adopt response differs from requested immutable values"))
@@ -854,6 +881,16 @@ func sddStoreBindingStatusError(status int, body []byte) error {
 
 func sddStoreBindingProtocolError(status int, err error) error {
 	return &SDDStoreBindingProtocolError{StatusCode: status, Reason: err.Error()}
+}
+
+// sddStoreBindingValidationError keeps a typed redirect visible to callers and
+// reports every other validation failure as a protocol error.
+func sddStoreBindingValidationError(status int, err error) error {
+	var redirect *SDDStoreBindingRedirectError
+	if errors.As(err, &redirect) {
+		return redirect
+	}
+	return sddStoreBindingProtocolError(status, err)
 }
 
 func decodeSDDStoreBindingSuccess(body []byte, requireCreated bool) (SDDStoreBinding, *bool, error) {
@@ -973,10 +1010,29 @@ func decodeSDDStoreBinding(raw json.RawMessage, includeCreatedAt bool) (SDDStore
 	return binding, nil
 }
 
+// validateSDDStoreBinding checks every immutable value first and the project
+// last, so a redirect is reported only for an otherwise valid binding. The
+// daemon-reported binding.project is the effective key; a different canonical
+// key is a redirect, anything else is a protocol violation.
 func validateSDDStoreBinding(binding SDDStoreBinding, project, change string, requireCreatedAt bool) error {
-	if binding.Project != CanonicalProjectKey(project) {
-		return errors.New("binding project does not match requested canonical project")
+	if err := validateSDDStoreBindingValues(binding, change, requireCreatedAt); err != nil {
+		return err
 	}
+	requested := projectidentity.Canonical(project)
+	if requested == "" {
+		return errors.New("binding request project is empty")
+	}
+	if binding.Project == requested.String() {
+		return nil
+	}
+	effective := projectidentity.Canonical(binding.Project)
+	if effective == "" || effective.String() != binding.Project {
+		return errors.New("binding project is not a canonical project key")
+	}
+	return &SDDStoreBindingRedirectError{Requested: requested, Effective: effective, Binding: binding}
+}
+
+func validateSDDStoreBindingValues(binding SDDStoreBinding, change string, requireCreatedAt bool) error {
 	if strings.TrimSpace(binding.Change) != strings.TrimSpace(change) {
 		return errors.New("binding change does not match request")
 	}

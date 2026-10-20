@@ -50,6 +50,8 @@ Supported artifact store modes for Jarvis skill/runtime instructions: `hive | op
 
 A persisted `hive`, `openspec`, or `hybrid` binding is immutable authority for its `project/change`; `none` is never persisted. Persisted binding wins even when `JARVIS_SDD_STORE_MODE` changes or is invalid. Resolve or adopt the binding before selecting a backend for status, continue, progress (`advance`, `checkpoint`, `upgrade-continuation`), or archive; planning artifacts cannot select authority.
 
+The CLI canonicalizes the project spelling once and resolves a retired alias to its target, so any spelling of one project reads the same binding and progress. Progress signed under another project reports `project_mismatch` (`blocked:project_mismatch` in status); stop and report it, never re-sign progress under another key.
+
 Hive binding lives in SQLite, OpenSpec binding lives in `openspec/changes/{change-name}/state.yaml`, and hybrid requires matching copies. Outage or protocol failure is not absence. Blank, malformed, unsupported, noncanonical, blocked, or divergent binding/protected progress fails closed; hybrid never chooses a copy arbitrarily. Legacy adoption is protected by canonical `apply-progress` only.
 
 ### Hive mode

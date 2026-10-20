@@ -17,6 +17,7 @@ import (
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive"
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddbinding"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
@@ -31,6 +32,7 @@ var sddCmd = &cobra.Command{
 var sddStatusCmd = &cobra.Command{
 	Use:   "status [change]",
 	Short: "Show SDD phase status for a change",
+	Long:  "Show SDD phase status for a change. Any spelling of the project resolves to its canonical Hive key, and a retired alias resolves to its target. Apply progress stored under a different project than that effective key is reported as blocked:project_mismatch.",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		asJSON, _ := cmd.Flags().GetBool("json")
@@ -67,12 +69,16 @@ var sddContinueCmd = &cobra.Command{
 	},
 }
 
+// sddProjectFlagUsage documents the shared project identity boundary of the
+// status and continue commands.
+const sddProjectFlagUsage = "hive project name (overrides origin repository or working-directory basename derivation); any spelling of the same canonical key (case, '_', '.', ' ', '/') resolves to that key, and a retired alias resolves to its target"
+
 func init() {
 	sddStatusCmd.Flags().Bool("json", false, "emit JSON output")
 	sddStatusCmd.Flags().Bool("instructions", false, "include phase instructions for next recommended phase")
-	sddStatusCmd.Flags().String("project", "", "hive project name (overrides origin repository or working-directory basename derivation)")
+	sddStatusCmd.Flags().String("project", "", sddProjectFlagUsage)
 	sddContinueCmd.Flags().Bool("json", false, "emit JSON output")
-	sddContinueCmd.Flags().String("project", "", "hive project name (overrides origin repository or working-directory basename derivation)")
+	sddContinueCmd.Flags().String("project", "", sddProjectFlagUsage)
 	sddCmd.AddCommand(sddStatusCmd, sddContinueCmd, newBoundSddArchiveCommand(), newSddSupersedeCommand())
 }
 
@@ -132,7 +138,7 @@ func newBoundSddArchiveCommand() *cobra.Command {
 	}}
 	command.Flags().StringVar(&root, "root", "", "absolute canonical OpenSpec change root")
 	command.Flags().StringVar(&destination, "destination", "", "OpenSpec archive destination")
-	command.Flags().StringVar(&project, "project", "", "canonical hive project name")
+	command.Flags().StringVar(&project, "project", "", "hive project name; any spelling of the same canonical key (case, '_', '.', ' ', '/') resolves to that key")
 	command.Flags().StringVar(&change, "change", "", "canonical SDD change name (required without --root)")
 	command.Flags().BoolVar(&sync.planOnly, "plan", false, "print the OpenSpec spec sync plan as JSON and write nothing")
 	command.Flags().BoolVar(&sync.confirmDestructive, "confirm-destructive", false, "allow a spec sync that removes requirements (only after explicit user confirmation)")
@@ -225,11 +231,11 @@ func archiveStatus(root, project string) (*sddstatus.ChangeStatus, error) {
 	if canonicalRoot != filepath.Join(workspace, "openspec", "changes", filepath.Base(canonicalRoot)) {
 		return nil, errors.New("sdd archive requires a canonical OpenSpec change root")
 	}
-	project, err = resolveSddProject(project, workspace)
+	key, err := resolveSddProject(project, workspace)
 	if err != nil {
 		return nil, err
 	}
-	source, store, err := resolveSourceAt(project, workspace)
+	source, store, err := resolveSourceAt(key, workspace)
 	if err != nil {
 		return nil, err
 	}
@@ -247,17 +253,28 @@ func sddWorkingDirectory(_ string) (string, error) {
 	return os.Getwd()
 }
 
-// resolveSddProject is the shared project identity boundary for status and continue.
-func resolveSddProject(projectFlag, workingDir string) (string, error) {
-	if project := strings.TrimSpace(projectFlag); project != "" {
-		return project, nil
+// resolveSddProject is the shared project identity boundary for status and
+// continue. It canonicalizes the spelling exactly once; the daemon owns alias
+// resolution and reports the effective key in its responses.
+func resolveSddProject(projectFlag, workingDir string) (projectidentity.Key, error) {
+	project := strings.TrimSpace(projectFlag)
+	if project == "" {
+		derived, err := hivederive.Derive(workingDir)
+		if err != nil {
+			return "", err
+		}
+		project = derived
 	}
-	return hivederive.Derive(workingDir)
+	key := projectidentity.Canonical(project)
+	if key == "" {
+		return "", fmt.Errorf("project %q has no canonical Hive project key", project)
+	}
+	return key, nil
 }
 
 // resolveSource returns an ArtifactSource and the active store mode label.
 // projectName is used when querying Hive and must already be resolved.
-func resolveSource(projectName string) (sddstatus.ArtifactSource, string, error) {
+func resolveSource(projectName projectidentity.Key) (sddstatus.ArtifactSource, string, error) {
 	workingDir, err := os.Getwd()
 	if err != nil {
 		return nil, "", err
@@ -265,7 +282,7 @@ func resolveSource(projectName string) (sddstatus.ArtifactSource, string, error)
 	return resolveSourceAt(projectName, workingDir)
 }
 
-func resolveSourceAt(projectName, workingDir string) (sddstatus.ArtifactSource, string, error) {
+func resolveSourceAt(projectName projectidentity.Key, workingDir string) (sddstatus.ArtifactSource, string, error) {
 	contract, err := sddruntime.ResolveRuntimeStoreContract(sddruntime.StoreModeHive)
 	if err != nil {
 		return nil, "", fmt.Errorf("resolve store contract: %w", err)
@@ -296,7 +313,10 @@ func resolveSourceAt(projectName, workingDir string) (sddstatus.ArtifactSource, 
 	}
 }
 
-func resolveBoundStatusSourceAt(ctx context.Context, projectName, given, workingDir string) (string, sddstatus.ArtifactSource, sddbinding.Resolution, error) {
+// resolveBoundStatusSourceAt lists changes under the requested key, then reads
+// every artifact under the effective key the binding resolution returns, so a
+// retired alias reads its target's binding and progress.
+func resolveBoundStatusSourceAt(ctx context.Context, projectName projectidentity.Key, given, workingDir string) (string, sddstatus.ArtifactSource, sddbinding.Resolution, error) {
 	hc, err := hiveclient.NewFromEnv()
 	if err != nil {
 		return "", nil, sddbinding.Resolution{}, fmt.Errorf("connect to hive-daemon: %w", err)
@@ -314,9 +334,13 @@ func resolveBoundStatusSourceAt(ctx context.Context, projectName, given, working
 		}
 	}
 
-	binding, err := resolveSddStoreBindingAt(ctx, hc, projectName, changeName, workingDir)
+	binding, effective, err := resolveSddStoreBindingAt(ctx, hc, projectName, changeName, workingDir)
 	if err != nil {
 		return "", nil, sddbinding.Resolution{}, fmt.Errorf("resolve SDD store binding: %w", err)
+	}
+	if effective != projectName {
+		hiveSource = sddstatus.NewHiveSource(hc, effective)
+		openSpecSource = sddstatus.NewOpenSpecSourceForProject(workingDir, effective)
 	}
 
 	var source sddstatus.ArtifactSource
@@ -466,7 +490,7 @@ func buildStatusWithBinding(changeName string, src sddstatus.ArtifactSource, sto
 	return status, nil
 }
 
-func validatedEditRootsForProject(_ string, workingDir string) []string {
+func validatedEditRootsForProject(_ projectidentity.Key, workingDir string) []string {
 	root, err := resolveSddWorkspaceAuthority(workingDir)
 	if err != nil {
 		return nil

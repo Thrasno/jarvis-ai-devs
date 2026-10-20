@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress/filelock"
@@ -162,13 +163,21 @@ func TestHiveProgressPublishSuccessorGenesis(t *testing.T) {
 
 func TestBoundSddProgressCommandsResolveRequestAwareStoreBeforeWriter(t *testing.T) {
 	resolverErr := errors.New("binding unavailable")
-	var calls []struct{ project, change string }
-	command := newBoundSddProgressCommand(func(_ context.Context, _ string, project, change string) (progressAdvancer, error) {
-		calls = append(calls, struct{ project, change string }{project, change})
-		return nil, resolverErr
+	var calls []struct {
+		project projectidentity.Key
+		change  string
+	}
+	command := newBoundSddProgressCommand(func(_ context.Context, _ string, project projectidentity.Key, change string) (progressAdvancer, projectidentity.Key, error) {
+		calls = append(calls, struct {
+			project projectidentity.Key
+			change  string
+		}{project, change})
+		return nil, "", resolverErr
 	})
 	root := t.TempDir()
 
+	// The canonical rows prove the prior coordinates are unchanged; the other
+	// spellings prove the request project is canonicalized once at the boundary.
 	for _, tt := range []struct {
 		name    string
 		command string
@@ -177,6 +186,9 @@ func TestBoundSddProgressCommandsResolveRequestAwareStoreBeforeWriter(t *testing
 		{name: "advance", command: "advance", request: sddprogress.AdvanceRequest{Snapshot: applyprogress.Snapshot{Project: "jarvis-dev", Change: "issue-723"}}},
 		{name: "checkpoint", command: "checkpoint", request: checkpointInput{Project: "jarvis-dev", Change: "issue-723"}},
 		{name: "upgrade", command: "upgrade-continuation", request: checkpointInput{Project: "jarvis-dev", Change: "issue-723"}},
+		{name: "advance spelling", command: "advance", request: sddprogress.AdvanceRequest{Snapshot: applyprogress.Snapshot{Project: "Jarvis_Dev", Change: "issue-723"}}},
+		{name: "checkpoint spelling", command: "checkpoint", request: checkpointInput{Project: " Jarvis.Dev ", Change: "issue-723"}},
+		{name: "upgrade spelling", command: "upgrade-continuation", request: checkpointInput{Project: "JARVIS-DEV", Change: "issue-723"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			data, err := json.Marshal(tt.request)
@@ -195,8 +207,8 @@ func TestBoundSddProgressCommandsResolveRequestAwareStoreBeforeWriter(t *testing
 			}
 		})
 	}
-	if len(calls) != 3 {
-		t.Fatalf("resolver calls = %d, want 3", len(calls))
+	if len(calls) != 6 {
+		t.Fatalf("resolver calls = %d, want 6", len(calls))
 	}
 	for _, call := range calls {
 		if call.project != "jarvis-dev" || call.change != "issue-723" {

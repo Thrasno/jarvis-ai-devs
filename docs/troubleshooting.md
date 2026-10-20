@@ -23,6 +23,7 @@ jarvis reconcile --provider all --yes
 | `jarvis` is not found | Binary is not on PATH or install failed. | Re-run the installer from [`installation.md`](installation.md), then open a new terminal. |
 | Setup looks incomplete | Managed files are missing or drifted. | Run `jarvis verify --provider all`, then `jarvis doctor --provider all`. |
 | `jarvis timeline` fails immediately | `--project` is required. | Run `jarvis timeline --project <project>`. |
+| `jarvis sdd status` shows `apply-progress` as `blocked:project_mismatch`, or a checkpoint returns `project_mismatch` | Stored progress is signed under a different project than the effective project key (canonical spelling, or the target of a retired alias). Nothing was written. | Check which project the change belongs to and rerun with that `--project`. Do not re-sign or copy progress under another key. See [SDD project identity](cli-reference.md#sdd-project-identity). |
 | Hive TUI cannot connect | `hive-daemon` is not running or URL resolution points to the wrong port. | Check `HIVE_DAEMON_URL`, `HIVE_HTTP_PORT`, or use `jarvis hive --daemon-url <url>`. |
 | Sync does not happen after install | Installation/reconfiguration is separate from Hive ↔ Hive API sync. | Configure Hive API credentials and enable sync behavior when needed. |
 | File-based sync changes are ignored | `HIVE_API_*` environment variables override `~/.jarvis/sync.json`. | Restart `hive-daemon` with env vars unset, or update the env vars instead. |

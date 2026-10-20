@@ -46,6 +46,16 @@ jarvis timeline --project <project>
 
 `--project` remains a Hive project-identity alias, including names that do not match the directory or Git remote. It never grants edit authority outside the actual working directory. Missing, symlinked, root, home, temporary-root, or otherwise unresolved targets produce planning-only status rather than an editable workspace.
 
+## SDD project identity
+
+`jarvis sdd status`, `jarvis sdd continue`, `jarvis sdd progress`, and `jarvis sdd archive` resolve the project the same way at their boundary:
+
+- The spelling is canonicalized once: case is folded, and `_`, `.`, ` `, `/`, and `-` runs become a single `-`. `MyProject`, ` MYPROJECT `, and `myproject` are the same project (`myproject`); `my_project`, `My.Project`, and `my-project` are the same project (`my-project`). The `project` field of a `checkpoint` or `upgrade-continuation` request and `jarvis sdd archive --project` are canonicalized the same way.
+- A retired alias resolves to its target. Hive reports the effective project key, and the CLI reads the target's binding and progress and writes new progress under the target, never under the retired key.
+- `advance` submits an already signed snapshot, which cannot be re-keyed. Its `snapshot.project` must already be the effective key.
+
+Stored progress signed under a different project than the effective key is a genuine identity mismatch. Status reports `apply-progress` as `blocked:project_mismatch` (not `blocked:invalid`), and `checkpoint` and `advance` return code `project_mismatch` with `next.action` `stop_blocked`. Nothing is written. Stop and reconcile the project identity; do not re-sign or copy progress under another key.
+
 ## `jarvis sync`
 
 `jarvis sync` reinstalls exactly what the setup wizard installed on this machine: model assignments, Jarvis-managed MCPs, installer-managed skills, the active persona, and the statusline only when you answered yes to it during installation. It reads the recorded manifest at `~/.jarvis/state.yaml` and the assets embedded in the installed binary; it never inspects the filesystem to guess what you once chose.
