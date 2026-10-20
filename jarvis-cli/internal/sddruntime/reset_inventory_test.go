@@ -123,6 +123,11 @@ func TestClaudePermissionLiterals_ContainsCurrentAndObsoleteVariantsNotNearMisse
 		"Edit(**/.npmrc)",
 		"Read(**/.config/gh/hosts.yml)",
 		"Edit(**/*.token)",
+		// #800 L3: home-rooted secret locations outside the project root
+		"Read(~/.ssh/**)",
+		"Edit(~/.aws/credentials)",
+		"Read(~/.npmrc)",
+		"Edit(~/Library/Keychains/**)",
 		// obsolete variants an older install may still carry
 		"Bash(git push --force*:*)",
 		"Bash(git push * --force-with-lease*:*)",
@@ -132,6 +137,11 @@ func TestClaudePermissionLiterals_ContainsCurrentAndObsoleteVariantsNotNearMisse
 		"Read(**/*token*)",
 		"Read(*credential*)",
 		"Read(**/*credential*)",
+		// #800 L4: retired singular directory rules
+		"Read(**/token/**)",
+		"Edit(**/token/**)",
+		"Edit(secret)",
+		"Edit(**/credential/**)",
 	}
 	for _, l := range mustContain {
 		if !set[l] {

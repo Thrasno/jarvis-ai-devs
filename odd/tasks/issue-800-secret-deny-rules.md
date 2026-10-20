@@ -36,8 +36,11 @@ Sources of truth named by the issue: `jarvis-cli/internal/agent/claude.go` (`Mer
 
 - [x] T1 -> S1-S6: RED tests, then A2 list + B1 edit denial for Claude Code and OpenCode, migration of retired literals for both agents, reset inventory, docs. Route: background gentle-ai-worker in this worktree. Check: worker RED (6 failing tests) then GREEN; `cd jarvis-cli && gofmt -l . && go vet ./... && go test ./...` passed. Commit: `508c334a` (single behavior, ~1000 lines mostly tests; slice exceeds 400 by design, Claude/OpenCode parity must land together).
 - [ ] T2 -> S1-S6: independent verification (high risk: security, user config migration) and native review. Route: gentle-ai-verify, then RDD. Verify: S1-S6 PASS, no blockers (OpenCode 1.18.29 and Claude Code 2.1.296 semantics checked from local binaries; differential master vs branch clean). Open maintainer decisions: Claude home-directory paths (`~/`) not covered; Claude case-insensitive directory rules (`token/`, `secret/`, `credential/`) also deny PascalCase namespace folders such as `src/Security/Token/`. Native review: pending.
+- [ ] T3 -> S1, S5, L3, L4: follow-up from T2 verification. RED first, then add `~/`-rooted Claude Code Read/Edit denies for home-level secret locations (L3) and retire the singular directory rules `token/`, `secret/`, `credential/` in both agents (L4), with migration, reset inventory, and docs. Route: gentle-ai-worker in this worktree. Commit: pending.
 
 ## Log
 
 L1 (user, 2026-10-20): "#800 - Ok." approving the plan: A2 + B1 + migration as decided by the maintainer, one PR.
 L2 (user, 2026-10-20): "Vamos con ellas" launching wave 1 (#799 inline, #800 worker, hive-api sync check).
+L3 (user, 2026-10-20): "Hueco 1: Sí, añadir ~/ (recomendado)"
+L4 (user, 2026-10-20): "Hueco 2: Quitar singulares (recomendado)"

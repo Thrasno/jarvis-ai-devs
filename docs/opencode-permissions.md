@@ -46,17 +46,27 @@ Jarvis denies the read and edit tools of Claude Code and OpenCode access to
 known secret **locations**. It does not match substrings of file names: the
 former `*token*`, `*secret*` and `*credential*` wildcards blocked ordinary
 source files such as `Tokenizer.php` or `AuthTokenService.ts` and were removed
-(issue #800).
+(issue #800). The singular directories `secret/`, `token/` and `credential/`
+were removed too: Claude Code matches paths case-insensitively, so they also
+blocked namespace folders such as `src/Security/Token/JwtToken.php`.
 
 | Protected location | Patterns |
 | --- | --- |
 | Environment files | `.env`, `.env.*`, `*.env`, `*.env.*` |
-| Secret directories | `secrets/`, `secret/`, `tokens/`, `token/`, `credentials/`, `credential/` |
+| Secret directories | `secrets/`, `tokens/`, `credentials/`, `.credentials/` |
 | SSH material | `.ssh/`, `id_rsa*`, `id_ed25519*` |
 | Keys and certificates | `*.pem`, `*.key`, `*.p12`, `*.pfx` |
 | Credential files | `.npmrc`, `.netrc`, `.pypirc`, `credentials.json`, `.aws/credentials`, `.config/gh/hosts.yml`, `*.token` |
+| Keychains | `Library/Keychains/` |
 
-Each pattern applies at the project root and at any depth.
+Each pattern applies at the project root and at any depth inside the project.
+
+Home-level secrets live outside the project, so coverage differs by agent:
+
+| Agent | Home directory coverage |
+| --- | --- |
+| Claude Code | Project patterns do not apply outside the project root. Jarvis adds `~/`-rooted entries for `~/.ssh/`, `~/.aws/credentials`, `~/.npmrc`, `~/.netrc`, `~/.pypirc`, `~/.config/gh/hosts.yml`, `~/.config/tokens/`, `~/.credentials/` and `~/Library/Keychains/`. Other home files, such as `~/secrets/` or a stray `~/key.pem`, are not covered. |
+| OpenCode | `*` also matches `/`, so the location patterns above already match home paths, whether reached as absolute paths or through `../`. |
 
 | Agent | Rules |
 | --- | --- |
@@ -75,17 +85,18 @@ longer denied. Keep secrets in a protected location instead.
 
 ### Existing installations
 
-Deep merge never removes entries, so replay removes the retired wildcards
-explicitly:
+Deep merge never removes entries, so replay removes the retired rules
+explicitly. Retired rules are the substring wildcards (`*secret*`, `*token*`,
+`*credential*`) and the singular directories (`secret/`, `token/`,
+`credential/`), in all their forms.
 
-- **Claude Code:** the six exact strings `Read(*secret*)`, `Read(**/*secret*)`,
-  `Read(*token*)`, `Read(**/*token*)`, `Read(*credential*)` and
-  `Read(**/*credential*)` are removed from `permissions.deny`. Every other entry
-  keeps its value and position. The new `Read(...)` and `Edit(...)` entries are
-  added.
+- **Claude Code:** the exact retired strings, such as `Read(**/*token*)` or
+  `Read(**/token/**)`, are removed from `permissions.deny`. Every other entry
+  keeps its value and position. The new `Read(...)` and `Edit(...)` entries,
+  including the `~/` ones, are added.
 - **OpenCode:** a global `read` policy that allows by default (`"*": "allow"`)
-  and still contains a retired wildcard set to `deny` was written by Jarvis.
-  Jarvis removes those wildcard entries and inserts the missing location rules
+  and still contains a retired rule set to `deny` was written by Jarvis.
+  Jarvis removes those retired entries and inserts the missing location rules
   at their template positions. User-added rules keep their values. Any other
   `read` policy, for example a deny-by-default one, is user-owned and left
   untouched. A generated agent `edit: allow` is upgraded to the secret edit

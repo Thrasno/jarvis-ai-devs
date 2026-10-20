@@ -28,6 +28,12 @@ var ordinarySourceFilesNamedLikeSecrets = []string{
 	"src/components/CredentialForm.tsx",
 	"internal/auth/token_store.go",
 	"pkg/secret_manager.go",
+	// Namespace folders: Claude Code matches case-insensitively, so singular
+	// directory rules such as token/ denied these (L4).
+	"src/Security/Token/JwtToken.php",
+	"src/Secret/Vault.php",
+	"src/Credential/Store.php",
+	"internal/token/parser.go",
 }
 
 var secretLocations = []string{
@@ -51,6 +57,37 @@ var secretLocations = []string{
 	"deploy/api.token",
 	"server.pem",
 	"server.key",
+	"tokens/api",
+	"config/credentials/prod",
+	".credentials/x",
+}
+
+// homeSecretLocations are home-relative secret paths outside the project root.
+var homeSecretLocations = []string{
+	".aws/credentials",
+	".ssh/id_rsa",
+	".ssh/config",
+	".npmrc",
+	".netrc",
+	".pypirc",
+	".config/gh/hosts.yml",
+	".credentials/x",
+	"Library/Keychains/login.keychain-db",
+	".config/tokens/todoist.env",
+}
+
+// retiredSingularDirectoryPatterns are the singular directory rules retired by
+// L4: Claude Code matches case-insensitively, so they denied namespace folders.
+var retiredSingularDirectoryPatterns = []string{
+	"secret", "**/secret", "secret/**", "**/secret/**",
+	"token", "**/token", "token/**", "**/token/**",
+	"credential", "**/credential", "credential/**", "**/credential/**",
+}
+
+var retiredOpenCodeSingularDirectoryKeys = []string{
+	"secret", "*/secret", "**/secret", "secret/**", "**/secret/**",
+	"token", "*/token", "**/token", "token/**", "**/token/**",
+	"credential", "*/credential", "**/credential", "credential/**", "**/credential/**",
 }
 
 // retiredSecretWildcards are the substring patterns retired by issue #800.
@@ -76,10 +113,11 @@ const legacyOpenCodeReadPermission = `{"*": "allow", ".env": "deny", ".env.*": "
 
 // claudePathPatternMatches approximates Claude Code's gitignore-style path
 // rules for project-relative paths: "**/" spans zero or more directories, "*"
-// and "?" stay within one segment, a pattern without "/" matches at any depth,
-// a matched directory covers its contents, and matching ignores case (the
-// #800 report was a denied Tokenizer.php against Read(**/*token*)).
-func claudePathPatternMatches(t *testing.T, pattern, rel string) bool {
+// and "?" stay within one segment, a pattern without "/" matches at any depth
+// unless anchored, a matched directory covers its contents, and matching
+// ignores case (the #800 report was a denied Tokenizer.php against
+// Read(**/*token*)).
+func claudePathPatternMatches(t *testing.T, pattern, rel string, anchored bool) bool {
 	t.Helper()
 	var expr strings.Builder
 	for i := 0; i < len(pattern); i++ {
@@ -107,23 +145,31 @@ func claudePathPatternMatches(t *testing.T, pattern, rel string) bool {
 		if re.MatchString(strings.Join(segments[:end], "/")) {
 			return true
 		}
-		if !strings.Contains(pattern, "/") && re.MatchString(segments[end-1]) {
+		if !anchored && !strings.Contains(pattern, "/") && re.MatchString(segments[end-1]) {
 			return true
 		}
 	}
 	return false
 }
 
-// claudeDeniedBy returns the first deny rule for tool that matches rel.
-func claudeDeniedBy(t *testing.T, deny []any, tool, rel string) string {
+// claudeDeniedBy returns the first deny rule for tool that matches target.
+// A target starting with "~/" lies outside the project: Claude Code applies
+// only "~/"-rooted rules there, anchored at the home directory. Project
+// targets ignore "~/" rules.
+func claudeDeniedBy(t *testing.T, deny []any, tool, target string) string {
 	t.Helper()
 	prefix := tool + "("
+	homeTarget := strings.HasPrefix(target, "~/")
 	for _, raw := range deny {
 		rule, ok := raw.(string)
 		if !ok || !strings.HasPrefix(rule, prefix) || !strings.HasSuffix(rule, ")") {
 			continue
 		}
-		if claudePathPatternMatches(t, strings.TrimSuffix(strings.TrimPrefix(rule, prefix), ")"), rel) {
+		pattern := strings.TrimSuffix(strings.TrimPrefix(rule, prefix), ")")
+		if strings.HasPrefix(pattern, "~/") != homeTarget {
+			continue
+		}
+		if claudePathPatternMatches(t, strings.TrimPrefix(pattern, "~/"), strings.TrimPrefix(target, "~/"), homeTarget) {
 			return rule
 		}
 	}
@@ -162,6 +208,12 @@ func openCodePathDecision(t *testing.T, policies []orderedValue, target string) 
 // path shapes OpenCode may evaluate.
 func openCodeTargets(rel string) []string {
 	return []string{rel, "/home/dev/project/" + rel}
+}
+
+// openCodeHomeTargets covers absolute and project-relative shapes of a path
+// under the home directory, outside the project at /home/dev/project.
+func openCodeHomeTargets(homeRel string) []string {
+	return []string{"/home/dev/" + homeRel, "../" + homeRel}
 }
 
 func mergedClaudeDenies(t *testing.T, seed string) ([]any, *ClaudeAgent) {
@@ -239,10 +291,27 @@ func TestSecretGuardrails_Claude_SecretLocationsDeniedForReadAndEdit(t *testing.
 			}
 		}
 	}
-	for _, wildcard := range retiredSecretWildcards {
+	for _, wildcard := range append(append([]string{}, retiredSecretWildcards...), retiredSingularDirectoryPatterns...) {
 		for _, tool := range []string{"Read", "Edit"} {
 			if rule := tool + "(" + wildcard + ")"; countScalar(deny, rule) != 0 {
-				t.Errorf("retired wildcard %s is still emitted", rule)
+				t.Errorf("retired rule %s is still emitted", rule)
+			}
+		}
+	}
+}
+
+func TestSecretGuardrails_Claude_HomeSecretLocationsDeniedForReadAndEdit(t *testing.T) {
+	deny, _ := mergedClaudeDenies(t, `{}`)
+	for _, tool := range []string{"Read", "Edit"} {
+		for _, rel := range homeSecretLocations {
+			if claudeDeniedBy(t, deny, tool, "~/"+rel) == "" {
+				t.Errorf("%s(~/%s) is not denied", tool, rel)
+			}
+		}
+		// Home rules are anchored: ordinary home files and projects stay usable.
+		for _, rel := range []string{"projects/app/src/Token.php", ".bashrc", ".config/nvim/init.lua"} {
+			if rule := claudeDeniedBy(t, deny, tool, "~/"+rel); rule != "" {
+				t.Errorf("%s(~/%s) denied by %s", tool, rel, rule)
 			}
 		}
 	}
@@ -276,6 +345,13 @@ func TestSecretGuardrails_OpenCode_SecretLocationsDeniedForReadAndEdit(t *testin
 					}
 				}
 			}
+			for _, rel := range homeSecretLocations {
+				for _, target := range openCodeHomeTargets(rel) {
+					if got := openCodePathDecision(t, policies, target); got != "deny" {
+						t.Errorf("agent %q %s %s = %s, want deny", agent, permission, target, got)
+					}
+				}
+			}
 			// OpenCode explicitly allows env templates; Claude Code cannot (deny beats allow).
 			for _, rel := range []string{".env.example", ".env.sample", "apps/web/.env.example"} {
 				for _, target := range openCodeTargets(rel) {
@@ -286,10 +362,12 @@ func TestSecretGuardrails_OpenCode_SecretLocationsDeniedForReadAndEdit(t *testin
 			}
 		}
 	}
-	read := permissionAt(t, config, "permission", "read")
-	for _, wildcard := range retiredSecretWildcards {
-		if _, ok := read.object.get(wildcard); ok {
-			t.Errorf("retired read wildcard %q is still emitted", wildcard)
+	for _, permission := range []string{"read", "edit"} {
+		policy := permissionAt(t, config, "permission", permission)
+		for _, key := range append(append([]string{}, retiredSecretWildcards...), retiredOpenCodeSingularDirectoryKeys...) {
+			if _, ok := policy.object.get(key); ok {
+				t.Errorf("retired %s rule %q is still emitted", permission, key)
+			}
 		}
 	}
 	for _, agent := range []string{"sdd-explore", "sdd-verify", "jd-judge-a"} {
@@ -300,9 +378,12 @@ func TestSecretGuardrails_OpenCode_SecretLocationsDeniedForReadAndEdit(t *testin
 }
 
 func TestClaudeAgent_MergeGeneratedConfig_MigratesRetiredSecretWildcards(t *testing.T) {
-	userBefore := []string{"Read(**/private-notes.md)", "Edit(**/*secret*)"}
-	userAfter := []string{"Read(**/*token*.bak)", "Bash(custom-danger:*)"}
+	userBefore := []string{"Read(**/private-notes.md)", "Edit(**/*secret*.bak)"}
+	userAfter := []string{"Read(**/*token*.bak)", "Bash(custom-danger:*)", "Read(src/Token/**)"}
 	seedDeny := append(append(append([]string{}, userBefore...), legacyClaudeSecretReadDenies...), userAfter...)
+	for _, pattern := range retiredSingularDirectoryPatterns {
+		seedDeny = append(seedDeny, "Edit("+pattern+")")
+	}
 	seed := map[string]any{
 		"theme":       "dark",
 		"permissions": map[string]any{"defaultMode": "acceptEdits", "deny": seedDeny},
@@ -332,6 +413,13 @@ func TestClaudeAgent_MergeGeneratedConfig_MigratesRetiredSecretWildcards(t *test
 			t.Errorf("retired Read(%s) survived migration: %#v", wildcard, deny)
 		}
 	}
+	for _, pattern := range retiredSingularDirectoryPatterns {
+		for _, tool := range []string{"Read", "Edit"} {
+			if rule := tool + "(" + pattern + ")"; countScalar(deny, rule) != 0 {
+				t.Errorf("retired %s survived migration", rule)
+			}
+		}
+	}
 	for _, rule := range append(append([]string{}, userBefore...), userAfter...) {
 		if countScalar(deny, rule) != 1 {
 			t.Errorf("user-owned %q not preserved exactly once: %#v", rule, deny)
@@ -340,15 +428,20 @@ func TestClaudeAgent_MergeGeneratedConfig_MigratesRetiredSecretWildcards(t *test
 	if deny[0] != userBefore[0] || deny[1] != userBefore[1] {
 		t.Errorf("user-owned rules lost their position: %#v", deny)
 	}
-	for _, rule := range []string{"Read(**/.npmrc)", "Edit(**/.npmrc)", "Edit(.env*)", "Read(**/*.token)", "Edit(**/*.token)"} {
+	for _, rule := range []string{"Read(**/.npmrc)", "Edit(**/.npmrc)", "Edit(.env*)", "Read(**/*.token)", "Edit(**/*.token)", "Read(~/.ssh/**)", "Edit(~/.aws/credentials)"} {
 		if countScalar(deny, rule) != 1 {
 			t.Errorf("current guardrail %q missing or duplicated: %#v", rule, deny)
 		}
 	}
 	for _, tool := range []string{"Read", "Edit"} {
-		for _, rel := range []string{"src/Tokenizer.php", "src/auth/AuthTokenService.ts"} {
+		for _, rel := range []string{"src/Tokenizer.php", "src/auth/AuthTokenService.ts", "src/Security/Token/JwtToken.php", "src/Secret/Vault.php"} {
 			if rule := claudeDeniedBy(t, deny, tool, rel); rule != "" {
 				t.Errorf("%s(%s) still denied after migration by %s", tool, rel, rule)
+			}
+		}
+		for _, rel := range []string{"~/.aws/credentials", "~/.ssh/id_rsa", "~/.npmrc"} {
+			if claudeDeniedBy(t, deny, tool, rel) == "" {
+				t.Errorf("%s(%s) not denied after migration", tool, rel)
 			}
 		}
 	}
@@ -380,9 +473,9 @@ func TestOpenCodeAgent_MergeGeneratedConfig_MigratesRetiredSecretWildcards(t *te
 	}
 
 	read := permissionAt(t, config, "permission", "read")
-	for _, wildcard := range retiredSecretWildcards {
-		if _, ok := read.object.get(wildcard); ok {
-			t.Errorf("retired read wildcard %q survived migration", wildcard)
+	for _, key := range append(append([]string{}, retiredSecretWildcards...), retiredOpenCodeSingularDirectoryKeys...) {
+		if _, ok := read.object.get(key); ok {
+			t.Errorf("retired read rule %q survived migration", key)
 		}
 	}
 	if read.object.pairs[0].key != "*" || read.object.pairs[0].value.scalar != "allow" {
@@ -405,7 +498,7 @@ func TestOpenCodeAgent_MergeGeneratedConfig_MigratesRetiredSecretWildcards(t *te
 		readPolicies := openCodeEffectivePolicies(t, config, agent, "read")
 		editPolicies := openCodeEffectivePolicies(t, config, agent, "edit")
 		for _, policies := range [][]orderedValue{readPolicies, editPolicies} {
-			for _, rel := range []string{"src/Tokenizer.php", "src/auth/AuthTokenService.ts", ".env.example"} {
+			for _, rel := range []string{"src/Tokenizer.php", "src/auth/AuthTokenService.ts", ".env.example", "src/Security/Token/JwtToken.php", "src/Secret/Vault.php"} {
 				for _, target := range openCodeTargets(rel) {
 					if got := openCodePathDecision(t, policies, target); got != "allow" {
 						t.Errorf("agent %q %s = %s after migration, want allow", agent, target, got)
@@ -414,6 +507,13 @@ func TestOpenCodeAgent_MergeGeneratedConfig_MigratesRetiredSecretWildcards(t *te
 			}
 			for _, rel := range []string{".env", "id_rsa", "secrets/x", ".npmrc", "credentials.json", "deploy/api.token", "secrets/.env.example"} {
 				for _, target := range openCodeTargets(rel) {
+					if got := openCodePathDecision(t, policies, target); got != "deny" {
+						t.Errorf("agent %q %s = %s after migration, want deny", agent, target, got)
+					}
+				}
+			}
+			for _, rel := range homeSecretLocations {
+				for _, target := range openCodeHomeTargets(rel) {
 					if got := openCodePathDecision(t, policies, target); got != "deny" {
 						t.Errorf("agent %q %s = %s after migration, want deny", agent, target, got)
 					}
@@ -455,6 +555,13 @@ func TestClaudeAgent_MergeGeneratedConfig_EveryEmittedPermissionIsInResetInvento
 	for _, wildcard := range retiredSecretWildcards {
 		if rule := "Read(" + wildcard + ")"; !literals[rule] {
 			t.Errorf("retired permission %q must stay in the reset inventory", rule)
+		}
+	}
+	for _, pattern := range retiredSingularDirectoryPatterns {
+		for _, tool := range []string{"Read", "Edit"} {
+			if rule := tool + "(" + pattern + ")"; !literals[rule] {
+				t.Errorf("retired permission %q must stay in the reset inventory", rule)
+			}
 		}
 	}
 }

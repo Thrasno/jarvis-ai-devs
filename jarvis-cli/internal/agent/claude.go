@@ -159,6 +159,10 @@ func (a *ClaudeAgent) MergeGeneratedConfig(_ state.PhaseModels) error {
 // Read(...) and Edit(...) denies (Edit covers Edit, Write, and MultiEdit).
 // They name locations, never substrings such as *token*: issue #800 showed
 // substring wildcards block ordinary source files like Tokenizer.php.
+// Singular directories (secret/, token/, credential/) are not listed: Claude
+// Code matches case-insensitively, so they denied namespace folders such as
+// src/Security/Token/. Bare and "**/" patterns only apply inside the project,
+// so home-level locations also carry a "~/"-rooted form.
 // This is a convenience guardrail, not a security boundary: shell access and
 // deletion are not covered. Keep in parity with openCodeSecretPathPermission.
 var claudeSecretPathPatterns = []string{
@@ -172,26 +176,18 @@ var claudeSecretPathPatterns = []string{
 	"**/secrets",
 	"secrets/**",
 	"**/secrets/**",
-	"secret",
-	"**/secret",
-	"secret/**",
-	"**/secret/**",
 	"tokens",
 	"**/tokens",
 	"tokens/**",
 	"**/tokens/**",
-	"token",
-	"**/token",
-	"token/**",
-	"**/token/**",
 	"credentials",
 	"**/credentials",
 	"credentials/**",
 	"**/credentials/**",
-	"credential",
-	"**/credential",
-	"credential/**",
-	"**/credential/**",
+	".credentials",
+	"**/.credentials",
+	".credentials/**",
+	"**/.credentials/**",
 	".ssh",
 	"**/.ssh",
 	".ssh/**",
@@ -222,6 +218,17 @@ var claudeSecretPathPatterns = []string{
 	"**/*.pfx",
 	"*.token",
 	"**/*.token",
+	"Library/Keychains/**",
+	"**/Library/Keychains/**",
+	"~/.ssh/**",
+	"~/.aws/credentials",
+	"~/.npmrc",
+	"~/.netrc",
+	"~/.pypirc",
+	"~/.config/gh/hosts.yml",
+	"~/.config/tokens/**",
+	"~/.credentials/**",
+	"~/Library/Keychains/**",
 }
 
 func claudeSecretPathDenies() []any {
@@ -248,6 +255,32 @@ var obsoleteClaudeDenies = map[string]bool{
 	"Read(**/*token*)":      true,
 	"Read(*credential*)":    true,
 	"Read(**/*credential*)": true,
+	// #800: singular directory rules that denied namespace folders such as
+	// src/Security/Token/ (Claude Code matches case-insensitively).
+	"Read(secret)":           true,
+	"Read(**/secret)":        true,
+	"Read(secret/**)":        true,
+	"Read(**/secret/**)":     true,
+	"Read(token)":            true,
+	"Read(**/token)":         true,
+	"Read(token/**)":         true,
+	"Read(**/token/**)":      true,
+	"Read(credential)":       true,
+	"Read(**/credential)":    true,
+	"Read(credential/**)":    true,
+	"Read(**/credential/**)": true,
+	"Edit(secret)":           true,
+	"Edit(**/secret)":        true,
+	"Edit(secret/**)":        true,
+	"Edit(**/secret/**)":     true,
+	"Edit(token)":            true,
+	"Edit(**/token)":         true,
+	"Edit(token/**)":         true,
+	"Edit(**/token/**)":      true,
+	"Edit(credential)":       true,
+	"Edit(**/credential)":    true,
+	"Edit(credential/**)":    true,
+	"Edit(**/credential/**)": true,
 }
 
 // removeObsoleteClaudeDenies touches only exact legacy deny strings.

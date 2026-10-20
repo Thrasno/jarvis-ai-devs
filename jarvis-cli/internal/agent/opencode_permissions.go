@@ -16,18 +16,19 @@ const openCodeBashPermission = `{"*":"allow","rm *":"ask","rmdir *":"ask","unlin
 // Rules are last-match-wins, so the .env.example/.env.sample allows follow the
 // .env denies and precede the directory denies (secrets/.env.example stays
 // denied). Claude Code cannot express these allows because its deny beats
-// allow. This is a convenience guardrail, not a security boundary: shell
+// allow. Singular directories (secret/, token/, credential/) are not listed:
+// they denied namespace folders such as src/Security/Token/. Home-level
+// locations need no extra form because "*" spans "/" here.
+// This is a convenience guardrail, not a security boundary: shell
 // access and deletion are not covered. Keep in parity with
 // claudeSecretPathPatterns.
 const openCodeSecretPathPermission = `{"*":"allow",` +
 	`".env":"deny",".env.*":"deny","*.env":"deny","**/*.env":"deny","*.env.*":"deny","**/*.env.*":"deny","**/.env*":"deny",` +
 	`".env.example":"allow","*/.env.example":"allow","**/.env.example":"allow",".env.sample":"allow","*/.env.sample":"allow","**/.env.sample":"allow",` +
 	`"secrets":"deny","*/secrets":"deny","**/secrets":"deny","secrets/**":"deny","**/secrets/**":"deny",` +
-	`"secret":"deny","*/secret":"deny","**/secret":"deny","secret/**":"deny","**/secret/**":"deny",` +
 	`"tokens":"deny","*/tokens":"deny","**/tokens":"deny","tokens/**":"deny","**/tokens/**":"deny",` +
-	`"token":"deny","*/token":"deny","**/token":"deny","token/**":"deny","**/token/**":"deny",` +
 	`"credentials":"deny","*/credentials":"deny","**/credentials":"deny","credentials/**":"deny","**/credentials/**":"deny",` +
-	`"credential":"deny","*/credential":"deny","**/credential":"deny","credential/**":"deny","**/credential/**":"deny",` +
+	`".credentials":"deny","*/.credentials":"deny","**/.credentials":"deny",".credentials/**":"deny","**/.credentials/**":"deny",` +
 	`".ssh":"deny","*/.ssh":"deny","**/.ssh":"deny",".ssh/*":"deny","*/.ssh/*":"deny","**/.ssh/**":"deny",` +
 	`"id_rsa":"deny","*/id_rsa":"deny","**/id_rsa*":"deny","id_ed25519":"deny","*/id_ed25519":"deny","**/id_ed25519*":"deny",` +
 	`"*.pem":"deny","*/*.pem":"deny","**/*.pem":"deny","*.key":"deny","*/*.key":"deny","**/*.key":"deny",` +
@@ -37,11 +38,18 @@ const openCodeSecretPathPermission = `{"*":"allow",` +
 	`".aws/credentials":"deny","*/.aws/credentials":"deny","**/.aws/credentials":"deny",` +
 	`".config/gh/hosts.yml":"deny","*/.config/gh/hosts.yml":"deny","**/.config/gh/hosts.yml":"deny",` +
 	`"*.p12":"deny","*/*.p12":"deny","**/*.p12":"deny","*.pfx":"deny","*/*.pfx":"deny","**/*.pfx":"deny",` +
-	`"*.token":"deny","*/*.token":"deny","**/*.token":"deny"}`
+	`"*.token":"deny","*/*.token":"deny","**/*.token":"deny",` +
+	`"Library/Keychains":"deny","**/Library/Keychains":"deny","Library/Keychains/**":"deny","**/Library/Keychains/**":"deny"}`
 
-// openCodeRetiredSecretReadDenies are the pre-#800 substring wildcards that
-// denied ordinary source files such as Tokenizer.php.
-var openCodeRetiredSecretReadDenies = []string{"*secret*", "**/*secret*", "*token*", "**/*token*", "*credential*", "**/*credential*"}
+// openCodeRetiredSecretReadDenies are the pre-#800 read rules that denied
+// ordinary source files: substring wildcards such as *token* (Tokenizer.php)
+// and singular directories such as token/ (src/Security/Token/).
+var openCodeRetiredSecretReadDenies = []string{
+	"*secret*", "**/*secret*", "*token*", "**/*token*", "*credential*", "**/*credential*",
+	"secret", "*/secret", "**/secret", "secret/**", "**/secret/**",
+	"token", "*/token", "**/token", "token/**", "**/token/**",
+	"credential", "*/credential", "**/credential", "credential/**", "**/credential/**",
+}
 
 func openCodeDefaultAgentPermission(edit string) string {
 	editPermission := `"` + edit + `"`
@@ -55,9 +63,9 @@ func openCodeDefaultAgentPermission(edit string) string {
 
 // migrateOpenCodeSecretReadPolicy upgrades the global read policy written by
 // older Jarvis releases. Because existing read policies are preserved whole,
-// deep-merge would never remove the retired wildcards nor add new secret
-// rules. Only a Jarvis-shaped policy is touched: allow by default and still
-// carrying a retired wildcard as "deny". Those exact entries are removed and
+// deep-merge would never remove the retired rules nor add new secret rules.
+// Only a Jarvis-shaped policy is touched: allow by default and still
+// carrying a retired rule as "deny". Those exact entries are removed and
 // missing current rules are inserted after their template predecessor, so the
 // last-match order matches a fresh install. Any other policy is user-owned.
 func migrateOpenCodeSecretReadPolicy(existing []byte) ([]byte, error) {
