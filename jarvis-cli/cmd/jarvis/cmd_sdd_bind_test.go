@@ -38,6 +38,11 @@ type bindDaemon struct {
 	heads    map[string][]byte
 	adopts   []string
 	projects []string
+	// adoptStatus, when set, rejects every adoption with that HTTP status.
+	adoptStatus int
+	// raceWinner, when set, is stored by another worktree right before this
+	// client's first adoption reaches the daemon.
+	raceWinner *bindDaemonBinding
 }
 
 func newBindDaemon(t *testing.T) *bindDaemon {
@@ -78,7 +83,20 @@ func (d *bindDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		d.projects = append(d.projects, request.Project)
 		d.adopts = append(d.adopts, request.Project+":"+request.Mode+":"+request.Provenance)
 		key := d.resolve(request.Project)
+		if d.adoptStatus != 0 {
+			w.WriteHeader(d.adoptStatus)
+			_, _ = fmt.Fprint(w, `{"code":"project_blocked"}`)
+			return
+		}
+		if d.raceWinner != nil {
+			d.bindings[key], d.raceWinner = *d.raceWinner, nil
+		}
 		existing, found := d.bindings[key]
+		if found && (existing.mode != request.Mode || existing.provenance != request.Provenance) {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = fmt.Fprintf(w, `{"code":"binding_conflict","existing":{"project":%q,"change":%q,"schema_version":"1","mode":%q,"provenance":%q,"created_at":"2026-08-01T10:00:00Z"},"requested":{"project":%q,"change":%q,"schema_version":"1","mode":%q,"provenance":%q}}`, key, bindChange, existing.mode, existing.provenance, key, bindChange, request.Mode, request.Provenance)
+			return
+		}
 		if found && (existing.mode != request.Mode || existing.provenance != request.Provenance) {
 			d.t.Errorf("adopt %s/%s over stored %s/%s", request.Mode, request.Provenance, existing.mode, existing.provenance)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -478,4 +496,75 @@ func TestSddCommandRegistersBind(t *testing.T) {
 		}
 	}
 	t.Fatal("jarvis sdd bind is not registered")
+}
+
+func TestSddBindFailedDaemonAdoptionLeavesWorkspaceUnchanged(t *testing.T) {
+	for _, status := range []int{http.StatusLocked, http.StatusInternalServerError} {
+		for _, existing := range [][]string{nil, {"openspec"}} {
+			t.Run(fmt.Sprintf("%d/%q", status, existing), func(t *testing.T) {
+				daemon := newBindDaemon(t)
+				daemon.adoptStatus = status
+				workspace := canonicalSddTestWorkspace(t)
+				for _, dir := range existing {
+					if err := os.Mkdir(filepath.Join(workspace, dir), 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := runSddBindCommand(t, workspace, "--project", "project", "--change", bindChange, "--mode", "hybrid"); err == nil {
+					t.Fatal("bind succeeded although the daemon rejected the adoption")
+				}
+				entries, err := os.ReadDir(workspace)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(entries) != len(existing) {
+					t.Fatalf("workspace entries = %v, want only %q", entries, existing)
+				}
+				for _, dir := range existing {
+					nested, err := os.ReadDir(filepath.Join(workspace, dir))
+					if err != nil || len(nested) != 0 {
+						t.Fatalf("%s = %v (%v), want the existing empty directory", dir, nested, err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestSddBindLosingARaceReportsTheWinningBinding(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		winner       bindDaemonBinding
+		wantConflict bool
+		wantMirror   bool
+	}{
+		{name: "another worktree bound a different mode", winner: bindDaemonBinding{mode: "hive", provenance: "initial:default:hive"}, wantConflict: true},
+		{name: "another worktree bound the same mode", winner: bindDaemonBinding{mode: "hybrid", provenance: "initial:environment:JARVIS_SDD_STORE_MODE"}, wantMirror: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			daemon := newBindDaemon(t)
+			winner := tt.winner
+			daemon.raceWinner = &winner
+			workspace := canonicalSddTestWorkspace(t)
+
+			_, err := runSddBindCommand(t, workspace, "--project", "project", "--change", bindChange, "--mode", "hybrid")
+			if tt.wantConflict {
+				if !errors.Is(err, sddbinding.ErrBindingConflict) || !strings.Contains(err.Error(), "bound to hive") || !strings.Contains(err.Error(), "requested hybrid") {
+					t.Fatalf("error = %v, want a binding conflict naming hive and hybrid", err)
+				}
+				if _, err := os.Stat(filepath.Join(workspace, "openspec")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("losing bind created openspec/: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("bind of the same mode after losing the race: %v", err)
+			}
+			if stored, _ := daemon.stored("project"); stored != tt.winner {
+				t.Fatalf("Hive binding = %#v, want the winner %#v", stored, tt.winner)
+			}
+			state, found := readOpenSpecBindingState(t, workspace)
+			if found != tt.wantMirror || (tt.wantMirror && !strings.Contains(state, "provenance: "+tt.winner.provenance)) {
+				t.Fatalf("OpenSpec state = %q (found %t), want mirror %t of the winner", state, found, tt.wantMirror)
+			}
+		})
+	}
 }

@@ -231,6 +231,7 @@ jarvis sdd bind --change <change> --mode <hive|openspec|hybrid> --json
 
 - `bind` persists the immutable binding with provenance `initial:preflight` under the canonical Hive project key; pass `--project <project>` when the cached project name is not the one derived from the working directory. Without it, the first status call adopts `initial:default:hive`, and Hive progress written before any OpenSpec progress is inferred as `legacy:hive-progress`.
 - Run `bind` again whenever recorded decisions are applied to a change, including from its `## SDD Decisions` block in a later session. An identical binding is an idempotent replay and exits 0.
+- Do not run `jarvis sdd status` on a new change before `bind`: status adopts the default store. The status exception above covers inspecting existing changes, not choosing a store.
 - A non-zero exit stops the SDD path for that change before status. A conflict means the change is already bound to another store: show the user the existing and requested modes and stop; bindings are immutable, so another store needs a new change name. Any other failure, such as an unavailable daemon, also stops, because status would adopt the default instead.
 - `none` is never persisted: do not bind it, and prefix every `jarvis sdd` call for that change with `JARVIS_SDD_STORE_MODE=none` so status does not adopt the `hive` default.
 

@@ -112,6 +112,7 @@ func TestSDDGuidanceAssets_PreflightBindsStoreBeforeStatus(t *testing.T) {
 			"`initial:preflight`",
 			"idempotent replay",
 			"a non-zero exit stops the sdd path for that change before status",
+			"do not run `jarvis sdd status` on a new change before `bind`: status adopts the default store",
 			"`JARVIS_SDD_STORE_MODE=none`",
 		},
 		"persistence contract": {

@@ -2,16 +2,24 @@ package sddbinding
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 )
 
 // ProvenancePreflight records a store chosen explicitly in the SDD session preflight.
 const ProvenancePreflight = "initial:preflight"
+
+// bindAdoptOpenSpec writes the local copy for Bind; tests replace it to
+// inject a local commit failure.
+var bindAdoptOpenSpec = func(store OpenSpecBindingStore, changeDir string, requested Binding) (Binding, bool, error) {
+	return store.AdoptOpenSpec(changeDir, requested)
+}
 
 // Bind establishes the preflight store choice as the immutable binding of an
 // unbound change. It shares the resolution lock and the read-decide path of
@@ -24,7 +32,9 @@ const ProvenancePreflight = "initial:preflight"
 //
 // Only an unbound change without protected progress is adopted with
 // provenance ProvenancePreflight. For openspec and hybrid, Bind creates the
-// OpenSpec change directory that owns the local copy right before adopting it.
+// missing OpenSpec change directory only when the local copy is written
+// (after Hive accepted the hybrid adoption) and removes the levels it created
+// when that write fails, so a failed bind leaves the workspace as it was.
 func (r LegacyResolver) Bind(ctx context.Context, project projectidentity.Key, change string, mode sddruntime.StoreMode) (Resolution, error) {
 	requested, err := New(mode, ProvenancePreflight)
 	if err != nil {
@@ -43,6 +53,12 @@ func (r LegacyResolver) Bind(ctx context.Context, project projectidentity.Key, c
 	err = r.withResolutionLock(ctx, func(localStore OpenSpecBindingStore) error {
 		var err error
 		resolution, err = r.bindLocked(ctx, project, change, requested, localStore)
+		var lost *hiveclient.SDDStoreBindingConflictError
+		if errors.As(err, &lost) {
+			// Another workspace adopted the change between the read and the
+			// adoption. Decide once more against the binding that won.
+			resolution, err = r.bindLocked(ctx, project, change, requested, localStore)
+		}
 		return err
 	})
 	return resolution, err
@@ -67,12 +83,44 @@ func (r LegacyResolver) bindLocked(ctx context.Context, project projectidentity.
 	if pending.Mode() != requested.Mode() {
 		return Resolution{}, &ConflictError{Existing: *pending, Requested: requested}
 	}
-	if pending.Mode() != sddruntime.StoreModeHive && r.OpenSpecBindings == nil {
-		if err := r.ensureBindChangeDirectory(change); err != nil {
+	switch pending.Mode() {
+	case sddruntime.StoreModeHive:
+		if err := r.adoptHive(ctx, project, change, *pending); err != nil {
 			return Resolution{}, err
 		}
+	case sddruntime.StoreModeOpenSpec:
+		if err := r.bindOpenSpecCopy(change, *pending, localStore); err != nil {
+			return Resolution{}, err
+		}
+	case sddruntime.StoreModeHybrid:
+		if err := r.adoptHive(ctx, project, change, *pending); err != nil {
+			return Resolution{}, err
+		}
+		if err := r.bindOpenSpecCopy(change, *pending, localStore); err != nil {
+			return Resolution{}, &PartialAdoptionError{Binding: *pending, Cause: err}
+		}
+	default:
+		return Resolution{}, fmt.Errorf("%w: mode %q", ErrInvalidBinding, pending.Mode())
 	}
-	return r.adopt(ctx, project, change, *pending, localStore)
+	return persistedResolution(pending.Mode(), pending.Provenance()), nil
+}
+
+// bindOpenSpecCopy writes the local copy, creating the missing OpenSpec
+// change directory first. When the write fails, it removes exactly the
+// directory levels it created.
+func (r LegacyResolver) bindOpenSpecCopy(change string, requested Binding, localStore OpenSpecBindingStore) error {
+	created, err := r.createBindChangeDirectory(change)
+	if err == nil {
+		var response Binding
+		response, _, err = bindAdoptOpenSpec(localStore, r.OpenSpecChangeDir, requested)
+		if err == nil && response != requested {
+			err = fmt.Errorf("%w: OpenSpec response differs from requested immutable values", ErrInvalidAdoptionResponse)
+		}
+	}
+	if err != nil {
+		return errors.Join(err, removeCreatedDirectories(created))
+	}
+	return nil
 }
 
 // validateBindChangeDirectory requires the OpenSpec change directory to be the
@@ -89,12 +137,56 @@ func (r LegacyResolver) validateBindChangeDirectory(change string) error {
 	return nil
 }
 
-// ensureBindChangeDirectory creates the missing OpenSpec change directory and
-// revalidates the coordinate, so a symlink planted meanwhile is rejected
-// before the local copy is written.
-func (r LegacyResolver) ensureBindChangeDirectory(change string) error {
-	if err := os.MkdirAll(r.OpenSpecChangeDir, 0o755); err != nil {
-		return fmt.Errorf("create OpenSpec change directory: %w", err)
+// createBindChangeDirectory creates the missing levels of the OpenSpec change
+// directory below the workspace, top-down, and returns the ones this call
+// created. It then revalidates the coordinate, so a symlink planted meanwhile
+// is rejected before the local copy is written. An injected OpenSpec store
+// owns its own directories.
+func (r LegacyResolver) createBindChangeDirectory(change string) ([]string, error) {
+	if r.OpenSpecBindings != nil {
+		return nil, nil
 	}
-	return r.validateBindChangeDirectory(change)
+	workspace := filepath.Clean(r.ResolutionLockDir)
+	var missing []string
+	for dir := r.OpenSpecChangeDir; dir != workspace && dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
+		if _, err := os.Lstat(dir); err == nil {
+			break
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("inspect OpenSpec change directory: %w", err)
+		}
+		missing = append(missing, dir)
+	}
+	var created []string
+	for i := len(missing) - 1; i >= 0; i-- {
+		if err := os.Mkdir(missing[i], 0o755); err != nil && !errors.Is(err, os.ErrExist) {
+			return created, fmt.Errorf("create OpenSpec change directory: %w", err)
+		} else if err == nil {
+			created = append(created, missing[i])
+		}
+	}
+	return created, r.validateBindChangeDirectory(change)
+}
+
+// removeCreatedDirectories removes the directories createBindChangeDirectory
+// created, deepest first. A directory that is no longer an empty directory
+// holds content this call did not write, so it is kept.
+func removeCreatedDirectories(created []string) error {
+	var errs []error
+	for i := len(created) - 1; i >= 0; i-- {
+		info, err := os.Lstat(created[i])
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		entries, err := os.ReadDir(created[i])
+		if err != nil || len(entries) != 0 {
+			continue
+		}
+		if err := os.Remove(created[i]); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("remove OpenSpec directory created by bind: %w", err))
+		}
+	}
+	return errors.Join(errs...)
 }
