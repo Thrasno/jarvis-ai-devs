@@ -236,3 +236,68 @@ func TestSDDStoreBindingHTTPKeepsReleasedClosedResponseShape(t *testing.T) {
 		})
 	}
 }
+
+func serveIdentityRaw(t *testing.T, server *httpapi.Server, path string) (int, string) {
+	t.Helper()
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+	return response.Code, response.Body.String()
+}
+
+func pinSDDHTTPMemoryTimes(t *testing.T, store *db.DB) {
+	t.Helper()
+	_, err := store.RawDB().Exec(`UPDATE memories SET created_at = '2026-10-20 10:00:00', updated_at = '2026-10-20 10:00:00'`)
+	require.NoError(t, err)
+}
+
+func TestSDDChangesAndArtifactsHTTPRetiredAliasReadsTarget(t *testing.T) {
+	store, server := newSDDHTTPServer(t)
+	for _, change := range []string{"alpha", "bravo"} {
+		saveSDDHTTPMemory(t, store, "target", "sdd/"+change+"/explore", change+" explore")
+	}
+	saveSDDHTTPMemory(t, store, "target", "sdd/alpha/proposal", "alpha proposal")
+	pinSDDHTTPMemoryTimes(t, store)
+	require.NoError(t, store.AddAlias(context.Background(), "retired", "target", "local", "test"))
+
+	for _, spelling := range []string{"retired", "Retired", "%20RETIRED%20"} {
+		status, body := serveIdentityRaw(t, server, "/sdd/changes?project="+spelling)
+		require.Equal(t, http.StatusOK, status, body)
+		assert.Equal(t, `{"changes":["alpha","bravo"]}`+"\n", body, spelling)
+
+		status, body = serveIdentityRaw(t, server, "/sdd/changes/alpha/artifacts?project="+spelling)
+		require.Equal(t, http.StatusOK, status, body)
+		assert.Equal(t, `{"artifacts":[{"artifact":"explore","content":"alpha explore","created_at":"2026-10-20T10:00:00Z"},{"artifact":"proposal","content":"alpha proposal","created_at":"2026-10-20T10:00:00Z"}]}`+"\n", body, spelling)
+	}
+
+	var retiredRows int
+	require.NoError(t, store.RawDB().QueryRow(`SELECT COUNT(*) FROM memories WHERE project = 'retired'`).Scan(&retiredRows))
+	assert.Zero(t, retiredRows)
+}
+
+// TestSDDChangesAndArtifactsHTTPWithoutAliasKeepBytes pins the exact bodies the
+// change-list and artifact routes emitted before alias resolution, including
+// error text that echoes the caller's spelling.
+func TestSDDChangesAndArtifactsHTTPWithoutAliasKeepBytes(t *testing.T) {
+	store, server := newSDDHTTPServer(t)
+	saveSDDHTTPMemory(t, store, "project", "sdd/alpha/explore", "alpha explore")
+	saveSDDHTTPMemory(t, store, "project", "sdd/bravo/tasks", "bravo tasks")
+	pinSDDHTTPMemoryTimes(t, store)
+	for _, tt := range []struct {
+		name, path string
+		status     int
+		body       string
+	}{
+		{name: "changes", path: "/sdd/changes?project=project", status: http.StatusOK, body: `{"changes":["alpha","bravo"]}`},
+		{name: "changes folded spelling", path: "/sdd/changes?project=PROJECT", status: http.StatusOK, body: `{"changes":["alpha","bravo"]}`},
+		{name: "artifacts", path: "/sdd/changes/alpha/artifacts?project=project", status: http.StatusOK, body: `{"artifacts":[{"artifact":"explore","content":"alpha explore","created_at":"2026-10-20T10:00:00Z"}]}`},
+		{name: "artifacts empty", path: "/sdd/changes/absent/artifacts?project=project", status: http.StatusOK, body: `{"artifacts":[]}`},
+		{name: "changes unknown project", path: "/sdd/changes?project=Missing", status: http.StatusNotFound, body: `{"error":"project not found: governance project not found: Missing"}`},
+		{name: "artifacts unknown project", path: "/sdd/changes/alpha/artifacts?project=%20Missing%20", status: http.StatusNotFound, body: `{"error":"project not found: governance project not found: Missing"}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			status, body := serveIdentityRaw(t, server, tt.path)
+			assert.Equal(t, tt.status, status, body)
+			assert.Equal(t, tt.body+"\n", body)
+		})
+	}
+}

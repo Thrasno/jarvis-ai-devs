@@ -124,3 +124,18 @@ func TestServiceSDDStoreBindingRetiredAliasBindsTarget(t *testing.T) {
 	assert.True(t, found)
 	assert.Equal(t, created, read)
 }
+
+func TestServiceSDDChangesAndArtifactsRetiredAliasReadTarget(t *testing.T) {
+	store, service := newSDDService(t)
+	ctx := context.Background()
+	saveSDDServiceMemory(t, store, "target", "sdd/alpha/explore", "alpha explore")
+	require.NoError(t, store.AddAlias(ctx, "retired", "target", "local", "test"))
+
+	page, err := service.ListSDDChanges(ctx, governance.SDDChangePageRequest{Project: "Retired", Limit: 10})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"alpha"}, page.Changes)
+	artifacts, err := service.FetchSDDArtifacts(ctx, "retired", "alpha")
+	require.NoError(t, err)
+	require.Len(t, artifacts, 1)
+	assert.Equal(t, "alpha explore", artifacts[0].Content)
+}

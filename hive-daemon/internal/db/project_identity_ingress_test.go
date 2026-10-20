@@ -373,3 +373,18 @@ func TestRemoteImmutableRejectionErrorTextNamesItsCode(t *testing.T) {
 		require.NotContains(t, rejected.Error(), "secret content")
 	}
 }
+
+func TestSDDChangesAndArtifactsResolveRetiredAlias(t *testing.T) {
+	store := openTestDB(t)
+	topic := "sdd/alpha/explore"
+	insertSDDMemory(t, store, "target", &topic, "explore", "alpha explore", "2026-10-20 10:00:00", false)
+	require.NoError(t, store.AddAlias(context.Background(), "retired", "target", "local", "test"))
+
+	changes, err := store.ListSDDChanges(" Retired ", []string{"explore"}, "", 10)
+	require.NoError(t, err)
+	require.Equal(t, []string{"alpha"}, changes)
+	artifacts, err := store.FetchSDDArtifacts("retired", "alpha", []string{"explore"})
+	require.NoError(t, err)
+	require.Len(t, artifacts, 1)
+	require.Equal(t, "alpha explore", artifacts[0].Content)
+}

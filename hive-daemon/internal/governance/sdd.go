@@ -10,6 +10,7 @@ import (
 
 	"github.com/Thrasno/jarvis-ai-devs/hive-daemon/internal/db"
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 )
 
 var (
@@ -83,12 +84,13 @@ func withProjectKey(key string, err error) error {
 	return &ProjectIngressError{ProjectKey: key, Err: err}
 }
 
-// resolveApplyProgressProject resolves the effective project key once at the
-// governance boundary (spelling fold plus alias) and applies the
-// registered-project gate to that key, not to the spelling the caller sent: a
-// retired key has no rows of its own once promoted. The database re-resolves
-// inside its own transactions, so this key never authorizes a write by itself.
-func (s *Service) resolveApplyProgressProject(ctx context.Context, project string) (string, error) {
+// resolveSDDProject resolves the effective project key once at the governance
+// boundary (spelling fold plus alias) and applies the registered-project gate to
+// that key: a retired key has no rows of its own once promoted. When no alias
+// redirects the project, the gate receives the caller's spelling so not-found
+// errors keep echoing it exactly as before. The database re-resolves inside its
+// own transactions, so this key never authorizes a write by itself.
+func (s *Service) resolveSDDProject(ctx context.Context, project string) (string, error) {
 	if s.sdd == nil {
 		if _, err := s.store.GetGovernanceProject(ctx, project); err != nil {
 			return "", mapProjectError(err)
@@ -99,7 +101,11 @@ func (s *Service) resolveApplyProgressProject(ctx context.Context, project strin
 	if err != nil {
 		return "", err
 	}
-	if _, err := s.store.GetGovernanceProject(ctx, key); err != nil {
+	gate := project
+	if key != projectidentity.Canonical(project).String() {
+		gate = key
+	}
+	if _, err := s.store.GetGovernanceProject(ctx, gate); err != nil {
 		return "", withProjectKey(key, mapProjectError(err))
 	}
 	return key, nil
@@ -190,13 +196,11 @@ func (s *Service) FetchSDDArtifacts(ctx context.Context, project, change string)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.store.GetGovernanceProject(ctx, project); err != nil {
-		return nil, mapProjectError(err)
+	key, err := s.resolveSDDProject(ctx, project)
+	if err != nil {
+		return nil, err
 	}
-	if s.sdd == nil {
-		return nil, errors.New("SDD store is not configured")
-	}
-	rows, err := s.sdd.FetchSDDArtifacts(project, change, sddArtifactVocabulary)
+	rows, err := s.sdd.FetchSDDArtifacts(key, change, sddArtifactVocabulary)
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +233,7 @@ func (s *Service) GetApplyProgress(ctx context.Context, project, change string) 
 	if err != nil {
 		return ApplyProgressState{}, err
 	}
-	key, err := s.resolveApplyProgressProject(ctx, project)
+	key, err := s.resolveSDDProject(ctx, project)
 	if err != nil {
 		return ApplyProgressState{}, err
 	}
@@ -248,7 +252,7 @@ func (s *Service) GetApplyProgressSuccessorOccupancy(ctx context.Context, projec
 	if err != nil {
 		return ApplyProgressSuccessorOccupancy{}, err
 	}
-	key, err := s.resolveApplyProgressProject(ctx, project)
+	key, err := s.resolveSDDProject(ctx, project)
 	if err != nil {
 		return ApplyProgressSuccessorOccupancy{}, err
 	}
@@ -267,7 +271,7 @@ func (s *Service) GetApplyProgressEvidence(ctx context.Context, project, change,
 	if err != nil {
 		return applyprogress.Batch{}, err
 	}
-	key, err := s.resolveApplyProgressProject(ctx, project)
+	key, err := s.resolveSDDProject(ctx, project)
 	if err != nil {
 		return applyprogress.Batch{}, err
 	}
@@ -286,7 +290,7 @@ func (s *Service) GetApplyProgressReceipt(ctx context.Context, project, change, 
 	if err != nil {
 		return ApplyProgressReceipt{}, err
 	}
-	key, err := s.resolveApplyProgressProject(ctx, project)
+	key, err := s.resolveSDDProject(ctx, project)
 	if err != nil {
 		return ApplyProgressReceipt{}, err
 	}
@@ -304,7 +308,7 @@ func (s *Service) AdvanceApplyProgress(ctx context.Context, request ApplyProgres
 		return ApplyProgressAdvanceResult{}, err
 	}
 	request.Change = change
-	key, err := s.resolveApplyProgressProject(ctx, request.Project)
+	key, err := s.resolveSDDProject(ctx, request.Project)
 	if err != nil {
 		return ApplyProgressAdvanceResult{}, err
 	}
@@ -323,7 +327,7 @@ func (s *Service) PublishApplyProgressSuccessor(ctx context.Context, project, pr
 	if err != nil {
 		return ApplyProgressAdvanceResult{}, err
 	}
-	key, err := s.resolveApplyProgressProject(ctx, project)
+	key, err := s.resolveSDDProject(ctx, project)
 	if err != nil {
 		return ApplyProgressAdvanceResult{}, err
 	}
@@ -343,13 +347,11 @@ func (s *Service) ListSDDChanges(ctx context.Context, request SDDChangePageReque
 	if err != nil {
 		return SDDChangePage{}, err
 	}
-	if _, err := s.store.GetGovernanceProject(ctx, project); err != nil {
-		return SDDChangePage{}, mapProjectError(err)
+	key, err := s.resolveSDDProject(ctx, project)
+	if err != nil {
+		return SDDChangePage{}, err
 	}
-	if s.sdd == nil {
-		return SDDChangePage{}, errors.New("SDD store is not configured")
-	}
-	changes, err := s.sdd.ListSDDChanges(project, sddArtifactVocabulary, after, request.Limit+1)
+	changes, err := s.sdd.ListSDDChanges(key, sddArtifactVocabulary, after, request.Limit+1)
 	if err != nil {
 		return SDDChangePage{}, err
 	}
