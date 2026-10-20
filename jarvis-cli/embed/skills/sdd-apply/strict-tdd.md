@@ -89,7 +89,7 @@ NEVER skip a task because a layer is unavailable — degrade to the next availab
 
 ## Test Execution
 
-Read the test command from cached capabilities (`test_runner.command`), then `openspec/config.yaml` `rules.apply.test_command`, then the project manifests. Run ONLY the relevant test file or package during the cycle (for example `go test ./{package}/... -run {TestName}` or `pnpm vitest run {test-file}`); the full suite runs in sdd-verify.
+Read the test command from cached capabilities (`test_runner.command`), then `openspec/config.yaml` `testing.test_command`, then the project manifests. Run ONLY the relevant test file or package during the cycle (for example `go test ./{package}/... -run {TestName}` or `pnpm vitest run {test-file}`); the full suite runs in sdd-verify.
 
 ## Pure Function Preference
 
