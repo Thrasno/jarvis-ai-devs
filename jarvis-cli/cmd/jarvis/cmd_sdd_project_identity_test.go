@@ -314,6 +314,11 @@ func TestSddStatusReportsProjectMismatchInsteadOfInvalid(t *testing.T) {
 
 func runIdentityCheckpoint(t *testing.T, workspace string, request checkpointInput) (checkpointOutput, error) {
 	t.Helper()
+	return runIdentityCheckpointAt(t, workspace, "", request)
+}
+
+func runIdentityCheckpointAt(t *testing.T, workspace, root string, request checkpointInput) (checkpointOutput, error) {
+	t.Helper()
 	data, err := json.Marshal(request)
 	if err != nil {
 		t.Fatal(err)
@@ -327,7 +332,11 @@ func runIdentityCheckpoint(t *testing.T, workspace string, request checkpointInp
 	var out bytes.Buffer
 	command.SetOut(&out)
 	command.SetErr(&bytes.Buffer{})
-	command.SetArgs([]string{"checkpoint", "--request", path})
+	args := []string{"checkpoint", "--request", path}
+	if root != "" {
+		args = append(args, "--root", root)
+	}
+	command.SetArgs(args)
 	runErr := command.Execute()
 	var output checkpointOutput
 	if strings.TrimSpace(out.String()) != "" {
@@ -414,12 +423,16 @@ func TestSddProgressAdvanceReportsProjectMismatchWithoutWriting(t *testing.T) {
 		name            string
 		snapshotProject string
 		aliases         map[string]string
+		unbound         bool
 	}{
 		{name: "snapshot signed under a non-canonical spelling", snapshotProject: "My_Project"},
+		// A non-canonical signed snapshot can never match the effective key, so it
+		// must be rejected before binding resolution can adopt anything.
+		{name: "unbound change with a non-canonical signed snapshot", snapshotProject: "My_Project", unbound: true},
 		{name: "snapshot signed under a retired key", snapshotProject: "retired", aliases: map[string]string{"retired": "my-project"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			daemon := &identityDaemon{t: t, effective: "my-project", aliases: tt.aliases, mode: "hive", noProgress: true}
+			daemon := &identityDaemon{t: t, effective: "my-project", aliases: tt.aliases, mode: "hive", noProgress: true, unbound: tt.unbound}
 			server := httptest.NewServer(daemon)
 			t.Cleanup(server.Close)
 			t.Setenv("HIVE_DAEMON_URL", server.URL)
@@ -448,8 +461,8 @@ func TestSddProgressAdvanceReportsProjectMismatchWithoutWriting(t *testing.T) {
 			if !errors.Is(err, sddstatus.ErrProjectMismatch) || output.Code != "project_mismatch" {
 				t.Fatalf("output = %#v, err = %v; want project_mismatch", output, err)
 			}
-			if len(daemon.advances) != 0 {
-				t.Fatalf("project mismatch wrote progress: %#v", daemon.advances)
+			if len(daemon.advances) != 0 || len(daemon.adopts) != 0 {
+				t.Fatalf("project mismatch wrote progress %#v or bindings %q", daemon.advances, daemon.adopts)
 			}
 		})
 	}
@@ -498,6 +511,70 @@ func TestBoundSddArchiveCanonicalizesProjectSpelling(t *testing.T) {
 			command.SetArgs([]string{"--project", flag, "--change", change})
 			if err := command.Execute(); err != nil {
 				t.Fatalf("archive --project %q: %v", flag, err)
+			}
+		})
+	}
+}
+
+func TestSddSupersedeRetiredKeyFailsClosedWithoutWriting(t *testing.T) {
+	daemon := &identityDaemon{t: t, effective: "target", aliases: map[string]string{"retired": "target"}, mode: "hive", snapshot: identityPartialHead(t, "target")}
+	server := httptest.NewServer(daemon)
+	t.Cleanup(server.Close)
+	t.Setenv("HIVE_DAEMON_URL", server.URL)
+	workspace := canonicalSddTestWorkspace(t)
+	before := snapshotBoundArchiveFilesystem(t, workspace)
+	t.Chdir(workspace)
+
+	command := newSddSupersedeCommand()
+	command.SetOut(&bytes.Buffer{})
+	command.SetErr(&bytes.Buffer{})
+	command.SetArgs([]string{"--change", identityChange, "--successor", "next", "--actor", "agent", "--reason", "replanned", "--project", "Retired"})
+	err := command.Execute()
+	var redirect *hiveclient.SDDStoreBindingRedirectError
+	if !errors.As(err, &redirect) || redirect.Effective != "target" {
+		t.Fatalf("err = %v, want fail-closed store-binding redirect", err)
+	}
+	if len(daemon.advances) != 0 || len(daemon.adopts) != 0 {
+		t.Fatalf("retired-key supersede wrote progress %#v or bindings %q", daemon.advances, daemon.adopts)
+	}
+	if after := snapshotBoundArchiveFilesystem(t, workspace); after != before {
+		t.Fatalf("retired-key supersede changed the workspace:\nwant %q\n got %q", before, after)
+	}
+}
+
+func TestSddProgressCheckpointMismatchLeavesLocalHeadUnchanged(t *testing.T) {
+	for _, mode := range []string{"openspec", "hybrid"} {
+		t.Run(mode, func(t *testing.T) {
+			head := identityPartialHead(t, "foreign")
+			workspace := identityWorkspace(t, "hybrid", head)
+			root := filepath.Join(workspace, "openspec", "changes", identityChange)
+			daemon := &identityDaemon{t: t, effective: "my-project", mode: "hybrid", snapshot: head}
+			if mode == "openspec" {
+				writeOpenSpecBinding(t, workspace, identityChange, "openspec", "persisted:test", nil)
+				daemon.unbound = true
+			}
+			server := httptest.NewServer(daemon)
+			t.Cleanup(server.Close)
+			t.Setenv("HIVE_DAEMON_URL", server.URL)
+			before, err := os.ReadFile(filepath.Join(root, "apply-progress.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tree := snapshotBoundArchiveFilesystem(t, workspace)
+
+			output, err := runIdentityCheckpointAt(t, workspace, root, identityCheckpointRequest("My_Project"))
+			if !errors.Is(err, sddstatus.ErrProjectMismatch) || output.Code != "project_mismatch" {
+				t.Fatalf("output = %#v, err = %v; want project_mismatch", output, err)
+			}
+			after, err := os.ReadFile(filepath.Join(root, "apply-progress.md"))
+			if err != nil || !bytes.Equal(after, before) {
+				t.Fatalf("local head changed: %v", err)
+			}
+			if got := snapshotBoundArchiveFilesystem(t, workspace); got != tree {
+				t.Fatalf("workspace changed:\nwant %q\n got %q", tree, got)
+			}
+			if len(daemon.advances) != 0 || len(daemon.adopts) != 0 {
+				t.Fatalf("project mismatch wrote progress %#v or bindings %q", daemon.advances, daemon.adopts)
 			}
 		})
 	}

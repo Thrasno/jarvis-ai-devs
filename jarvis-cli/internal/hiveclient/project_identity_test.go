@@ -109,3 +109,30 @@ func TestSDDStoreBindingCanonicalSpellingWithoutAliasStillResolves(t *testing.T)
 		t.Fatalf("binding=%#v found=%t err=%v", binding, found, err)
 	}
 }
+
+func TestApplyProgressRejectsNonCanonicalProjectKey(t *testing.T) {
+	fixture := string(sharedApplyProgressGetFixture(t))
+	for _, tt := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "success", status: http.StatusOK, body: strings.Replace(fixture, `"project_key":"project"`, `"project_key":"Target"`, 1)},
+		{name: "typed error", status: http.StatusNotFound, body: `{"outcome":"not_found","code":"not_found","project_key":"my_project"}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newSDDClient(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			})
+			result, err := client.GetApplyProgress(context.Background(), "project", "change")
+			var typed *hiveclient.ApplyProgressError
+			if !errors.Is(err, hiveclient.ErrInvalidApplyProgressState) || errors.As(err, &typed) {
+				t.Fatalf("err = %#v, want untyped invalid apply progress state", err)
+			}
+			if result.ProjectKey != "" {
+				t.Fatalf("result carried rejected project key %q", result.ProjectKey)
+			}
+		})
+	}
+}

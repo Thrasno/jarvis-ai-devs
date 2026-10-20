@@ -48,13 +48,14 @@ jarvis timeline --project <project>
 
 ## SDD project identity
 
-`jarvis sdd status`, `jarvis sdd continue`, `jarvis sdd progress`, and `jarvis sdd archive` resolve the project the same way at their boundary:
+`jarvis sdd status`, `jarvis sdd continue`, `jarvis sdd progress`, `jarvis sdd archive`, and `jarvis sdd supersede` resolve the project the same way at their boundary:
 
-- The spelling is canonicalized once: case is folded, and `_`, `.`, ` `, `/`, and `-` runs become a single `-`. `MyProject`, ` MYPROJECT `, and `myproject` are the same project (`myproject`); `my_project`, `My.Project`, and `my-project` are the same project (`my-project`). The `project` field of a `checkpoint` or `upgrade-continuation` request and `jarvis sdd archive --project` are canonicalized the same way.
+- The spelling is canonicalized once: case is folded, and `_`, `.`, ` `, `/`, and `-` runs become a single `-`. `MyProject`, ` MYPROJECT `, and `myproject` are the same project (`myproject`); `my_project`, `My.Project`, and `my-project` are the same project (`my-project`). The `project` field of a `checkpoint` or `upgrade-continuation` request, `jarvis sdd archive --project`, and `jarvis sdd supersede --project` are canonicalized the same way.
 - A retired alias resolves to its target. Hive reports the effective project key, and the CLI reads the target's binding and progress and writes new progress under the target, never under the retired key.
-- `advance` submits an already signed snapshot, which cannot be re-keyed. Its `snapshot.project` must already be the effective key.
+- `advance` submits an already signed snapshot, which cannot be re-keyed. Its `snapshot.project` must already be the effective key; a non-canonical spelling is rejected before any binding is read or adopted.
+- `jarvis sdd supersede` folds the spelling but does not follow a retired alias: it fails closed with a store-binding redirect error and writes nothing. Supersede needs existing apply progress, and Hive refuses to retire a project that holds apply progress, so this case does not arise through a supported path.
 
-Stored progress signed under a different project than the effective key is a genuine identity mismatch. Status reports `apply-progress` as `blocked:project_mismatch` (not `blocked:invalid`), and `checkpoint` and `advance` return code `project_mismatch` with `next.action` `stop_blocked`. Nothing is written. Stop and reconcile the project identity; do not re-sign or copy progress under another key.
+Stored progress signed under a different project than the effective key is a genuine identity mismatch. Status reports `apply-progress` as `blocked:project_mismatch` (not `blocked:invalid`). `checkpoint` returns outcome `blocked`, code `project_mismatch`, and `next.action` `stop_blocked`. `advance` returns outcome `blocked` and code `project_mismatch`; its output has no `next` field. Both exit non-zero. Nothing is written. Stop and reconcile the project identity; do not re-sign or copy progress under another key.
 
 ## `jarvis sync`
 

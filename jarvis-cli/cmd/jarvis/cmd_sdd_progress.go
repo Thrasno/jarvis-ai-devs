@@ -566,18 +566,19 @@ func newSddProgressCommandWithResolver(resolve progressStoreResolver) *cobra.Com
 				return errors.New("decode advance request: trailing JSON value")
 			}
 			// The signed snapshot cannot be re-keyed: its project must already be
-			// the effective key the binding resolution returns.
-			store, effective, err := resolve(cmd.Context(), root, projectidentity.Canonical(request.Snapshot.Project), request.Snapshot.Change)
+			// the effective key. A non-canonical signed project can never be, so it
+			// is rejected before binding resolution can adopt anything.
+			if canonical := projectidentity.Canonical(request.Snapshot.Project); canonical.String() != request.Snapshot.Project {
+				return writeAdvanceProjectMismatch(cmd.OutOrStdout(), request.Snapshot.Project, canonical)
+			}
+			store, effective, err := resolve(cmd.Context(), root, projectidentity.Key(request.Snapshot.Project), request.Snapshot.Change)
 			if err != nil {
 				return err
 			}
-			var output progressAdvanceOutput
 			if request.Snapshot.Project != effective.String() {
-				err = projectMismatchError(request.Snapshot.Project, effective.String())
-				output = progressAdvanceOutput{Outcome: "blocked", Code: projectMismatchCode, Detail: err.Error(), Recovery: projectMismatchRecovery}
-			} else {
-				output, err = runSddProgressAdvance(store, root, request)
+				return writeAdvanceProjectMismatch(cmd.OutOrStdout(), request.Snapshot.Project, effective)
 			}
+			output, err := runSddProgressAdvance(store, root, request)
 			if encodeErr := json.NewEncoder(cmd.OutOrStdout()).Encode(output); encodeErr != nil && err == nil {
 				return encodeErr
 			}
@@ -1306,6 +1307,17 @@ const (
 // effective project key resolved for the request.
 func projectMismatchError(stored string, effective string) error {
 	return fmt.Errorf("%w: progress project %q differs from effective project %q", sddstatus.ErrProjectMismatch, stored, effective)
+}
+
+// writeAdvanceProjectMismatch emits the advance project_mismatch output. The
+// low-level advance contract has no next field; outcome and code carry it.
+func writeAdvanceProjectMismatch(out io.Writer, stored string, effective projectidentity.Key) error {
+	err := projectMismatchError(stored, effective.String())
+	output := progressAdvanceOutput{Outcome: "blocked", Code: projectMismatchCode, Detail: err.Error(), Recovery: projectMismatchRecovery}
+	if encodeErr := json.NewEncoder(out).Encode(output); encodeErr != nil {
+		return encodeErr
+	}
+	return err
 }
 
 // checkpointProjectMismatchOutput blocks before planning or writing: a base or

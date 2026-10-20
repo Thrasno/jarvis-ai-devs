@@ -1269,6 +1269,11 @@ func (c *Client) doApplyProgress(request *http.Request) (ApplyProgressResult, er
 		}
 		return result, fmt.Errorf("decode apply-progress response: %w", err)
 	}
+	// The effective key becomes a typed projectidentity.Key downstream, so a
+	// daemon-reported key must already be canonical.
+	if result.ProjectKey != "" && projectidentity.Canonical(result.ProjectKey).String() != result.ProjectKey {
+		return ApplyProgressResult{}, fmt.Errorf("%w: project_key %q is not a canonical project key", ErrInvalidApplyProgressState, result.ProjectKey)
+	}
 	if err := validateApplyProgressResponseCoordinates(body, result); err != nil {
 		return result, err
 	}
