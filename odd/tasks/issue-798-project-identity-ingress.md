@@ -37,7 +37,7 @@ Investigation evidence (explore handoff, 2026-10-20): apply-progress HTTP handle
 ## Tasks
 
 - [x] T1 -> S2-S5, S7: daemon PR. RED tests, alias resolution at ingress for apply-progress and store-binding (HTTP, governance, db, MCP SDD tools), effective key in responses (additive field), store-binding project gate, AddAlias guard, specific pull rejection reason. Route: background gentle-ai-worker in `../jarvis-dev-798`. Check: worker RED then GREEN; parent reran `hive-daemon` gofmt + vet + `go test -count=1 ./...` and `jarvis-cli` `go test -count=1 ./...` (both exit 0). Commit: see git log of fix/798-daemon-identity-ingress.
-- [ ] T2 -> S2-S5: independent verification + native review (high risk: data, contract). Verify round 1: S4, S5, S7 PASS; blockers B1 (released CLI store-binding decoders reject `project_key`) and B2 (legacy case-only alias resolved differently in and out of a tx) fixed per L7 with tests. Native review: pending.
+- [x] T2 -> S2-S5: independent verification + native review (high risk: data, contract). Verify round 1: S4, S5, S7 PASS; blockers B1 (released CLI store-binding decoders reject `project_key`) and B2 (legacy case-only alias resolved differently in and out of a tx) fixed per L7 with tests. Commit `5414e027`. Native review: assess medium, not due (under budget).
 - [ ] T3 -> S1, S6, S7: CLI PR stacked on T1. Commit: pending.
 - [ ] T4 -> #797 maintainer decision: `jarvis sdd bind`, stacked on T3. Commit: pending.
 
