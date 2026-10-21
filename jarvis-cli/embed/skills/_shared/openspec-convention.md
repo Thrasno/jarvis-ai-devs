@@ -110,6 +110,15 @@ context: |
   Testing: {detected}
   Style: {detected}
 
+strict_tdd_suggestion: standard
+detection_reason: ""
+strict_tdd: false
+
+testing:
+  test_command: ""
+  build_command: ""
+  coverage_threshold: 0
+
 rules:
   proposal:
     - Include rollback plan for risky changes
@@ -124,12 +133,8 @@ rules:
     - Keep tasks completable in one session
   apply:
     - Follow existing code patterns
-    tdd: false
-    test_command: ""
   verify:
-    test_command: ""
-    build_command: ""
-    coverage_threshold: 0
+    - Run the full test suite once for the change
   archive:
     - Warn before merging destructive deltas
 ```
