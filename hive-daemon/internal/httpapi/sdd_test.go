@@ -692,8 +692,9 @@ func TestSuccessorOccupancyHTTPProjectionAndValidation(t *testing.T) {
 			}
 			var body map[string]any
 			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
-			require.Len(t, body, 2)
+			require.Len(t, body, 3)
 			assert.Equal(t, tt.occupied, body["occupied"])
+			assert.Equal(t, "project", body["project_key"])
 			assert.Equal(t, tt.category, body["category"])
 			assert.NotContains(t, response.Body.String(), "secret-content")
 		})

@@ -950,7 +950,7 @@ func sddApplyProgressGetHandler(progress applyProgressService) sdkmcp.ToolHandle
 		if err != nil {
 			return applyProgressToolError(err)
 		}
-		return toolJSON(map[string]any{"outcome": "committed", "code": "ok", "state": state})
+		return toolJSON(map[string]any{"outcome": "committed", "code": "ok", "project_key": state.ProjectKey, "state": state})
 	}
 }
 
@@ -969,7 +969,7 @@ func sddApplyEvidenceGetHandler(progress applyProgressService) sdkmcp.ToolHandle
 		if err != nil {
 			return applyProgressToolError(err)
 		}
-		return toolJSON(map[string]any{"outcome": "committed", "code": "ok", "batch": batch})
+		return toolJSON(map[string]any{"outcome": "committed", "code": "ok", "project_key": batch.Project, "batch": batch})
 	}
 }
 
@@ -984,9 +984,9 @@ func sddApplyProgressAdvanceHandler(progress applyProgressService) sdkmcp.ToolHa
 			return applyProgressToolError(err)
 		}
 		if result.Outcome == "conflict" {
-			return toolJSON(map[string]any{"outcome": "conflict", "code": "stale", "state": result.State, "recovery": "read current state and retry"})
+			return toolJSON(map[string]any{"outcome": "conflict", "code": "stale", "project_key": result.State.ProjectKey, "state": result.State, "recovery": "read current state and retry"})
 		}
-		return toolJSON(map[string]any{"outcome": result.Outcome, "code": "ok", "state": result.State, "receipt": result.Receipt})
+		return toolJSON(map[string]any{"outcome": result.Outcome, "code": "ok", "project_key": result.State.ProjectKey, "state": result.State, "receipt": result.Receipt})
 	}
 }
 
@@ -1007,9 +1007,9 @@ func applyProgressToolError(err error) (*sdkmcp.CallToolResult, error) {
 	} else if errors.Is(err, db.ErrApplyProgressBatchCollision) {
 		outcome, code, recovery = "invalid", "batch_collision", "use a new immutable batch ID"
 	} else if errors.Is(err, db.ErrApplyProgressNotFound) || errors.Is(err, db.ErrApplyProgressEvidenceNotFound) {
-		return toolJSON(map[string]string{"outcome": "not_found", "code": "not_found", "recovery": "initialize apply progress before advancing"})
+		return toolJSON(withToolProjectKey(map[string]any{"outcome": "not_found", "code": "not_found", "recovery": "initialize apply progress before advancing"}, err))
 	} else if errors.Is(err, governance.ErrProjectNotFound) {
-		return toolJSON(map[string]string{"outcome": "not_found", "code": "project_not_found", "recovery": "select a registered project"})
+		return toolJSON(withToolProjectKey(map[string]any{"outcome": "not_found", "code": "project_not_found", "recovery": "select a registered project"}, err))
 	} else if errors.Is(err, db.ErrApplyProgressInvalid) || errors.Is(err, governance.ErrProjectRequired) || errors.Is(err, governance.ErrSDDChangeRequired) || errors.Is(err, governance.ErrSDDChangeInvalid) {
 		outcome, code, recovery = "invalid", "validation", "repair progress and retry"
 	}
@@ -1020,7 +1020,16 @@ func applyProgressToolError(err error) (*sdkmcp.CallToolResult, error) {
 	if detail != "" {
 		response["detail"] = detail
 	}
-	return toolJSON(response)
+	return toolJSON(withToolProjectKey(response, err))
+}
+
+// withToolProjectKey reports the effective project key when the failure
+// happened after ingress resolution, matching the HTTP envelopes.
+func withToolProjectKey(response map[string]any, err error) map[string]any {
+	if key, ok := governance.ProjectKeyFromError(err); ok {
+		response["project_key"] = key
+	}
+	return response
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────

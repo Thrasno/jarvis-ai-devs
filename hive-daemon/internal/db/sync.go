@@ -79,6 +79,10 @@ type ImmutableRemoteCreateRejectionCode string
 const (
 	ImmutableRemoteCreateRejectionInvalidDocument ImmutableRemoteCreateRejectionCode = "invalid_document"
 	ImmutableRemoteCreateRejectionSyncIDConflict  ImmutableRemoteCreateRejectionCode = "sync_id_conflict"
+	// ImmutableRemoteCreateRejectionProjectRemapped identifies a valid immutable
+	// document signed under a project that a local alias redirects elsewhere. Its
+	// bytes cannot be stored under the target without breaking its identity.
+	ImmutableRemoteCreateRejectionProjectRemapped ImmutableRemoteCreateRejectionCode = "project_remapped"
 )
 
 // RemoteImmutableCreateRejectedError is the only remote-apply error that the
@@ -88,14 +92,19 @@ type RemoteImmutableCreateRejectedError struct {
 	EventID          string
 	SyncID           string
 	CanonicalProject string
-	Topic            string
-	Operation        MutationOp
-	RejectionCode    ImmutableRemoteCreateRejectionCode
-	PayloadDigest    string
+	// SourceProject is the canonical key the document was signed under when a
+	// local alias remapped it to CanonicalProject; empty otherwise.
+	SourceProject string
+	Topic         string
+	Operation     MutationOp
+	RejectionCode ImmutableRemoteCreateRejectionCode
+	PayloadDigest string
 }
 
 func (e *RemoteImmutableCreateRejectedError) Error() string {
-	return "immutable remote create rejected"
+	// The code is a fixed classifier, never payload bytes, so it is safe to log
+	// on the paths that report this error as fatal.
+	return "immutable remote create rejected: " + string(e.RejectionCode)
 }
 
 func immutableRemoteCreateRejected(event MutationEnvelope, code ImmutableRemoteCreateRejectionCode) *RemoteImmutableCreateRejectedError {
@@ -986,6 +995,11 @@ func (d *DB) ApplyRemoteMutation(event MutationEnvelope) (bool, error) {
 		logSkippedImmutableApplyProgressMutation()
 		return false, nil
 	case immutableApplyProgressInvalid:
+		if event.Memory != nil && rawProject != event.Project && validRemoteImmutableApplyProgressDocument(rawProject, stringValue(event.Memory.TopicKey), event.Memory.Content) {
+			rejected := immutableRemoteCreateRejected(event, ImmutableRemoteCreateRejectionProjectRemapped)
+			rejected.SourceProject = rawProject
+			return false, rejected
+		}
 		return false, immutableRemoteCreateRejected(event, ImmutableRemoteCreateRejectionInvalidDocument)
 	case immutableApplyProgressCreate:
 		if err := ensureProjectWritableInTx(tx, event.Project); err != nil {
@@ -1419,6 +1433,7 @@ func (d *DB) acceptRemoteImmutableApplyProgressReplay(mem *models.Memory, topic 
 		return fmt.Errorf("begin immutable remote receive: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	rawProject := canonicalProjectKey(mem.Project)
 	project, err := resolveProjectIngressTx(context.Background(), tx, mem.Project)
 	if err != nil {
 		return fmt.Errorf("SaveFromRemote resolve immutable alias: %w", err)
@@ -1436,6 +1451,11 @@ func (d *DB) acceptRemoteImmutableApplyProgressReplay(mem *models.Memory, topic 
 		return fmt.Errorf("read remote immutable apply-progress replay: %w", err)
 	}
 	if !validRemoteImmutableApplyProgressDocument(project, topic, mem.Content) {
+		if rawProject != project && validRemoteImmutableApplyProgressDocument(rawProject, topic, mem.Content) {
+			rejected := immutableRemoteCreateRejectedForIdentity("", mem.SyncID, project, topic, MutationOpCreate, mem.Content, ImmutableRemoteCreateRejectionProjectRemapped)
+			rejected.SourceProject = rawProject
+			return rejected
+		}
 		return immutableRemoteCreateRejectedForIdentity("", mem.SyncID, project, topic, MutationOpCreate, mem.Content, ImmutableRemoteCreateRejectionInvalidDocument)
 	}
 	if err := ensureProjectWritableInTx(tx, project); err != nil {

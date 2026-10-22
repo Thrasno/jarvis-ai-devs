@@ -70,13 +70,18 @@ func (e *SDDStoreBindingConflictError) Error() string {
 
 func (e *SDDStoreBindingConflictError) Unwrap() error { return ErrSDDStoreBindingConflict }
 
-// GetSDDStoreBinding reads one immutable binding. A missing binding is reported
-// as found=false, not as an error, and this method never registers or rewrites
-// project identity state.
+// GetSDDStoreBinding reads one immutable binding under the effective project
+// key (spelling fold plus alias). A missing binding is reported as found=false,
+// not as an error, and this method never registers or rewrites project identity
+// state.
 func (d *DB) GetSDDStoreBinding(ctx context.Context, project, change string) (SDDStoreBinding, bool, error) {
 	project, change, err := canonicalSDDStoreBindingKey(project, change)
 	if err != nil {
 		return SDDStoreBinding{}, false, err
+	}
+	project, err = d.resolveProjectIngress(ctx, project)
+	if err != nil {
+		return SDDStoreBinding{}, false, fmt.Errorf("get SDD store binding: %w", err)
 	}
 	binding, found, err := getSDDStoreBinding(ctx, d.sqlDB, project, change)
 	if err != nil {
@@ -85,10 +90,13 @@ func (d *DB) GetSDDStoreBinding(ctx context.Context, project, change string) (SD
 	return binding, found, nil
 }
 
-// AdoptSDDStoreBinding atomically establishes the first immutable binding for a
-// canonical (project, change) key. Exact replays return the stored binding with
-// created=false; divergent values return SDDStoreBindingConflictError and never
-// overwrite the existing row.
+// AdoptSDDStoreBinding atomically establishes the first immutable binding for
+// the effective (project, change) key: the project is folded and redirected
+// through its alias inside the transaction, so a retired key binds its target.
+// Exact replays return the stored binding with created=false even when the
+// project is blocked; only a new binding is refused for a blocked project.
+// Divergent values return SDDStoreBindingConflictError and never overwrite the
+// existing row.
 func (d *DB) AdoptSDDStoreBinding(ctx context.Context, project, change string, request SDDStoreBindingRequest) (SDDStoreBinding, bool, error) {
 	requested, err := newSDDStoreBindingRequest(project, change, request)
 	if err != nil {
@@ -100,26 +108,46 @@ func (d *DB) AdoptSDDStoreBinding(ctx context.Context, project, change string, r
 		return SDDStoreBinding{}, false, fmt.Errorf("begin SDD store binding adoption: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-
-	result, err := tx.ExecContext(ctx, `
-		INSERT INTO sdd_store_bindings (project, change_name, schema_version, mode, provenance)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(project, change_name) DO NOTHING`,
-		requested.Project, requested.Change, requested.SchemaVersion, requested.Mode, requested.Provenance)
-	if err != nil {
-		return SDDStoreBinding{}, false, fmt.Errorf("insert SDD store binding: %w", err)
+	// Alias and block state are read before the insert. A deferred transaction
+	// whose first statement reads fails with SQLITE_BUSY_SNAPSHOT when another
+	// connection commits first, which busy_timeout cannot retry. This no-op write
+	// takes the write lock up front so concurrent first writers queue instead.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sdd_store_bindings WHERE 0`); err != nil {
+		return SDDStoreBinding{}, false, fmt.Errorf("reserve SDD store binding adoption: %w", err)
 	}
-	created, err := result.RowsAffected()
+	requested.Project, err = resolveProjectIngressTx(ctx, tx, requested.Project)
 	if err != nil {
-		return SDDStoreBinding{}, false, fmt.Errorf("inspect SDD store binding insertion: %w", err)
+		return SDDStoreBinding{}, false, fmt.Errorf("resolve SDD store binding project: %w", err)
 	}
 
 	existing, found, err := getSDDStoreBinding(ctx, tx, requested.Project, requested.Change)
 	if err != nil {
 		return SDDStoreBinding{}, false, fmt.Errorf("read authoritative SDD store binding: %w", err)
 	}
+	var created int64
 	if !found {
-		return SDDStoreBinding{}, false, fmt.Errorf("read authoritative SDD store binding: %w", ErrSDDStoreBindingInvalid)
+		if err := ensureProjectWritableInTx(tx, requested.Project); err != nil {
+			return SDDStoreBinding{}, false, err
+		}
+		result, err := tx.ExecContext(ctx, `
+		INSERT INTO sdd_store_bindings (project, change_name, schema_version, mode, provenance)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(project, change_name) DO NOTHING`,
+			requested.Project, requested.Change, requested.SchemaVersion, requested.Mode, requested.Provenance)
+		if err != nil {
+			return SDDStoreBinding{}, false, fmt.Errorf("insert SDD store binding: %w", err)
+		}
+		created, err = result.RowsAffected()
+		if err != nil {
+			return SDDStoreBinding{}, false, fmt.Errorf("inspect SDD store binding insertion: %w", err)
+		}
+		existing, found, err = getSDDStoreBinding(ctx, tx, requested.Project, requested.Change)
+		if err != nil {
+			return SDDStoreBinding{}, false, fmt.Errorf("read authoritative SDD store binding: %w", err)
+		}
+		if !found {
+			return SDDStoreBinding{}, false, fmt.Errorf("read authoritative SDD store binding: %w", ErrSDDStoreBindingInvalid)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return SDDStoreBinding{}, false, fmt.Errorf("commit SDD store binding adoption: %w", err)

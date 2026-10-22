@@ -86,6 +86,11 @@ var ErrAliasDuplicateSource = errors.New("alias source already redirects to a di
 // target in an existing alias (bidirectional chain guard).
 var ErrAliasSourceIsTarget = errors.New("alias source is already a target in an existing alias; chained aliases are not allowed")
 
+// ErrAliasSourceHasImmutableApplyProgress is returned when the proposed source
+// still owns immutable apply-progress heads, receipts or documents. Retiring it
+// would strand that progress under a key every ingress now redirects away from.
+var ErrAliasSourceHasImmutableApplyProgress = errors.New("alias source has immutable apply progress; retiring it would strand that progress")
+
 // ProjectAlias represents a single entry in the project_aliases table.
 type ProjectAlias struct {
 	SourceProject string
@@ -100,6 +105,8 @@ type ProjectAlias struct {
 // AddAlias creates a permanent source→target redirect. Guards:
 //   - self-alias: source == target → error
 //   - chain/cycle: target is already a source_project → error
+//   - immutable progress: source owns apply-progress heads, receipts or
+//     documents → error, so no progress is stranded under a retired key
 //   - idempotent: same source→target re-insert is a no-op
 //   - conflict: source→different target → error
 func (d *DB) AddAlias(ctx context.Context, source, target, scope, reason string) error {
@@ -111,58 +118,26 @@ func (d *DB) AddAlias(ctx context.Context, source, target, scope, reason string)
 	release := AcquireProjectLifecycleWrite(source, target)
 	defer release()
 
-	// Cycle guard: reject if target is already a source_project.
-	var existing string
-	err := d.sqlDB.QueryRowContext(ctx,
-		`SELECT source_project FROM project_aliases WHERE source_project = ?`, target,
-	).Scan(&existing)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("alias cycle check: %w", err)
-	}
-	if err == nil {
-		// target exists as a source — would create a chain
-		return ErrAliasTargetIsSource
-	}
-
-	// Bidirectional chain guard: reject if source is already a target_project.
-	var existingSource string
-	err = d.sqlDB.QueryRowContext(ctx,
-		`SELECT target_project FROM project_aliases WHERE target_project = ?`, source,
-	).Scan(&existingSource)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("alias source-is-target check: %w", err)
-	}
-	if err == nil {
-		// source is already a target — chaining is not allowed
-		return ErrAliasSourceIsTarget
-	}
-
-	createdBy := detectUsername()
-	createdAt := time.Now().UTC().Format("2006-01-02 15:04:05")
-
-	// Attempt idempotent upsert: on conflict (same source) do update only when
-	// target matches. If target differs, the WHERE clause blocks the update and
-	// RowsAffected == 0, which we detect as a conflict.
-	result, err := d.sqlDB.ExecContext(ctx, `
-INSERT INTO project_aliases (source_project, target_project, scope, reason, created_at, created_by)
-VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT(source_project) DO UPDATE SET
-    target_project = excluded.target_project,
-    scope          = excluded.scope,
-    reason         = excluded.reason
-WHERE project_aliases.target_project = excluded.target_project`,
-		source, target, scope, reason, createdAt, createdBy,
-	)
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("add alias: %w", err)
+		return fmt.Errorf("begin add alias: %w", err)
 	}
-	rows, err := result.RowsAffected()
+	defer func() { _ = tx.Rollback() }()
+	// Same guard as MergeGovernanceProjectTx, limited to the retired side: a
+	// target that owns progress keeps it, and every redirected write lands there.
+	// Ingress folds before lookup, so the canonical spelling is checked as well.
+	guarded, err := governanceMergeHasImmutableApplyProgress(tx, source, canonicalProjectKey(source))
 	if err != nil {
-		return fmt.Errorf("add alias rows affected: %w", err)
+		return fmt.Errorf("alias immutable apply progress check: %w", err)
 	}
-	if rows == 0 {
-		// A row existed for this source with a different target — conflict.
-		return ErrAliasDuplicateSource
+	if guarded {
+		return ErrAliasSourceHasImmutableApplyProgress
+	}
+	if err := addAliasTx(ctx, tx, source, target, scope, reason); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit add alias: %w", err)
 	}
 	return nil
 }
@@ -193,24 +168,26 @@ func (d *DB) ResolveAlias(ctx context.Context, project string) (string, bool, er
 	return target, true, nil
 }
 
-// resolveProjectIngressTx resolves a retired project before a local ingress
-// can write any project-keyed row. It deliberately runs inside the caller's
-// transaction: resolving before opening the transaction leaves a race where a
-// concurrent promotion can retire the source after validation but before the
-// insert. Aliases are stored under canonical keys, so fold before lookup and
-// fold the target again defensively.
-func resolveProjectIngressTx(ctx context.Context, tx *sql.Tx, project string) (string, error) {
+type projectIngressQueryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+// lookupProjectIngress is the single alias lookup behind every ingress, inside
+// or outside a transaction, so both paths always agree on the effective key.
+// Aliases are stored under canonical keys, so fold before lookup and fold the
+// target again defensively.
+func lookupProjectIngress(ctx context.Context, queryer projectIngressQueryer, project string) (string, error) {
 	project = canonicalProjectKey(project)
 	if project == "" {
 		return "", nil
 	}
 	var target string
-	err := tx.QueryRowContext(ctx, `SELECT target_project FROM project_aliases WHERE source_project = ?`, project).Scan(&target)
+	err := queryer.QueryRowContext(ctx, `SELECT target_project FROM project_aliases WHERE source_project = ?`, project).Scan(&target)
 	if errors.Is(err, sql.ErrNoRows) {
 		// Compatibility for historical aliases created before canonical storage.
 		// The canonical lookup above is authoritative; this fallback only admits
 		// a case-only legacy spelling and still returns the canonical target.
-		err = tx.QueryRowContext(ctx, `SELECT target_project FROM project_aliases WHERE lower(source_project) = lower(?)`, project).Scan(&target)
+		err = queryer.QueryRowContext(ctx, `SELECT target_project FROM project_aliases WHERE lower(source_project) = lower(?)`, project).Scan(&target)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return project, nil
@@ -221,22 +198,26 @@ func resolveProjectIngressTx(ctx context.Context, tx *sql.Tx, project string) (s
 	return canonicalProjectKey(target), nil
 }
 
+// resolveProjectIngressTx resolves a retired project before a local ingress
+// can write any project-keyed row. It deliberately runs inside the caller's
+// transaction: resolving before opening the transaction leaves a race where a
+// concurrent promotion can retire the source after validation but before the
+// insert.
+func resolveProjectIngressTx(ctx context.Context, tx *sql.Tx, project string) (string, error) {
+	return lookupProjectIngress(ctx, tx, project)
+}
+
 // resolveProjectIngress is the non-transactional counterpart for boundaries
 // that open their own transaction after resolving. Transactional writers must
 // prefer resolveProjectIngressTx.
 func (d *DB) resolveProjectIngress(ctx context.Context, project string) (string, error) {
-	project = canonicalProjectKey(project)
-	if project == "" {
-		return "", nil
-	}
-	target, found, err := d.ResolveAlias(ctx, project)
-	if err != nil {
-		return "", err
-	}
-	if found {
-		return canonicalProjectKey(target), nil
-	}
-	return project, nil
+	return lookupProjectIngress(ctx, d.sqlDB, project)
+}
+
+// ResolveProjectIngress returns the effective project key for an ingress
+// spelling: the canonical fold, redirected through a single-hop alias.
+func (d *DB) ResolveProjectIngress(ctx context.Context, project string) (string, error) {
+	return d.resolveProjectIngress(ctx, project)
 }
 
 // RemoveAlias hard-deletes the alias row for the given source_project. After

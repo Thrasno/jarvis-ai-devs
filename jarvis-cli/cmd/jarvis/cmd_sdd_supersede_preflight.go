@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddbinding"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress"
@@ -39,12 +40,12 @@ type newSupersessionPreflightResult struct {
 	TasksContent string
 }
 
-func newSupersessionPreflight(ctx context.Context, workspace, project, predecessor, successor string, client *hiveclient.Client) (newSupersessionPreflightResult, error) {
+func newSupersessionPreflight(ctx context.Context, workspace string, project projectidentity.Key, predecessor, successor string, client *hiveclient.Client) (newSupersessionPreflightResult, error) {
 	fail := func(err error) (newSupersessionPreflightResult, error) { return newSupersessionPreflightResult{}, err }
 	if err := ctx.Err(); err != nil {
 		return fail(err)
 	}
-	if client == nil || project == "" || hiveclient.CanonicalProjectKey(project) != project || !applyprogress.ValidID(predecessor) || !applyprogress.ValidID(successor) || predecessor == successor {
+	if client == nil || project == "" || projectidentity.Canonical(project.String()) != project || !applyprogress.ValidID(predecessor) || !applyprogress.ValidID(successor) || predecessor == successor {
 		return fail(fmt.Errorf("invalid supersession coordinates or missing Hive client"))
 	}
 	if !filepath.IsAbs(workspace) || filepath.Clean(workspace) != workspace {
@@ -95,7 +96,7 @@ func newSupersessionPreflight(ctx context.Context, workspace, project, predecess
 	}
 	switch binding.Mode {
 	case sddruntime.StoreModeOpenSpec, sddruntime.StoreModeHybrid:
-		snapshot, err := open.InspectSealablePredecessor(project, predecessor)
+		snapshot, err := open.InspectSealablePredecessor(project.String(), predecessor)
 		if err != nil {
 			return fail(fmt.Errorf("OpenSpec predecessor (NEW seal requires PARTIAL): %w", err))
 		}
@@ -141,7 +142,7 @@ func newSupersessionPreflight(ctx context.Context, workspace, project, predecess
 		}
 	}
 	if binding.Mode != sddruntime.StoreModeOpenSpec {
-		occupancy, err := client.GetApplyProgressSuccessorOccupancy(ctx, project, successor)
+		occupancy, err := client.GetApplyProgressSuccessorOccupancy(ctx, project.String(), successor)
 		if err != nil {
 			return fail(fmt.Errorf("Hive successor occupancy: %w", err))
 		}

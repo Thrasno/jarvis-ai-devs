@@ -17,6 +17,7 @@ import (
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive"
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
 )
@@ -284,8 +285,8 @@ func TestResolveSourceAtBindsOpenSpecProject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if arts[sddstatus.ArtifactApplyProgress] != sddstatus.ArtifactBlockedInvalid {
-		t.Fatalf("foreign project = %q", arts[sddstatus.ArtifactApplyProgress])
+	if arts[sddstatus.ArtifactApplyProgress] != sddstatus.ArtifactBlockedProjectMismatch {
+		t.Fatalf("foreign project = %q, want project mismatch", arts[sddstatus.ArtifactApplyProgress])
 	}
 }
 
@@ -320,8 +321,31 @@ func TestResolveSddProjectExplicitOverrideWins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveSddProject explicit override: %v", err)
 	}
-	if project != "Legacy_Project" {
-		t.Fatalf("resolveSddProject explicit override = %q, want Legacy_Project", project)
+	if project != "legacy-project" {
+		t.Fatalf("resolveSddProject explicit override = %q, want canonical legacy-project", project)
+	}
+}
+
+func TestResolveSddProjectCanonicalizesSpellingOnce(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing")
+	for _, tt := range []struct {
+		flag string
+		want projectidentity.Key
+	}{
+		{flag: "myproject", want: "myproject"},
+		{flag: "MyProject", want: "myproject"},
+		{flag: " MYPROJECT ", want: "myproject"},
+		{flag: "my-project", want: "my-project"},
+		{flag: "my_project", want: "my-project"},
+		{flag: "My.Project", want: "my-project"},
+	} {
+		project, err := resolveSddProject(tt.flag, missing)
+		if err != nil || project != tt.want {
+			t.Fatalf("resolveSddProject(%q) = %q, %v; want %q", tt.flag, project, err, tt.want)
+		}
+	}
+	if project, err := resolveSddProject("_./", missing); err == nil {
+		t.Fatalf("resolveSddProject(separators only) = %q, want error", project)
 	}
 }
 
@@ -526,7 +550,7 @@ func TestValidatedEditRootsForProjectUsesValidatedTargetAndPermitsProjectAliases
 	canonicalRoot := canonicalSddTestPath(t, root)
 	for _, tt := range []struct {
 		name        string
-		projectName string
+		projectName projectidentity.Key
 		root        string
 		wantRoot    bool
 	}{

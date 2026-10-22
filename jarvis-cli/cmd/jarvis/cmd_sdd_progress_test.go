@@ -21,9 +21,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress/filelock"
+	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
 )
 
 // daemonFormatReceipt seals the same wire request bytes as the real daemon.
@@ -162,21 +164,35 @@ func TestHiveProgressPublishSuccessorGenesis(t *testing.T) {
 
 func TestBoundSddProgressCommandsResolveRequestAwareStoreBeforeWriter(t *testing.T) {
 	resolverErr := errors.New("binding unavailable")
-	var calls []struct{ project, change string }
-	command := newBoundSddProgressCommand(func(_ context.Context, _ string, project, change string) (progressAdvancer, error) {
-		calls = append(calls, struct{ project, change string }{project, change})
-		return nil, resolverErr
+	var calls []struct {
+		project projectidentity.Key
+		change  string
+	}
+	command := newBoundSddProgressCommand(func(_ context.Context, _ string, project projectidentity.Key, change string) (progressAdvancer, projectidentity.Key, error) {
+		calls = append(calls, struct {
+			project projectidentity.Key
+			change  string
+		}{project, change})
+		return nil, "", resolverErr
 	})
 	root := t.TempDir()
 
+	// The canonical rows prove the prior coordinates are unchanged; the other
+	// checkpoint and upgrade spellings prove the request project is canonicalized
+	// once at the boundary. A signed advance snapshot cannot be re-keyed, so a
+	// non-canonical one is rejected before the resolver can adopt a binding.
 	for _, tt := range []struct {
 		name    string
 		command string
 		request any
+		wantErr error
 	}{
 		{name: "advance", command: "advance", request: sddprogress.AdvanceRequest{Snapshot: applyprogress.Snapshot{Project: "jarvis-dev", Change: "issue-723"}}},
 		{name: "checkpoint", command: "checkpoint", request: checkpointInput{Project: "jarvis-dev", Change: "issue-723"}},
 		{name: "upgrade", command: "upgrade-continuation", request: checkpointInput{Project: "jarvis-dev", Change: "issue-723"}},
+		{name: "advance spelling", command: "advance", request: sddprogress.AdvanceRequest{Snapshot: applyprogress.Snapshot{Project: "Jarvis_Dev", Change: "issue-723"}}, wantErr: sddstatus.ErrProjectMismatch},
+		{name: "checkpoint spelling", command: "checkpoint", request: checkpointInput{Project: " Jarvis.Dev ", Change: "issue-723"}},
+		{name: "upgrade spelling", command: "upgrade-continuation", request: checkpointInput{Project: "JARVIS-DEV", Change: "issue-723"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			data, err := json.Marshal(tt.request)
@@ -190,13 +206,17 @@ func TestBoundSddProgressCommandsResolveRequestAwareStoreBeforeWriter(t *testing
 			command.SetOut(&bytes.Buffer{})
 			command.SetErr(&bytes.Buffer{})
 			command.SetArgs([]string{tt.command, "--request", path})
-			if err := command.Execute(); !errors.Is(err, resolverErr) {
-				t.Fatalf("command error = %v, want binding resolution error", err)
+			want := resolverErr
+			if tt.wantErr != nil {
+				want = tt.wantErr
+			}
+			if err := command.Execute(); !errors.Is(err, want) {
+				t.Fatalf("command error = %v, want %v", err, want)
 			}
 		})
 	}
-	if len(calls) != 3 {
-		t.Fatalf("resolver calls = %d, want 3", len(calls))
+	if len(calls) != 5 {
+		t.Fatalf("resolver calls = %d, want 5 (no call for the non-canonical advance)", len(calls))
 	}
 	for _, call := range calls {
 		if call.project != "jarvis-dev" || call.change != "issue-723" {

@@ -24,6 +24,9 @@ const (
 	ArtifactBlockedManifestMismatch       ArtifactState = "blocked:task_manifest_mismatch"
 	ArtifactBlockedInvalid                ArtifactState = "blocked:invalid"
 	ArtifactBlockedPublicationInterrupted ArtifactState = "blocked:publication_interrupted"
+	// ArtifactBlockedProjectMismatch means stored progress is signed under a
+	// project other than the effective project key resolved for this request.
+	ArtifactBlockedProjectMismatch ArtifactState = "blocked:project_mismatch"
 )
 
 type ActionMode string

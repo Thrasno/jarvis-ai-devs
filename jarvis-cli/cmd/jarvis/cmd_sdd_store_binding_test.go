@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddbinding"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress"
@@ -271,7 +272,7 @@ func TestCrossCommandBoundSddProgressSurvivesEnvironmentRestart(t *testing.T) {
 				}
 				first = nil // The recovery invocation must construct a fresh command and Hive client.
 			} else {
-				if _, err := resolveBoundProgressStore(context.Background(), firstRoot, project, change); (err != nil) != tt.wantFirstErr {
+				if _, _, err := resolveBoundProgressStore(context.Background(), firstRoot, project, change); (err != nil) != tt.wantFirstErr {
 					t.Fatalf("first resolution error = %v, want error=%t", err, tt.wantFirstErr)
 				}
 				// The first factory result is intentionally discarded before constructing
@@ -930,7 +931,7 @@ func TestBoundSddArchiveRejectsNoneAndNonCanonicalCoordinatesBeforeEffects(t *te
 		{name: "whitespace change", args: []string{"--change", " issue-653 ", "--project", "jarvis-dev"}},
 		{name: "whitespace root", args: []string{"--root", " " + root + " ", "--destination", filepath.Join(workspace, "archive"), "--project", "jarvis-dev"}},
 		{name: "root change mismatch", args: []string{"--root", root, "--change", "issue-654", "--destination", filepath.Join(workspace, "archive"), "--project", "jarvis-dev"}},
-		{name: "non canonical project", args: []string{"--root", root, "--destination", filepath.Join(workspace, "archive"), "--project", "Jarvis-Dev"}},
+		{name: "project without canonical key", args: []string{"--root", root, "--destination", filepath.Join(workspace, "archive"), "--project", "_./"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			command := newBoundSddArchiveCommand()
@@ -1015,7 +1016,7 @@ func TestResolveBoundProgressStoreSelectsPersistedBindingBeforeEnvironment(t *te
 			newProgressOpenSpec = func(string) progressAdvancer { open++; return &commandProgressBackend{} }
 			newProgressHiveWithContext = func(context.Context) (progressAdvancer, error) { hive++; return &commandProgressBackend{}, nil }
 
-			store, err := resolveBoundProgressStore(context.Background(), root, project, change)
+			store, _, err := resolveBoundProgressStore(context.Background(), root, project, change)
 			if err != nil {
 				t.Fatalf("resolve bound store: %v", err)
 			}
@@ -1055,7 +1056,7 @@ func TestResolveBoundProgressStoreNoneDoesNotPersistOrCreateOpenSpec(t *testing.
 	t.Setenv("JARVIS_SDD_STORE_MODE", "none")
 	t.Chdir(workspace)
 
-	_, err := resolveBoundProgressStore(context.Background(), "", "jarvis-dev", "issue-723")
+	_, _, err := resolveBoundProgressStore(context.Background(), "", "jarvis-dev", "issue-723")
 	if err == nil || err.Error() != "SDD progress store is disabled" {
 		t.Fatalf("resolve none error = %v", err)
 	}
@@ -1099,7 +1100,7 @@ func TestResolveBoundProgressStoreFailsBeforeWritesForInvalidRootOrBinding(t *te
 			t.Cleanup(server.Close)
 			t.Setenv("HIVE_DAEMON_URL", server.URL)
 
-			_, err := resolveBoundProgressStore(context.Background(), root, project, tt.change)
+			_, _, err := resolveBoundProgressStore(context.Background(), root, project, tt.change)
 			if err == nil {
 				t.Fatal("resolve bound store succeeded")
 			}
@@ -1137,7 +1138,7 @@ func TestResolveBoundProgressStoreBindingReadFailureDoesNotAdopt(t *testing.T) {
 	t.Setenv("HIVE_DAEMON_URL", server.URL)
 	t.Setenv("JARVIS_SDD_STORE_MODE", "hive")
 
-	_, err := resolveBoundProgressStore(context.Background(), root, project, change)
+	_, _, err := resolveBoundProgressStore(context.Background(), root, project, change)
 	if err == nil {
 		t.Fatal("resolve store succeeded after binding read failure")
 	}
@@ -1185,7 +1186,9 @@ func TestResolveBoundProgressStoreRejectsNonCanonicalProjectAndRootBeforeBinding
 		{name: "surrounded root", root: " " + root + " ", project: canonicalProject},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := resolveBoundProgressStore(context.Background(), tt.root, tt.project, change)
+			// An explicit conversion bypasses the boundary; the resolver still
+			// rejects a non-canonical key before any binding request.
+			_, _, err := resolveBoundProgressStore(context.Background(), tt.root, projectidentity.Key(tt.project), change)
 			if err == nil {
 				t.Fatal("resolved non-canonical input")
 			}
@@ -1312,14 +1315,14 @@ func TestBoundSddProgressWriterCancellationUsesCommandContextForHiveAndHybrid(t 
 				case <-ctx.Done():
 				}
 			}()
-			resolve := func(ctx context.Context, root, project, change string) (progressAdvancer, error) {
-				store, err := resolveBoundProgressStore(ctx, root, project, change)
+			resolve := func(ctx context.Context, root string, project projectidentity.Key, change string) (progressAdvancer, projectidentity.Key, error) {
+				store, effective, err := resolveBoundProgressStore(ctx, root, project, change)
 				if err == nil {
 					requests.Lock()
 					requests.storeBuilt = true
 					requests.Unlock()
 				}
-				return store, err
+				return store, effective, err
 			}
 			command := newBoundSddProgressCommand(resolve)
 			command.SetContext(ctx)

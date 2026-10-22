@@ -19,7 +19,10 @@ type SDDArtifact struct {
 // FetchSDDArtifacts returns at most one winning revision for each allowed
 // artifact topic. Projection is complete and intentionally has no row limit.
 func (d *DB) FetchSDDArtifacts(project, change string, artifacts []string) ([]SDDArtifact, error) {
-	project = canonicalProjectKey(project)
+	project, err := d.resolveProjectIngress(context.Background(), project)
+	if err != nil {
+		return nil, fmt.Errorf("fetch SDD artifacts: %w", err)
+	}
 	if project == "" {
 		return nil, errors.New("project is required")
 	}
@@ -86,7 +89,10 @@ func (d *DB) FetchSDDArtifacts(project, change string, artifacts []string) ([]SD
 
 // ListSDDChanges returns projected change names after an exclusive keyset.
 func (d *DB) ListSDDChanges(project string, artifacts []string, after string, limit int) ([]string, error) {
-	project = canonicalProjectKey(project)
+	project, err := d.resolveProjectIngress(context.Background(), project)
+	if err != nil {
+		return nil, fmt.Errorf("list SDD changes: %w", err)
+	}
 	if project == "" {
 		return nil, errors.New("project is required")
 	}

@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
@@ -149,9 +150,12 @@ func TestHiveInspectSealablePredecessor(t *testing.T) {
 }
 
 func TestGuardedSourcesRejectForeignIdentity(t *testing.T) {
-	for _, tc := range []struct{ name, project, change string }{
-		{"foreign project", "foreign", "change"},
-		{"foreign change", "jarvis-dev", "foreign"},
+	for _, tc := range []struct {
+		name, project, change string
+		want                  sddstatus.ArtifactState
+	}{
+		{"foreign project", "foreign", "change", sddstatus.ArtifactBlockedProjectMismatch},
+		{"foreign change", "jarvis-dev", "foreign", sddstatus.ArtifactBlockedInvalid},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, manifest, err := applyprogress.TaskManifest([]applyprogress.Task{{ID: "1.1", Text: "task"}})
@@ -181,8 +185,8 @@ func TestGuardedSourcesRejectForeignIdentity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if arts[sddstatus.ArtifactApplyProgress] != sddstatus.ArtifactBlockedInvalid {
-				t.Fatalf("OpenSpec foreign identity = %q", arts[sddstatus.ArtifactApplyProgress])
+			if arts[sddstatus.ArtifactApplyProgress] != tc.want {
+				t.Fatalf("OpenSpec foreign identity = %q, want %q", arts[sddstatus.ArtifactApplyProgress], tc.want)
 			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
@@ -199,8 +203,8 @@ func TestGuardedSourcesRejectForeignIdentity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if arts[sddstatus.ArtifactApplyProgress] != sddstatus.ArtifactBlockedInvalid {
-				t.Fatalf("Hive foreign identity = %q", arts[sddstatus.ArtifactApplyProgress])
+			if arts[sddstatus.ArtifactApplyProgress] != tc.want {
+				t.Fatalf("Hive foreign identity = %q, want %q", arts[sddstatus.ArtifactApplyProgress], tc.want)
 			}
 		})
 	}
@@ -2218,7 +2222,7 @@ func newHiveSource(t *testing.T, baseURL string) *sddstatus.HiveSource {
 	return hiveSourceForProject(t, baseURL, "jarvis-dev")
 }
 
-func hiveSourceForProject(t *testing.T, baseURL, project string) *sddstatus.HiveSource {
+func hiveSourceForProject(t *testing.T, baseURL string, project projectidentity.Key) *sddstatus.HiveSource {
 	t.Helper()
 	client, err := hiveclient.New(baseURL)
 	if err != nil {

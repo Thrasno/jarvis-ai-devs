@@ -15,12 +15,17 @@ import (
 	"strings"
 
 	"github.com/Thrasno/jarvis-ai-devs/hivederive/applyprogress"
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddprogress"
 )
 
 // ArtifactBlockedBackendDiverged means independently read v2 stores disagree.
 const ArtifactBlockedBackendDiverged ArtifactState = "blocked:backend_diverged"
+
+// ErrProjectMismatch reports stored SDD state that belongs to a project other
+// than the effective project key resolved for the request.
+var ErrProjectMismatch = errors.New("project_mismatch")
 
 // ArtifactSource fetches SDD artifact states from a backing store.
 type ArtifactSource interface {
@@ -306,24 +311,27 @@ func resemblesV2Progress(content string) bool {
 // HiveSource reads SDD artifacts from a running hive-daemon.
 type HiveSource struct {
 	client  *hiveclient.Client
-	project string
+	project projectidentity.Key
 }
 
 // NewHiveSource returns an ArtifactSource backed by the hive-daemon.
-func NewHiveSource(client *hiveclient.Client, project string) *HiveSource {
+func NewHiveSource(client *hiveclient.Client, project projectidentity.Key) *HiveSource {
 	return &HiveSource{client: client, project: project}
 }
 
 // InspectSealablePredecessor authenticates a stored partial head independently of
 // the current tasks artifact, which may already have been revised for a successor.
 func (h *HiveSource) InspectSealablePredecessor(ctx context.Context, changeName string) (applyprogress.Snapshot, error) {
-	result, err := h.client.GetApplyProgress(ctx, h.project, changeName)
+	result, err := h.client.GetApplyProgress(ctx, h.project.String(), changeName)
 	if err != nil {
 		return applyprogress.Snapshot{}, err
 	}
 	snapshot := result.State.Snapshot
-	if result.Outcome != "committed" || result.Code != "ok" || snapshot.Schema != applyprogress.SnapshotSchema || snapshot.Status != applyprogress.StatusPartial || snapshot.Project != h.project || snapshot.Change != changeName {
+	if result.Outcome != "committed" || result.Code != "ok" || snapshot.Schema != applyprogress.SnapshotSchema || snapshot.Status != applyprogress.StatusPartial || snapshot.Change != changeName {
 		return applyprogress.Snapshot{}, fmt.Errorf("sealable predecessor: incompatible guarded head")
+	}
+	if effective := result.EffectiveProjectKey(h.project); snapshot.Project != effective.String() {
+		return applyprogress.Snapshot{}, fmt.Errorf("sealable predecessor: head project %q differs from effective project %q: %w", snapshot.Project, effective, ErrProjectMismatch)
 	}
 	if err := applyprogress.VerifySnapshot(snapshot); err != nil {
 		return applyprogress.Snapshot{}, err
@@ -363,7 +371,12 @@ func (h *HiveSource) InspectSealablePredecessor(ctx context.Context, changeName 
 }
 
 func (h *HiveSource) FetchArtifacts(ctx context.Context, changeName string) (map[string]ArtifactState, map[string]string, error) {
-	rows, err := h.client.FetchSDDArtifacts(ctx, h.project, changeName)
+	// The guarded head is read first because its response reports the effective
+	// project key (spelling fold plus alias). Artifact routes do not resolve
+	// aliases, so they are read under that key rather than the requested one.
+	progress, progressErr := h.client.GetApplyProgress(ctx, h.project.String(), changeName)
+	effective := progress.EffectiveProjectKey(h.project)
+	rows, err := h.client.FetchSDDArtifacts(ctx, effective.String(), changeName)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -378,10 +391,14 @@ func (h *HiveSource) FetchArtifacts(ctx context.Context, changeName string) (map
 	// The guarded v2 head is authoritative even when no legacy general-artifact
 	// projection exists. The old exact-topic row remains a compatibility fallback
 	// only when an older daemon cannot provide a typed head.
-	progress, progressErr := h.client.GetApplyProgress(ctx, h.project, changeName)
 	if progressErr == nil && isGuardedSchema(progress.State.Snapshot.Schema) {
-		if progress.State.Snapshot.Project != h.project || progress.State.Snapshot.Change != changeName {
+		if progress.State.Snapshot.Change != changeName {
 			artifacts[ArtifactApplyProgress] = ArtifactBlockedInvalid
+			delete(contents, ArtifactApplyProgress)
+			return artifacts, contents, nil
+		}
+		if progress.State.Snapshot.Project != effective.String() {
+			artifacts[ArtifactApplyProgress] = ArtifactBlockedProjectMismatch
 			delete(contents, ArtifactApplyProgress)
 			return artifacts, contents, nil
 		}
@@ -454,7 +471,7 @@ func (h *HiveSource) FetchArtifacts(ctx context.Context, changeName string) (map
 func (h *HiveSource) fetchGuardedEvidence(ctx context.Context, changeName string, snapshot applyprogress.Snapshot) ([]applyprogress.Batch, error) {
 	batches := make([]applyprogress.Batch, 0, len(snapshot.Batches))
 	for _, ref := range snapshot.Batches {
-		batch, err := h.client.GetApplyProgressEvidence(ctx, h.project, changeName, ref.BatchID, snapshot.Digest)
+		batch, err := h.client.GetApplyProgressEvidence(ctx, h.project.String(), changeName, ref.BatchID, snapshot.Digest)
 		if err != nil {
 			return nil, err
 		}
@@ -650,7 +667,7 @@ func (h *HiveSource) ListChanges(ctx context.Context) ([]string, error) {
 	var changes []string
 	cursor := ""
 	for {
-		page, err := h.client.ListSDDChanges(ctx, h.project, hiveclient.SDDPageRequest{Limit: pageSize, Cursor: cursor})
+		page, err := h.client.ListSDDChanges(ctx, h.project.String(), hiveclient.SDDPageRequest{Limit: pageSize, Cursor: cursor})
 		if err != nil {
 			return nil, err
 		}
@@ -668,8 +685,8 @@ func (h *HiveSource) ListChanges(ctx context.Context) ([]string, error) {
 // OpenSpecSource reads SDD artifacts from an openspec directory layout:
 // openspec/changes/{change}/{artifact}.md
 type OpenSpecSource struct {
-	root    string // project root; openspec/ is resolved relative to this
-	project string // optional expected project identity
+	root    string              // project root; openspec/ is resolved relative to this
+	project projectidentity.Key // optional expected effective project key
 }
 
 // NewOpenSpecSource returns an ArtifactSource backed by the openspec filesystem layout.
@@ -678,7 +695,7 @@ func NewOpenSpecSource(projectRoot string) *OpenSpecSource {
 }
 
 // NewOpenSpecSourceForProject binds guarded progress to an expected project.
-func NewOpenSpecSourceForProject(projectRoot, project string) *OpenSpecSource {
+func NewOpenSpecSourceForProject(projectRoot string, project projectidentity.Key) *OpenSpecSource {
 	return &OpenSpecSource{root: projectRoot, project: project}
 }
 
@@ -770,8 +787,13 @@ func (o *OpenSpecSource) FetchArtifacts(_ context.Context, changeName string) (m
 		return nil, nil, dirErr
 	}
 	if inspected != nil {
-		if inspected.Change != changeName || (o.project != "" && inspected.Project != o.project) {
+		if inspected.Change != changeName {
 			artifacts[ArtifactApplyProgress] = ArtifactBlockedInvalid
+			delete(contents, ArtifactApplyProgress)
+			return artifacts, contents, nil
+		}
+		if o.project != "" && inspected.Project != o.project.String() {
+			artifacts[ArtifactApplyProgress] = ArtifactBlockedProjectMismatch
 			delete(contents, ArtifactApplyProgress)
 			return artifacts, contents, nil
 		}
@@ -1011,7 +1033,12 @@ func (h *HybridSource) FetchArtifacts(ctx context.Context, changeName string) (m
 	// independently valid on both sides and semantically identical, except for an
 	// archived change: archive atomically removes the active OpenSpec topology while
 	// immutable Hive history intentionally retains its complete guarded head.
-	if isV2Progress(osContents[ArtifactApplyProgress]) || isV2Progress(hiveContents[ArtifactApplyProgress]) {
+	if osArtifacts[ArtifactApplyProgress] == ArtifactBlockedProjectMismatch || hiveArtifacts[ArtifactApplyProgress] == ArtifactBlockedProjectMismatch {
+		// A side signed under another project is an identity error, not a
+		// divergence between two copies of the same progress.
+		merged[ArtifactApplyProgress] = ArtifactBlockedProjectMismatch
+		delete(mergedContents, ArtifactApplyProgress)
+	} else if isV2Progress(osContents[ArtifactApplyProgress]) || isV2Progress(hiveContents[ArtifactApplyProgress]) {
 		if osArtifacts[ArtifactApplyProgress] == ArtifactBlockedPublicationInterrupted {
 			// OpenSpec's read-only inspection found durable but unresolved receipt
 			// lineage. This is more actionable than generic backend divergence and

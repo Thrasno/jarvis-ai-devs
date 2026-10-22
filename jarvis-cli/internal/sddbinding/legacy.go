@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Thrasno/jarvis-ai-devs/hivederive/projectidentity"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/hiveclient"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddruntime"
 	"github.com/Thrasno/jarvis-ai-devs/jarvis-cli/internal/sddstatus"
@@ -186,14 +187,14 @@ func (e *PartialAdoptionError) Unwrap() error { return errors.Join(ErrPartialAdo
 
 // ResolveExisting resolves only complete persisted bindings. It never takes a
 // resolution lock, observes progress, or repairs a missing hybrid mirror.
-func (r LegacyResolver) ResolveExisting(ctx context.Context, project, change string) (Resolution, error) {
+func (r LegacyResolver) ResolveExisting(ctx context.Context, project projectidentity.Key, change string) (Resolution, error) {
 	if err := ctx.Err(); err != nil {
 		return Resolution{}, err
 	}
 	if r.HiveBindings == nil {
 		return Resolution{}, errors.New("Hive binding store is required")
 	}
-	project = hiveclient.CanonicalProjectKey(project)
+	project = projectidentity.Canonical(project.String())
 	change = strings.TrimSpace(change)
 	if project == "" || change == "" || strings.TrimSpace(r.OpenSpecChangeDir) == "" {
 		return Resolution{}, fmt.Errorf("%w: project, change and OpenSpec change directory are required", ErrInvalidBinding)
@@ -201,7 +202,7 @@ func (r LegacyResolver) ResolveExisting(ctx context.Context, project, change str
 	if err := validateExistingChangeCoordinate(r.OpenSpecChangeDir, change); err != nil {
 		return Resolution{}, err
 	}
-	hive, found, err := r.HiveBindings.GetSDDStoreBinding(ctx, project, change)
+	hive, found, err := r.HiveBindings.GetSDDStoreBinding(ctx, project.String(), change)
 	if err != nil {
 		return Resolution{}, err
 	}
@@ -278,14 +279,14 @@ func validateExistingChangeCoordinate(path, change string) error {
 // mutates protected progress and never changes an existing selection. The
 // OpenSpec directory lock serializes the read-decide-adopt transaction across
 // CLI processes that address the same physical change directory.
-func (r LegacyResolver) ResolveAndAdopt(ctx context.Context, project, change string, initial InitialSelection) (Resolution, error) {
+func (r LegacyResolver) ResolveAndAdopt(ctx context.Context, project projectidentity.Key, change string, initial InitialSelection) (Resolution, error) {
 	if err := ctx.Err(); err != nil {
 		return Resolution{}, err
 	}
 	if r.HiveBindings == nil {
 		return Resolution{}, errors.New("Hive binding store is required")
 	}
-	project = hiveclient.CanonicalProjectKey(project)
+	project = projectidentity.Canonical(project.String())
 	change = strings.TrimSpace(change)
 	if project == "" || change == "" {
 		return Resolution{}, fmt.Errorf("%w: project and change are required", ErrInvalidBinding)
@@ -327,8 +328,8 @@ func (r LegacyResolver) ResolveAndAdopt(ctx context.Context, project, change str
 	return r.resolveAndAdoptLocked(ctx, project, change, initial, localStore)
 }
 
-func (r LegacyResolver) resolveAndAdoptLocked(ctx context.Context, project, change string, initial InitialSelection, localStore OpenSpecBindingStore) (Resolution, error) {
-	hive, hiveFound, err := r.HiveBindings.GetSDDStoreBinding(ctx, project, change)
+func (r LegacyResolver) resolveAndAdoptLocked(ctx context.Context, project projectidentity.Key, change string, initial InitialSelection, localStore OpenSpecBindingStore) (Resolution, error) {
+	hive, hiveFound, err := r.HiveBindings.GetSDDStoreBinding(ctx, project.String(), change)
 	if err != nil {
 		return Resolution{}, err
 	}
@@ -437,7 +438,7 @@ func (r LegacyResolver) requireEquivalentProgress(ctx context.Context, change st
 	return nil
 }
 
-func (r LegacyResolver) adopt(ctx context.Context, project, change string, requested Binding, localStore OpenSpecBindingStore) (Resolution, error) {
+func (r LegacyResolver) adopt(ctx context.Context, project projectidentity.Key, change string, requested Binding, localStore OpenSpecBindingStore) (Resolution, error) {
 	switch requested.Mode() {
 	case sddruntime.StoreModeHive:
 		if err := r.adoptHive(ctx, project, change, requested); err != nil {
@@ -460,8 +461,8 @@ func (r LegacyResolver) adopt(ctx context.Context, project, change string, reque
 	return persistedResolution(requested.Mode(), requested.Provenance()), nil
 }
 
-func (r LegacyResolver) adoptHive(ctx context.Context, project, change string, requested Binding) error {
-	response, _, err := r.HiveBindings.AdoptSDDStoreBinding(ctx, project, change, hiveclient.SDDStoreBindingRequest{
+func (r LegacyResolver) adoptHive(ctx context.Context, project projectidentity.Key, change string, requested Binding) error {
+	response, _, err := r.HiveBindings.AdoptSDDStoreBinding(ctx, project.String(), change, hiveclient.SDDStoreBindingRequest{
 		Mode:       hiveclient.SDDStoreMode(requested.Mode()),
 		Provenance: requested.Provenance(),
 	})
@@ -470,7 +471,7 @@ func (r LegacyResolver) adoptHive(ctx context.Context, project, change string, r
 	}
 	if err := validateStoredHiveBinding(response, project, change); err != nil || response.SchemaVersion != bindingSchemaVersion || string(response.Mode) != string(requested.Mode()) || response.Provenance != requested.Provenance() {
 		if err != nil {
-			return fmt.Errorf("%w: %v", ErrInvalidAdoptionResponse, err)
+			return fmt.Errorf("%w: %w", ErrInvalidAdoptionResponse, err)
 		}
 		return fmt.Errorf("%w: Hive response differs from requested immutable values", ErrInvalidAdoptionResponse)
 	}
@@ -488,9 +489,15 @@ func (r LegacyResolver) adoptOpenSpec(localStore OpenSpecBindingStore, requested
 	return nil
 }
 
-func validateStoredHiveBinding(binding hiveclient.SDDStoreBinding, project, change string) error {
-	if binding.Project != project || binding.Change != change {
+// validateStoredHiveBinding compares a stored binding with the effective
+// project key the caller resolved; a different project is an identity
+// mismatch, not merely an unsupported binding.
+func validateStoredHiveBinding(binding hiveclient.SDDStoreBinding, project projectidentity.Key, change string) error {
+	if binding.Change != change {
 		return fmt.Errorf("%w: Hive coordinates do not match request", ErrUnsupportedStoredBinding)
+	}
+	if binding.Project != project.String() {
+		return fmt.Errorf("%w: %w: Hive binding project %q differs from effective project %q", ErrUnsupportedStoredBinding, sddstatus.ErrProjectMismatch, binding.Project, project)
 	}
 	if binding.SchemaVersion != bindingSchemaVersion {
 		return fmt.Errorf("%w: Hive schema %q", ErrUnsupportedStoredBinding, binding.SchemaVersion)
