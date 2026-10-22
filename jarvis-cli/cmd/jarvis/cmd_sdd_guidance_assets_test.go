@@ -81,6 +81,97 @@ func TestSDDGuidanceAssets_DescribeBoundStoreSafety(t *testing.T) {
 	}
 }
 
+func TestSDDGuidanceAssets_PreflightBindsStoreBeforeStatus(t *testing.T) {
+	const bindCommand = "jarvis sdd bind --change <change> --mode <hive|openspec|hybrid>"
+	orchestrator := mustReadSDDGuidanceAsset(t, jarvis.OrchestratorFS, "embed/orchestrator/sdd-orchestrator.md")
+
+	dispatcher := sddGuidanceSection(t, orchestrator, "#### Binding Resolution and Diagnostics", "### SDD Entry Routing")
+	bind, status := strings.Index(dispatcher, "\n"+bindCommand), strings.Index(dispatcher, "\njarvis sdd status <change> --json")
+	if bind == -1 || status == -1 || bind > status {
+		t.Errorf("native dispatcher must list %q before `jarvis sdd status` (bind at %d, status at %d)", bindCommand, bind, status)
+	}
+
+	preflight := sddGuidanceSection(t, orchestrator, "### SDD Session Preflight (HARD GATE)", "### Review Workload Guard")
+	binding := sddGuidanceSection(t, preflight, "#### Preflight Store Binding", "")
+	if strings.Index(preflight, "#### Preflight Store Binding") < strings.Index(preflight, "Map answers to canonical values") {
+		t.Error("the preflight store binding must follow the mapping of the preflight answers")
+	}
+
+	assets := map[string]string{
+		"orchestrator":           orchestrator,
+		"orchestrator preflight": binding,
+		"persistence contract":   mustReadSDDGuidanceAsset(t, jarvis.SkillsFS, "embed/skills/_shared/persistence-contract.md"),
+		"phase common":           mustReadSDDGuidanceAsset(t, jarvis.SkillsFS, "embed/skills/_shared/sdd-phase-common.md"),
+		"user guide":             mustReadSDDUserGuide(t),
+	}
+	required := map[string][]string{
+		"orchestrator preflight": {
+			bindCommand,
+			"right after the preflight artifact-store choice",
+			"before any `jarvis sdd status` or `jarvis sdd continue` call, phase launch, or artifact write",
+			"`initial:preflight`",
+			"idempotent replay",
+			"a non-zero exit stops the sdd path for that change before status",
+			"do not run `jarvis sdd status` on a new change before `bind`: status adopts the default store",
+			"`JARVIS_SDD_STORE_MODE=none`",
+		},
+		"persistence contract": {
+			"the preflight choice reaches the CLI through `" + bindCommand + "`",
+			"before any `jarvis sdd status` call or artifact write",
+			"`initial:preflight`",
+			"`JARVIS_SDD_STORE_MODE=none`",
+		},
+		"phase common": {
+			bindCommand,
+			"before your own first `jarvis sdd status` call or artifact write",
+			"`storeBinding.persisted: true`",
+			"`JARVIS_SDD_STORE_MODE=none`",
+		},
+		"user guide": {
+			bindCommand,
+			"`initial:preflight`",
+		},
+	}
+	for name, snippets := range required {
+		for _, snippet := range snippets {
+			if !strings.Contains(strings.ToLower(assets[name]), strings.ToLower(snippet)) {
+				t.Errorf("%s is missing preflight binding guidance %q", name, snippet)
+			}
+		}
+	}
+
+	// The environment variable no longer carries the preflight choice.
+	forbidden := map[string]string{
+		"persistence contract": "`JARVIS_SDD_STORE_MODE` or the explicit preflight choice selects the initial mode",
+		"orchestrator":         "the environment selects only an unbound change",
+		"user guide":           "the environment variable only selects an unbound change",
+	}
+	for name, snippet := range forbidden {
+		if strings.Contains(assets[name], snippet) {
+			t.Errorf("%s still routes the preflight choice through the environment: %q", name, snippet)
+		}
+	}
+}
+
+// sddGuidanceSection returns the text from start up to end, or to the end of
+// content when end is empty.
+func sddGuidanceSection(t *testing.T, content, start, end string) string {
+	t.Helper()
+	from := strings.Index(content, start)
+	if from == -1 {
+		t.Fatalf("guidance section %q not found", start)
+	}
+	section := content[from:]
+	if end == "" {
+		return section
+	}
+	to := strings.Index(section, end)
+	if to == -1 {
+		t.Fatalf("guidance section %q has no end marker %q", start, end)
+	}
+	return section[:to]
+}
+
 func mustReadSDDGuidanceAsset(t *testing.T, fs interface{ ReadFile(string) ([]byte, error) }, path string) string {
 	t.Helper()
 	content, err := fs.ReadFile(path)

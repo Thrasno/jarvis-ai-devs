@@ -39,7 +39,9 @@ Jarvis SDD artifacts belong to the Jarvis product workflow. Do not confuse them 
 
 ## Store binding and diagnostics
 
-Each `project/change` has at most one immutable persisted binding: `hive`, `openspec`, or `hybrid`. `none` is inline-only and never persists. A persisted binding takes precedence over `JARVIS_SDD_STORE_MODE`; the environment variable only selects an unbound change, including when a later value is invalid.
+Each `project/change` has at most one immutable persisted binding: `hive`, `openspec`, or `hybrid`. `none` is inline-only and never persists. A persisted binding takes precedence over `JARVIS_SDD_STORE_MODE`; the environment variable is only a fallback for an unbound change, and a later value, including an invalid one, never changes a persisted binding.
+
+The preflight artifact-store choice reaches the CLI through `jarvis sdd bind --change <change> --mode <hive|openspec|hybrid>`, run right after the preflight and before any `status` call or artifact write. It persists the binding with provenance `initial:preflight` under the canonical Hive project key. Repeating the same mode is an idempotent replay; a different mode is a conflict that leaves the stored binding unchanged. Without `bind`, the first `status` call adopts `initial:default:hive`. A `none` choice is not bound; prefix every `jarvis sdd` call for that change with `JARVIS_SDD_STORE_MODE=none`. See [`jarvis sdd bind`](cli-reference.md#jarvis-sdd-bind).
 
 Hive owns bindings in SQLite. OpenSpec owns them in `openspec/changes/<change>/state.yaml`. Hybrid requires matching copies and equivalent protected progress; unavailable, malformed, unsupported, blank, noncanonical, or divergent state blocks rather than selecting one side. Planning artifacts never select authority, and legacy adoption is permitted only through protected canonical `apply-progress`.
 

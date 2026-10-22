@@ -34,12 +34,53 @@ S7: RED tests named in the earlier maintainer comment on #798 (verbatim): "`MyPr
 
 Investigation evidence (explore handoff, 2026-10-20): apply-progress HTTP handlers `hive-daemon/internal/httpapi/server.go:449-561` -> `governance/sdd.go:151-264` -> `GetGovernanceProject` (`db/project.go:161-175`, spelling only); store-binding handlers `server.go:304-357` -> `governance/sdd.go:80-110` (no governance gate) -> `db/sdd_store_binding.go:92-110`; `DB.AddAlias` `db/alias.go:105-160` lacks the guard used by `governanceMergeHasImmutableApplyProgress` (`db/project.go:450-461,651-664`); pull validation `db/sync.go:1290-1307`, rejection `1446-1447`, `1003-1022`; MCP tools `sdd_apply_progress_get`, `sdd_apply_evidence_get` (`mcp/tools.go:100-101`) not traced.
 
+S8 (issue #797, Expected, verbatim):
+
+## Expected
+The preflight choice reaches the CLI explicitly (e.g. an initial-mode flag, or a mandatory env prefix enforced by orchestrator and skills). A read-only-looking `status` call must not silently persist the default when the user chose otherwise.
+
+S9 (maintainer decision on issue #797, verbatim):
+
+## Maintainer decision
+
+**Approved approach:**
+
+- Add an explicit adoption surface: `jarvis sdd bind --change <c> --mode hive|openspec|hybrid`, persisted with provenance `initial:preflight`.
+  - An identical existing binding is an idempotent replay.
+  - A different existing binding returns a clear conflict; it never overwrites.
+- The orchestrator and SDD skills call `bind` right after the preflight choice, before any `status` call or artifact write. This closes both paths: the silent `initial:default:hive` adoption and the `legacy:hive-progress` inference.
+- Update `persistence-contract.md` so the preflight choice reaches the CLI through `bind`.
+
+**Out of scope:** changing `status` so it stops adopting the default for an unbound change. It changes the documented contract and is not needed once `bind` exists. Open a separate issue if it becomes necessary.
+
+**Ordering:** implement after #798. `bind` receives a project identity and must use the canonical Hive key; otherwise a non-canonical spelling would be written into an immutable binding.
+
+**RED tests first:** `bind --mode hybrid` followed by `status` without `JARVIS_SDD_STORE_MODE` keeps `hybrid`; identical replay succeeds; conflicting mode is rejected and leaves the stored binding unchanged; `bind` before any Hive progress write prevents `legacy:hive-progress` inference.
+
+---
+
+## Decisión de mantenimiento
+
+**Enfoque aprobado:**
+
+- Añadir una forma explícita de adopción: `jarvis sdd bind --change <c> --mode hive|openspec|hybrid`, que se persiste con procedencia `initial:preflight`.
+  - Un vínculo existente idéntico se trata como repetición idempotente.
+  - Un vínculo existente distinto devuelve un conflicto claro; nunca se sobrescribe.
+- El orquestador y las skills de SDD invocan `bind` justo después de la elección del preflight, antes de cualquier llamada a `status` o escritura de artefactos. Así se cierran ambos caminos: la adopción silenciosa de `initial:default:hive` y la inferencia `legacy:hive-progress`.
+- Actualizar `persistence-contract.md` para que la elección del preflight llegue a la CLI mediante `bind`.
+
+**Fuera de alcance:** modificar `status` para que deje de adoptar el valor por defecto en un cambio sin vincular. Altera el contrato documentado y no es necesario una vez exista `bind`. Si llegara a hacer falta, se abrirá una issue aparte.
+
+**Orden:** implementar después de #798. `bind` recibe una identidad de proyecto y debe usar la clave canónica de Hive; de lo contrario, una forma no canónica del nombre quedaría grabada en un vínculo inmutable.
+
+**Tests en rojo primero:** `bind --mode hybrid` seguido de `status` sin `JARVIS_SDD_STORE_MODE` mantiene `hybrid`; la repetición idéntica se acepta; un modo en conflicto se rechaza y deja intacto el vínculo almacenado; ejecutar `bind` antes de cualquier escritura de progreso en Hive evita la inferencia `legacy:hive-progress`.
+
 ## Tasks
 
 - [x] T1 -> S2-S5, S7: daemon PR. RED tests, alias resolution at ingress for apply-progress and store-binding (HTTP, governance, db, MCP SDD tools), effective key in responses (additive field), store-binding project gate, AddAlias guard, specific pull rejection reason. Route: background gentle-ai-worker in `../jarvis-dev-798`. Check: worker RED then GREEN; parent reran `hive-daemon` gofmt + vet + `go test -count=1 ./...` and `jarvis-cli` `go test -count=1 ./...` (both exit 0). Commit: see git log of fix/798-daemon-identity-ingress.
 - [x] T2 -> S2-S5: independent verification + native review (high risk: data, contract). Verify round 1: S4, S5, S7 PASS; blockers B1 (released CLI store-binding decoders reject `project_key`) and B2 (legacy case-only alias resolved differently in and out of a tx) fixed per L7 with tests. Commit `5414e027`. Native review: assess medium, not due (under budget).
-- [ ] T3 -> S1, S6, S7: CLI PR stacked on T1. Commit: pending.
-- [ ] T4 -> #797 maintainer decision: `jarvis sdd bind`, stacked on T3. Commit: pending.
+- [x] T3 -> S1, S6, S7: CLI PR stacked on T1. Daemon follow-up for change-list and artifact routes (L11): `d725cdf0`. Verify: S1 PASS, S7 PASS, S6 blocker (advance adopted a binding before reporting project_mismatch) fixed with an unbound no-write test. Checks: `jarvis-cli` gofmt + vet + test and `hive-daemon` test exit 0. Commits: `5adcfdbf`, `c99b5c88`. Native review: assess medium, not due.
+- [x] T4 -> S8, S9: `jarvis sdd bind`, stacked on T3. Verify: S8 PASS, S9 PASS; finding F1 (failed hybrid bind left empty `openspec/` dirs), N3 (orchestrator status-before-bind warning) and N5 (lost adoption race) fixed test-first (L19-L21). Commits: `b0504f97`, `12cdf486`.
 
 ## Log
 
@@ -56,3 +97,11 @@ L10 (worker, 2026-10-20, T3): `advance` submits a signed snapshot that cannot be
 L11 (parent, 2026-10-20): "Q1: yes. The daemon change-list and artifact routes will resolve aliases in a separate daemon commit on fix/798-daemon-identity-ingress (another worker, in parallel). Do not touch hive-daemon. After it lands, status/continue without a change name must work under a retired key; keep your code ready for it (no CLI-side workaround)."
 L12 (parent, 2026-10-20): "Q2: yes. `jarvis sdd archive --project` folds the spelling through the same boundary as status/continue/progress, instead of rejecting non-canonical spellings."
 L13 (parent, 2026-10-20): "Q3: no. `jarvis sdd supersede` stays fail-closed for retired keys. Supersede requires existing apply progress, and both promotion and AddAlias now refuse to retire a project that holds apply progress, so a retired-key supersede cannot arise from a supported path; following a redirect would widen a high-risk flow for no reachable case."
+L14 (worker, 2026-10-20, T4): `bind` is `sddbinding.LegacyResolver.Bind`, which shares the resolution lock and the read-decide path of `ResolveAndAdopt` (refactored into `decideLocked` + `adopt`; `ResolveAndAdopt` behaviour unchanged). A persisted binding, or the binding that protected progress already selects, always wins: the same mode is an idempotent replay that writes nothing and keeps the stored provenance (for example `initial:default:hive` from an earlier status), and a different mode returns `*sddbinding.ConflictError` without writing. A legacy inference that matches the requested mode is adopted with its `legacy:*` provenance; only an unbound change without protected progress gets `initial:preflight`. Mode equality, not provenance equality, defines "identical".
+L15 (worker, 2026-10-20, T4): OpenSpec persistence for `bind` follows the existing owners: `hive` in Hive only, `openspec` in `openspec/changes/<change>/state.yaml` of the working-directory workspace only, `hybrid` in both (Hive first, then the mirror). Because `bind` runs before any artifact write and the file store requires an existing change directory, `Bind` creates `openspec/changes/<change>/` for `openspec`/`hybrid` only, under the lock, after the decision (never on a conflict), and revalidates the coordinate after creating it; `hive` never creates `openspec/`. The persistence contract already allows `openspec/` creation for those two modes.
+L16 (worker, 2026-10-20, T4): CLI `jarvis sdd bind --change <c> --mode hive|openspec|hybrid [--project <p>] [--json]` (no `--root`; the workspace is the canonical working directory, as for status). `--mode none` and unknown modes are rejected before any daemon request or write. The project goes through `resolveSddProject`, and the store-binding redirect goes through `followSddStoreBindingRedirect`, now shared with `resolveSddStoreBindingAt`, so a retired alias binds under the confirmed effective key. `--json` prints `{project, change, mode, provenance, persisted}` with the effective key; there is no created/replayed flag because a redirected first adoption is read back on the retry.
+L17 (parent, 2026-10-20): accepted: a `none` change is never bound; assets tell agents to prefix every `jarvis sdd` call for that change with `JARVIS_SDD_STORE_MODE=none` so status does not adopt the `hive` default. Recorded in `persistence-contract.md`.
+L18 (worker, 2026-10-20, T4): assets. The orchestrator gains `#### Preflight Store Binding` (bind right after the artifact-store choice, before any status/continue call, phase launch or artifact write; replay on recorded decisions; any non-zero exit stops before status) and lists `bind` first in the dispatcher block. `sdd-phase-common.md` makes phase skills run the same `bind` before their own first status call or artifact write unless forwarded status JSON already shows `storeBinding.persisted: true`; `sdd-propose` keeps the `state.yaml` that `bind` wrote. No `internal/config` policy test pinned wording that contradicts the new rule, so none was changed; status without preflight stays an inspection path, out of scope per S9.
+L19 (worker, 2026-10-20, T4 verify F1): a failed `bind` leaves the workspace as it was. `Bind` no longer creates the OpenSpec change directory before adopting: it creates the missing levels below the workspace only when the local copy is written (after Hive accepted the adoption for `hybrid`; `openspec` has no Hive step), records the levels this call created, and removes them deepest first when that write fails. A level that is no longer an empty directory is kept, because it holds content `bind` did not write. If Hive accepted a `hybrid` binding but the local write failed, `PartialAdoptionError` still applies and rerunning `bind` (not `status`, which never creates the directory) writes the mirror.
+L20 (worker, 2026-10-20, T4 verify N5): a lost race is resolved, not just reworded. When the Hive adoption returns `binding_conflict` because another worktree adopted the change between the read and the adoption, `Bind` re-runs the locked decision once against the binding that won. A different mode then returns the usual `*ConflictError` (same `bound to X ... requested Y` message as a stored binding); the same mode is a replay, and for `hybrid` it writes the local mirror with the winner's provenance (replaying the Hive copy, as `ResolveAndAdopt` does). `docs/troubleshooting.md` and `docs/cli-reference.md` describe this.
+L21 (worker, 2026-10-20, T4 verify N3): the orchestrator's Preflight Store Binding section says not to run `jarvis sdd status` on a new change before `bind`, because status adopts the default store; the status-without-preflight exception covers inspecting existing changes. Existing pinned phrases are unchanged; the guidance contract test pins the new line.

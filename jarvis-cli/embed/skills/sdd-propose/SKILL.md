@@ -67,6 +67,8 @@ openspec/changes/{change-name}/
 └── proposal.md
 ```
 
+The folder may already exist with the `state.yaml` that `jarvis sdd bind` wrote; keep that file unchanged.
+
 **IF mode is `hive` or `none`:** Do NOT create any `openspec/` directories. Skip this step.
 
 ### Step 3: Read Existing Specs

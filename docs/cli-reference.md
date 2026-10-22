@@ -37,8 +37,30 @@ jarvis timeline --project <project>
 | `jarvis hive import-engram` | Advanced | Preview or execute local Engram-to-Hive import. | `jarvis hive import-engram --dry-run` |
 | `jarvis timeline` | Yes | Open Hive timeline TUI for a project. Requires `--project`. | `jarvis timeline --project jarvis-ai-devs` |
 | `jarvis sync` | Yes | Replay this machine's recorded configuration. Takes no flags. | `jarvis sync` |
+| `jarvis sdd bind` | Yes | Bind a change to the artifact store chosen in the SDD preflight. | `jarvis sdd bind --change <change> --mode hybrid --json` |
 | `jarvis sdd status` | Yes | Show SDD phase status for a change. | `jarvis sdd status <change> --project <project>` |
 | `jarvis sdd continue` | Yes | Print next recommended SDD phase. | `jarvis sdd continue <change> --json` |
+
+## `jarvis sdd bind`
+
+`jarvis sdd bind` persists the artifact store chosen in the SDD session preflight as the change's immutable binding. Run it right after the preflight choice, before any `jarvis sdd status` call or artifact write for the change. Otherwise the first `status` call adopts the `hive` default (`initial:default:hive`), and Hive progress written before any OpenSpec progress is inferred as `legacy:hive-progress`.
+
+```bash
+jarvis sdd bind --change <change> --mode <hive|openspec|hybrid> [--project <project>] [--json]
+```
+
+| Property | Behavior |
+| ---------- | ---------- |
+| `--change` | Required. The canonical SDD change name. |
+| `--mode` | Required. `hive`, `openspec`, or `hybrid`. `none` is never persisted and is rejected, as is any other value; nothing is written. |
+| `--project` | Optional. Resolved like every other `jarvis sdd` command (see [SDD project identity](#sdd-project-identity)), so the binding is written under the effective canonical Hive key. |
+| Storage | Provenance `initial:preflight`. `hive` is stored in Hive. `openspec` is stored in `openspec/changes/<change>/state.yaml` of the working directory, and the change directory is created when missing. `hybrid` is stored in both. |
+| Same mode already bound | Idempotent replay: exit 0, nothing is written, and the stored provenance is kept (for example `initial:default:hive` from an earlier `status`). |
+| Different mode | Conflict: the error names the existing and requested modes, the exit code is non-zero, and the stored binding is unchanged. This also applies when the change is unbound but existing apply progress already selects another store, and when another worktree binds the change while `bind` runs (the same mode from another worktree is a replay instead). Bindings are immutable; use a new change name for another store. |
+| Other failure | A daemon rejection (for example a blocked project) or an unavailable daemon exits non-zero. The workspace is left as it was: an `openspec/` level that `bind` created is removed again. If Hive accepted a `hybrid` binding but the local copy failed, rerun `bind` to write the mirror. |
+| `--json` | Prints `{"project", "change", "mode", "provenance", "persisted"}`. |
+
+For a `none` choice, do not bind. Prefix every `jarvis sdd` call for that change with `JARVIS_SDD_STORE_MODE=none` so `status` does not adopt the `hive` default.
 
 ## SDD workspace edit authority
 
@@ -48,7 +70,7 @@ jarvis timeline --project <project>
 
 ## SDD project identity
 
-`jarvis sdd status`, `jarvis sdd continue`, `jarvis sdd progress`, `jarvis sdd archive`, and `jarvis sdd supersede` resolve the project the same way at their boundary:
+`jarvis sdd bind`, `jarvis sdd status`, `jarvis sdd continue`, `jarvis sdd progress`, `jarvis sdd archive`, and `jarvis sdd supersede` resolve the project the same way at their boundary:
 
 - The spelling is canonicalized once: case is folded, and `_`, `.`, ` `, `/`, and `-` runs become a single `-`. `MyProject`, ` MYPROJECT `, and `myproject` are the same project (`myproject`); `my_project`, `My.Project`, and `my-project` are the same project (`my-project`). The `project` field of a `checkpoint` or `upgrade-continuation` request, `jarvis sdd archive --project`, and `jarvis sdd supersede --project` are canonicalized the same way.
 - A retired alias resolves to its target. Hive reports the effective project key, and the CLI reads the target's binding and progress and writes new progress under the target, never under the retired key.

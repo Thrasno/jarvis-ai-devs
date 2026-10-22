@@ -72,7 +72,7 @@ SDD is the structured planning layer for substantial changes.
 
 #### Binding Resolution and Diagnostics
 
-Before backend selection, resolve or adopt the one immutable authoritative `project/change` binding: `hive`, `openspec`, or `hybrid`. `none` is never persisted. A persisted binding wins over `JARVIS_SDD_STORE_MODE`, including an invalid environment value; the environment selects only an unbound change. Hive owns its binding in SQLite, OpenSpec owns it in `openspec/changes/{change-name}/state.yaml`, and hybrid requires matching copies. Do not create a neutral registry or let planning artifacts select authority.
+Before backend selection, resolve or adopt the one immutable authoritative `project/change` binding: `hive`, `openspec`, or `hybrid`. `none` is never persisted. A persisted binding wins over `JARVIS_SDD_STORE_MODE`, including an invalid environment value; the environment is only a fallback for an unbound change. The preflight artifact-store choice reaches the CLI through `jarvis sdd bind` (see Preflight Store Binding), never through the first status call. Hive owns its binding in SQLite, OpenSpec owns it in `openspec/changes/{change-name}/state.yaml`, and hybrid requires matching copies. Do not create a neutral registry or let planning artifacts select authority.
 
 Run this resolution for status, continue, progress (`advance`, `checkpoint`, `upgrade-continuation`), and archive before selecting a backend. `jarvis sdd status` may adopt a binding, so it is not purely read-only recovery, even though it may run without session preflight. Treat unavailable/protocol failure as distinct from absence. Blank, malformed, unsupported, noncanonical, divergent bindings, or protected-progress failures block fail closed; hybrid divergence fails closed and never chooses a copy arbitrarily.
 
@@ -81,6 +81,7 @@ For diagnostics, show binding mode and provenance in `jarvis sdd status`. Ask fo
 Route SDD commands deterministically. Before routing, continuing, applying, verifying, archiving, or reporting status for an SDD change, use the native dispatcher when the `jarvis` CLI is available. Status may run without session preflight so the user can inspect or adopt binding state before choosing an SDD path:
 
 ```
+jarvis sdd bind --change <change> --mode <hive|openspec|hybrid> --json   # persist the preflight store choice before the first status call
 jarvis sdd status <change> --json          # authoritative ChangeStatus (schema: jarvis.sdd-status)
 jarvis sdd continue <change> --json        # next recommended phase or blocked reasons
 ```
@@ -220,6 +221,20 @@ After preflight is complete, resolve and cache:
 
 Forward these values to every SDD sub-agent prompt. If a value is unknown and changes review scope, persistence, branch targeting, or TDD behavior, stop and resolve it before launch.
 
+#### Preflight Store Binding
+
+Right after the preflight artifact-store choice, as soon as the change name is resolved, and before any `jarvis sdd status` or `jarvis sdd continue` call, phase launch, or artifact write for that change, bind the choice:
+
+```
+jarvis sdd bind --change <change> --mode <hive|openspec|hybrid> --json
+```
+
+- `bind` persists the immutable binding with provenance `initial:preflight` under the canonical Hive project key; pass `--project <project>` when the cached project name is not the one derived from the working directory. Without it, the first status call adopts `initial:default:hive`, and Hive progress written before any OpenSpec progress is inferred as `legacy:hive-progress`.
+- Run `bind` again whenever recorded decisions are applied to a change, including from its `## SDD Decisions` block in a later session. An identical binding is an idempotent replay and exits 0.
+- Do not run `jarvis sdd status` on a new change before `bind`: status adopts the default store. The status exception above covers inspecting existing changes, not choosing a store.
+- A non-zero exit stops the SDD path for that change before status. A conflict means the change is already bound to another store: show the user the existing and requested modes and stop; bindings are immutable, so another store needs a new change name. Any other failure, such as an unavailable daemon, also stops, because status would adopt the default instead.
+- `none` is never persisted: do not bind it, and prefix every `jarvis sdd` call for that change with `JARVIS_SDD_STORE_MODE=none` so status does not adopt the `hive` default.
+
 ### Review Workload Guard
 
 Before `sdd-apply`, inspect the tasks artifact for review workload forecast, estimated changed lines, chained PR recommendation, and the `Decision needed before apply` line. The recorded `## SDD Decisions` already resolve the delivery path: with a budget, work above it is split into work units for the recorded chain strategy; with `size:exception`, the feature ships as one PR with no forecast. When decisions are recorded, never stop to ask for a chain strategy or size exception; only surface a native `sdd-apply` blocked reason if status reports one. If the change has no recorded decisions, run the preflight instead of asking a standalone delivery question. Do not let child PRs target `main` directly when a feature-branch chain is active.
@@ -255,7 +270,7 @@ Explicit user commands take precedence over complexity heuristics:
 
 ### Artifact Store Policy
 
-Artifact store is collected by `SDD Session Preflight`. Missing artifact-store choice means preflight is incomplete; ask the localized preflight prompt and stop before init, planning, delegation, or file edits.
+Artifact store is collected by `SDD Session Preflight`. Missing artifact-store choice means preflight is incomplete; ask the localized preflight prompt and stop before init, planning, delegation, or file edits. Bind the choice with `jarvis sdd bind` before the first status call (see Preflight Store Binding).
 
 - `hive` — recommended option when selected in preflight; persistent memory across sessions
 - `openspec` — file-based artifacts; use when selected in preflight
