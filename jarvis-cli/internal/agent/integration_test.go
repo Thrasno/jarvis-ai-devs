@@ -1469,10 +1469,17 @@ func assertOpenCodeGlobalPermissionGuards(t *testing.T, settings map[string]any)
 			t.Fatalf("OpenCode global bash guard %q = %v, want ask", guard, bash[guard])
 		}
 	}
-	read := permissions["read"].(map[string]any)
-	for _, guard := range []string{"**/.env*", "**/*secret*", "**/*token*", "**/*credential*", "**/id_rsa*"} {
-		if read[guard] != "deny" {
-			t.Fatalf("OpenCode global read guard %q = %v, want deny", guard, read[guard])
+	for _, key := range []string{"read", "edit"} {
+		policy := permissions[key].(map[string]any)
+		for _, guard := range []string{"**/.env*", "**/secrets/**", "**/id_rsa*", "**/.npmrc", "**/*.token"} {
+			if policy[guard] != "deny" {
+				t.Fatalf("OpenCode global %s guard %q = %v, want deny", key, guard, policy[guard])
+			}
+		}
+		for _, retired := range []string{"**/*secret*", "**/*token*", "**/*credential*"} {
+			if _, ok := policy[retired]; ok {
+				t.Fatalf("OpenCode global %s still carries retired wildcard %q", key, retired)
+			}
 		}
 	}
 }

@@ -77,13 +77,14 @@ func (a *OpenCodeAgent) skillsDir() string {
 }
 
 type opencodeConfigTemplateData struct {
-	IncludeSchema       bool
-	SchemaURL           string
-	OrchestratorModel   string
-	OrchestratorVariant string
-	Agents              []opencodeGeneratedAgent
-	TaskAllows          []string
-	BashPermission      string
+	IncludeSchema        bool
+	SchemaURL            string
+	OrchestratorModel    string
+	OrchestratorVariant  string
+	Agents               []opencodeGeneratedAgent
+	TaskAllows           []string
+	BashPermission       string
+	SecretPathPermission string
 }
 
 type opencodeGeneratedAgent struct {
@@ -110,6 +111,10 @@ func (a *OpenCodeAgent) MergeGeneratedConfig(models state.PhaseModels) error {
 	includeSchema, err := shouldIncludeJSONSchema(existingBytes)
 	if err != nil {
 		return fmt.Errorf("inspect opencode.json schema: %w", err)
+	}
+	existingBytes, err = migrateOpenCodeSecretReadPolicy(existingBytes)
+	if err != nil {
+		return fmt.Errorf("migrate opencode.json read permissions: %w", err)
 	}
 
 	patchBytes, err := a.renderGeneratedConfigPatch(models, includeSchema)
@@ -158,13 +163,14 @@ func (a *OpenCodeAgent) renderGeneratedConfigPatch(models state.PhaseModels, inc
 		agents[i].Last = i == len(agents)-1
 	}
 	data := opencodeConfigTemplateData{
-		IncludeSchema:       includeSchema,
-		SchemaURL:           "https://opencode.ai/config.json",
-		OrchestratorModel:   modelForGeneratedAgent(assignments, "orchestrator"),
-		OrchestratorVariant: variants["orchestrator"],
-		Agents:              agents,
-		BashPermission:      openCodeBashPermission,
-		TaskAllows:          append([]string{"general", "explore"}, append(openCodeSDDSubagents(), openCodeJudgmentDaySubagents()...)...),
+		IncludeSchema:        includeSchema,
+		SchemaURL:            "https://opencode.ai/config.json",
+		OrchestratorModel:    modelForGeneratedAgent(assignments, "orchestrator"),
+		OrchestratorVariant:  variants["orchestrator"],
+		Agents:               agents,
+		BashPermission:       openCodeBashPermission,
+		SecretPathPermission: openCodeSecretPathPermission,
+		TaskAllows:           append([]string{"general", "explore"}, append(openCodeSDDSubagents(), openCodeJudgmentDaySubagents()...)...),
 	}
 
 	tmpl, err := template.New("opencode.json.tmpl").Funcs(template.FuncMap{"json": jsonTemplateValue}).Parse(string(templateBytes))
